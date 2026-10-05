@@ -181,9 +181,9 @@ Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay s
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~40 s |
-| Rocq `Corelib.Init.Peano` | 118, all of them | 0.5 s |
+| Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~55 s |
-| Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | ~13 s |
+| Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
 template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.
@@ -319,3 +319,4 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 | [almide#3402](https://github.com/almide/almide/issues/3402) recursive call with swapped params passes `&E` for `E` | bind the swapped arguments with `let` first (`metamath.apart`) |
 | [almide#3404](https://github.com/almide/almide/issues/3404) functional `map.set` on a record field copies the whole map | the kernel commits each declaration in place (`mut env`, `map.insert`) |
 | [almide#3405](https://github.com/almide/almide/issues/3405) two arguments calling a `mut`-param fn share one hoisted value (miscompile) | one `let` per argument in `conv` |
+| [almide#3409](https://github.com/almide/almide/issues/3409) `map.get(m, k) ?? k` borrows and moves `k` in one call | `match` on the lookup |

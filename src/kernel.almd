@@ -738,7 +738,7 @@ local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, mut bu: Bud
   ok(Lhs { ctx: ctx, scope: scope, head: head, pats: pats, term: lhs })
 }
 
-local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> Change! = {
+local fn add_rule(mut env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> Change! = {
   no_brackets([rhs_raw])!
   var bu = budget()
   let l = rule_lhs(env, vars, lhs_raw, bu)!
@@ -765,7 +765,7 @@ local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Ra
 }
 
 // `irrelevant [x : A] T.`: every two values of an instance of T are equal.
-local fn add_irrelevant(env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Change! = {
+local fn add_irrelevant(mut env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Change! = {
   var bu = budget()
   let l = rule_lhs(env, vars, ty_raw, bu)!
   expect_sort(env, l.ctx, l.term, false, bu)!
@@ -791,7 +791,9 @@ fn process(mut env: Env, d: Located) -> List[String]! = {
   ok(lines)
 }
 
-local fn examine(env: Env, d: Located) -> (Change, List[String])! = match d.decl {
+// `mut` only so that the call from `process` borrows the environment instead
+// of copying it (it is not changed here).
+local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.decl {
   DRoom(name, uses) => ok((enter_room(env, name, uses)!, [])),
   DSymbol(name, ty_raw) => {
     no_brackets([ty_raw])!

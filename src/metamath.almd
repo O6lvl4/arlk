@@ -50,11 +50,29 @@ fn label_name(label: String) -> String = {
   if list.contains(KEYWORDS, s) then s + "'" else s
 }
 
-// A variable or hypothesis label as an Arlk binder: `a1i.1` is `a1i_1`.
+// A hypothesis label or typecode as an Arlk binder: `a1i.1` is `a1i_1`.
 fn binder_name(x: String) -> String = {
   let s = list.join(string.chars(x) |> list.map((c) => if plain(c) then c else "_"), "")
   if list.contains(KEYWORDS, s) then s + "'" else s
 }
+
+local fn char_name(c: String) -> String = match c {
+  "." => "dot", "+" => "plus", "-" => "minus", "*" => "star", "/" => "slash", "\\" => "bslash",
+  "^" => "hat", "~" => "tilde", "|" => "bar", "<" => "lt", ">" => "gt", "=" => "eq",
+  "(" => "lp", ")" => "rp", "\"" => "dq", "," => "comma", "_" => "us", "0" => "0", "1" => "1",
+  _ => "u" + int.to_string(string.codepoint(c) ?? 0),
+}
+
+// A variable token as an Arlk binder. set.mm's class variables include
+// `.+`, `.x.` and `~`, so symbols are spelled out (`.+` is `op_dot_plus`)
+// rather than flattened to `_`, which made different variables collide.
+fn var_name(x: String) -> String =
+  if list.all(string.chars(x), (c) => plain(c)) then binder_name(x)
+  else {
+    let parts = string.chars(x) |> list.map((c) => if plain(c) and c != "_" then c else "_" + char_name(c))
+    let s = list.join(parts, "")
+    if string.starts_with(s, "_") then "op" + s else s
+  }
 
 local fn call(f: String, args: List[String]) -> String =
   if list.is_empty(args) then f else f + "(" + list.join(args, ", ") + ")"
@@ -115,7 +133,7 @@ local fn find(ts: List[String], i: Int, t: String) -> Int =
 // (typecode, position); a typecode that reaches itself at the same position
 // finds nothing, which is enough because set.mm's grammar is not
 // left-recursive within a typecode.
-local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], tc: String, pos: Int, mut memo: Map[String, List[(String, Int)]]) -> List[(String, Int)] = {
+local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], names: Map[String, String], tc: String, pos: Int, mut memo: Map[String, List[(String, Int)]]) -> List[(String, Int)] = {
   let key = tc + " " + int.to_string(pos)
   match map.get(memo, key) {
     some(r) => r,
@@ -123,9 +141,12 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
       map.insert(memo, key, [])
       var found: List[(String, Int)] = []
       let t = at(toks, pos)
-      if map.get(vars, t) == some(tc) then list.push(found, (binder_name(t), pos + 1)) else ()
+      if map.get(vars, t) == some(tc) then list.push(found, (match map.get(names, t) {
+        some(nm) => nm,
+        none => t,
+      }, pos + 1)) else ()
       for rule in map.get(g, tc) ?? [] {
-        for (binds, end) in match_rule(g, toks, vars, rule, 0, pos, [:], memo) {
+        for (binds, end) in match_rule(g, toks, vars, names, rule, 0, pos, [:], memo) {
           let args = rule.order |> list.map((v) => map.get(binds, v) ?? "?")
           list.push(found, (call(rule.name, args), end))
         }
@@ -136,27 +157,27 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
   }
 }
 
-local fn match_rule(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], rule: Syn, k: Int, pos: Int, binds: Map[String, String], mut memo: Map[String, List[(String, Int)]]) -> List[(Map[String, String], Int)] =
+local fn match_rule(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], names: Map[String, String], rule: Syn, k: Int, pos: Int, binds: Map[String, String], mut memo: Map[String, List[(String, Int)]]) -> List[(Map[String, String], Int)] =
   if k >= list.len(rule.toks) then [(binds, pos)]
   else {
     let t = at(rule.toks, k)
     match map.get(rule.slots, t) {
       some(stc) => {
         var res: List[(Map[String, String], Int)] = []
-        for (tree, end) in parse_tc(g, toks, vars, stc, pos, memo) {
-          for r in match_rule(g, toks, vars, rule, k + 1, end, map.set(binds, t, tree), memo) {
+        for (tree, end) in parse_tc(g, toks, vars, names, stc, pos, memo) {
+          for r in match_rule(g, toks, vars, names, rule, k + 1, end, map.set(binds, t, tree), memo) {
             list.push(res, r)
           }
         }
         res
       },
-      none => if at(toks, pos) == t then match_rule(g, toks, vars, rule, k + 1, pos + 1, binds, memo) else [],
+      none => if at(toks, pos) == t then match_rule(g, toks, vars, names, rule, k + 1, pos + 1, binds, memo) else [],
     }
   }
 
-fn parse_math(g: Map[String, List[Syn]], vars: Map[String, String], tc: String, toks: List[String]) -> String! = {
+fn parse_math(g: Map[String, List[Syn]], vars: Map[String, String], names: Map[String, String], tc: String, toks: List[String]) -> String! = {
   var memo: Map[String, List[(String, Int)]] = [:]
-  let whole = parse_tc(g, toks, vars, tc, 0, memo) |> list.filter(((_, end)) => end == list.len(toks))
+  let whole = parse_tc(g, toks, vars, names, tc, 0, memo) |> list.filter(((_, end)) => end == list.len(toks))
   match list.first(whole) {
     some((tree, _)) => ok(tree),
     none => err("cannot parse `${list.join(toks, " ")}` as ${tc}"),
@@ -368,14 +389,23 @@ fn proof_term(c: Proving, proof: List[String]) -> MExpr! = {
 
 // ── Statements ──────────────────────────────────────────────────────
 
-local fn type_of(g: Map[String, List[Syn]], vars: Map[String, String], tc: String, toks: List[String]) -> String! =
-  if tc == PROVABLE then ok("Prf(" + parse_math(g, vars, STATEMENT, toks)! + ")")
+local fn type_of(g: Map[String, List[Syn]], vars: Map[String, String], names: Map[String, String], tc: String, toks: List[String]) -> String! =
+  if tc == PROVABLE then ok("Prf(" + parse_math(g, vars, names, STATEMENT, toks)! + ")")
   else if list.len(toks) == 1 and map.get(vars, at(toks, 0)) != none then ok(binder_name(tc))
   else err("a hypothesis of typecode ${tc} is not supported")
 
 local fn pair_key(a: String, b: String) -> String = a + " " + b
 
 local fn empty_hyp() -> Hyp = Hyp { name: "", essential: false, tc: "", toks: [] }
+
+// A binder name no hypothesis in scope already has.
+local fn unique_name(hyps: Map[String, Hyp], active: List[String], base: String) -> String = {
+  var name = base
+  while list.any(active, (h) => (map.get(hyps, h) ?? empty_hyp()).name == name) {
+    name = name + "'"
+  }
+  name
+}
 
 fn absorb_mm(src: String, upto: String) -> String! = {
   let ts = tokens(prefix(src, upto)!)
@@ -459,21 +489,23 @@ fn absorb_mm(src: String, upto: String) -> String! = {
       } else ()
       if kw == "$f" then {
         let v = at(body, 1)
-        map.insert(hyps, label, Hyp { name: binder_name(v), essential: false, tc: tc, toks: [v] })
+        map.insert(hyps, label, Hyp { name: unique_name(hyps, active, var_name(v)), essential: false, tc: tc, toks: [v] })
         list.push(active, label)
       } else if kw == "$e" then {
-        map.insert(hyps, label, Hyp { name: binder_name(label), essential: true, tc: tc, toks: list.drop(body, 1) })
+        map.insert(hyps, label, Hyp { name: unique_name(hyps, active, binder_name(label)), essential: true, tc: tc, toks: list.drop(body, 1) })
         list.push(active, label)
       } else if kw == "$a" or kw == "$p" then {
         let eq = find(body, 0, "$=")
         let stmt = copy(body, 1, eq)
         // Variables in scope, and the ones this assertion mentions.
         var vars: Map[String, String] = [:]
+        var names: Map[String, String] = [:]
         var floating: Map[String, String] = [:]
         for h in active {
           let hy = map.get(hyps, h) ?? empty_hyp()
           if hy.essential then () else {
             map.insert(vars, at(hy.toks, 0), hy.tc)
+            map.insert(names, at(hy.toks, 0), hy.name)
             map.insert(floating, at(hy.toks, 0), h)
           }
         }
@@ -502,7 +534,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         var params: List[String] = []
         for h in mandatory {
           let hy = map.get(hyps, h) ?? empty_hyp()
-          let ty = if hy.essential then type_of(grammar, vars, hy.tc, hy.toks)! else binder_name(hy.tc)
+          let ty = if hy.essential then type_of(grammar, vars, names, hy.tc, hy.toks)! else binder_name(hy.tc)
           list.push(params, "${hy.name}: ${ty}")
         }
         var dv: List[(Int, Int)] = []
@@ -513,8 +545,8 @@ fn absorb_mm(src: String, upto: String) -> String! = {
               let (p, q) = if a < b then (a, b) else (b, a)
               if p != q and not list.contains(dv, (p, q)) then {
                 list.push(dv, (p, q))
-                let bp = binder_name(at(mvars, p))
-                let bq = binder_name(at(mvars, q))
+                let bp = map.get(names, at(mvars, p)) ?? ""
+                let bq = map.get(names, at(mvars, q)) ?? ""
                 let tp = binder_name(map.get(vars, at(mvars, p)) ?? "")
                 let tq = binder_name(map.get(vars, at(mvars, q)) ?? "")
                 list.push(params, "dv_${bp}_${bq}: Apart_${tp}_${tq}(${bp}, ${bq})")
@@ -529,7 +561,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
           name = name + "'"
         }
         map.insert(taken, name, true)
-        let result = if tc == PROVABLE then type_of(grammar, vars, tc, stmt)! else binder_name(tc)
+        let result = if tc == PROVABLE then type_of(grammar, vars, names, tc, stmt)! else binder_name(tc)
         let sig = if list.is_empty(params) then "${name}: ${result}" else "${name}(${list.join(params, ", ")}) -> ${result}"
         let pnames = mandatory |> list.map((h) => {
           let hy = map.get(hyps, h) ?? empty_hyp()
@@ -600,7 +632,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
               let avoid = (mvars + fresh_before) |> list.filter((w) => w != "" and (list.contains(dvs, (d, w)) or list.contains(dvs, (w, d))))
               let bd = hy.name
               let td = binder_name(hy.tc)
-              let elems = avoid |> list.map((w) => (binder_name(w), binder_name(map.get(vars, w) ?? "")))
+              let elems = avoid |> list.map((w) => (map.get(names, w) ?? w, binder_name(map.get(vars, w) ?? "")))
               var lists: List[String] = []
               var acc_list = "vnil"
               for (bw, tw) in list.reverse(elems) {
@@ -656,6 +688,10 @@ test "labels and binders" {
   assert_eq(label_name("ax-mp"), "ax_mp")
   assert_eq(label_name("pm2.43"), "pm2.43")
   assert_eq(binder_name("a1i.1"), "a1i_1")
+  assert_eq(var_name("ph"), "ph")
+  assert_eq(var_name(".+"), "op_dot_plus")
+  assert(var_name("~") != var_name(".+"))
+  assert(var_name(".+b") != var_name(".+^"))
 }
 
 test "a tiny database with a compressed proof" {
