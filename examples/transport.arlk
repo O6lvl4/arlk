@@ -1,0 +1,124 @@
+// Lean's theorems about its numbers, used as theorems about Rocq's numbers.
+//
+// Lean's library (room Init) and Rocq's library (room Corelib) are both
+// absorbed onto the shared foundation (lib/core.arlk). This room builds a
+// checked correspondence between their natural numbers, once:
+//
+//   - to_rocq / to_lean: each library's own recursor, into the other's numbers,
+//   - round_trip:  to_rocq(to_lean(a)) = a           (by Rocq's induction)
+//   - add_hom:     to_rocq(n + m) = to_rocq(n) + to_rocq(m)   (by Lean's induction,
+//                  with Rocq's own lemmas plus_n_O and plus_n_Sm)
+//   - transport:   a Lean equation becomes a Rocq equation of the images
+//
+// and then proves facts about Rocq's addition `Init.Nat.add` on arbitrary
+// Rocq numbers, in Rocq's equality, from Lean's `Nat.add_comm` and
+// `Nat.add_assoc`. Every step is a checked definition or theorem: the
+// correspondence is proved, not assumed, so `axioms` lists only what the
+// two absorbed libraries already assume.
+//
+//   arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
+//              absorbed/rocq/init_peano.arlk examples/transport.arlk
+
+room transport uses Init, Corelib
+
+// ── The two kinds of numbers and equality ──────────────────────────
+
+def LN: Type = core.El(core.l1, Nat)
+def RN: Type = core.El(core.l1, Init.Datatypes.nat)
+
+// Rocq's eq takes its type in universe 2: nat lifted there.
+def rnat: core.Univ(core.l2) = core.lift(core.l1, core.l2, Init.Datatypes.nat)
+
+def REq(a: RN, b: RN) -> Type = core.El(core.l0, Init.Logic.eq@2(rnat, a, b))
+def LEq(n: LN, m: LN) -> Type = core.El(core.l0, Eq@1(Nat, n, m))
+
+def ladd(n: LN, m: LN) -> LN = HAdd.hAdd@0@0@0(Nat, Nat, Nat, instHAdd@0(Nat, instAddNat), n, m)
+def radd(a: RN, b: RN) -> RN = Corelib.Init.Nat.add(a, b)
+
+// ── Rocq equality, as needed below ─────────────────────────────────
+
+theorem rsym(a: RN, b: RN, h: REq(a, b)) -> REq(b, a) = Init.Logic.eq_sym(rnat, a, b, h)
+
+theorem rtrans(a: RN, b: RN, c: RN, h1: REq(a, b), h2: REq(b, c)) -> REq(a, c) =
+  Init.Logic.eq_ind(rnat, b, (x: RN) => Init.Logic.eq@2(rnat, a, x), h1, c, h2)
+
+theorem rcong_S(a: RN, b: RN, h: REq(a, b)) -> REq(Init.Datatypes.nat.S(a), Init.Datatypes.nat.S(b)) =
+  Init.Logic.f_equal(rnat, rnat, (x: RN) => Init.Datatypes.nat.S(x), a, b, h)
+
+theorem rcong_add(a: RN, a': RN, b: RN, b': RN, ha: REq(a, a'), hb: REq(b, b')) -> REq(radd(a, b), radd(a', b')) =
+  rtrans(radd(a, b), radd(a', b), radd(a', b'),
+    Init.Logic.f_equal(rnat, rnat, (x: RN) => radd(x, b), a, a', ha),
+    Init.Logic.f_equal(rnat, rnat, (y: RN) => radd(a', y), b, b', hb))
+
+// ── The correspondence ─────────────────────────────────────────────
+
+// Lean's recursor, building Rocq numbers.
+def to_rocq(n: LN) -> RN =
+  Nat.rec@1((k: LN) => Init.Datatypes.nat, Init.Datatypes.nat.O, (k: LN, r: RN) => Init.Datatypes.nat.S(r), n)
+
+// Rocq's recursor, building Lean numbers.
+def to_lean(a: RN) -> LN =
+  Init.Datatypes.nat_rect((x: RN) => core.lift(core.l1, core.l2, Nat), Nat.zero, (x: RN, r: LN) => Nat.succ(r), a)
+
+// Every Rocq number comes from a Lean one: by Rocq's induction.
+theorem round_trip(a: RN) -> REq(to_rocq(to_lean(a)), a) =
+  Init.Datatypes.nat_ind(
+    (x: RN) => Init.Logic.eq@2(rnat, to_rocq(to_lean(x)), x),
+    Init.Logic.eq.eq_refl@2(rnat, Init.Datatypes.nat.O),
+    (x: RN, ih: REq(to_rocq(to_lean(x)), x)) => rcong_S(to_rocq(to_lean(x)), x, ih),
+    a)
+
+// to_rocq turns Lean's addition into Rocq's: by Lean's induction on m,
+// with Rocq's lemmas for its own addition (which recurses on the left).
+theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_rocq(m))) =
+  Nat.rec@0(
+    (k: LN) => Init.Logic.eq@2(rnat, to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k))),
+    Init.Peano.plus_n_O(to_rocq(n)),
+    (k: LN, ih: REq(to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k)))) =>
+      rtrans(
+        Init.Datatypes.nat.S(to_rocq(ladd(n, k))),
+        Init.Datatypes.nat.S(radd(to_rocq(n), to_rocq(k))),
+        radd(to_rocq(n), Init.Datatypes.nat.S(to_rocq(k))),
+        rcong_S(to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k)), ih),
+        Init.Peano.plus_n_Sm(to_rocq(n), to_rocq(k))),
+    m)
+
+// A Lean equation between Lean numbers is a Rocq equation between their images.
+theorem transport(n: LN, m: LN, h: LEq(n, m)) -> REq(to_rocq(n), to_rocq(m)) =
+  Eq.rec@0@1(Nat, n,
+    (b: LN, e: LEq(n, b)) => Init.Logic.eq@2(rnat, to_rocq(n), to_rocq(b)),
+    Init.Logic.eq.eq_refl@2(rnat, to_rocq(n)),
+    m, h)
+
+// The image of a Lean sum, seen from Rocq numbers a and b.
+theorem sum_image(a: RN, b: RN) -> REq(radd(a, b), to_rocq(ladd(to_lean(a), to_lean(b)))) =
+  rtrans(radd(a, b), radd(to_rocq(to_lean(a)), to_rocq(to_lean(b))), to_rocq(ladd(to_lean(a), to_lean(b))),
+    rcong_add(a, to_rocq(to_lean(a)), b, to_rocq(to_lean(b)), rsym(to_rocq(to_lean(a)), a, round_trip(a)), rsym(to_rocq(to_lean(b)), b, round_trip(b))),
+    rsym(to_rocq(ladd(to_lean(a), to_lean(b))), radd(to_rocq(to_lean(a)), to_rocq(to_lean(b))), add_hom(to_lean(a), to_lean(b))))
+
+// ── Rocq's addition, by Lean's theorems ────────────────────────────
+
+// Rocq numbers, Rocq's addition, Rocq's equality; the proof is Lean's Nat.add_comm.
+theorem rocq_add_comm(a: RN, b: RN) -> REq(radd(a, b), radd(b, a)) =
+  rtrans(radd(a, b), to_rocq(ladd(to_lean(a), to_lean(b))), radd(b, a),
+    sum_image(a, b),
+    rtrans(to_rocq(ladd(to_lean(a), to_lean(b))), to_rocq(ladd(to_lean(b), to_lean(a))), radd(b, a),
+      transport(ladd(to_lean(a), to_lean(b)), ladd(to_lean(b), to_lean(a)), Nat.add_comm(to_lean(a), to_lean(b))),
+      rsym(radd(b, a), to_rocq(ladd(to_lean(b), to_lean(a))), sum_image(b, a))))
+
+// The same correspondence, a second fact: Lean's Nat.add_assoc.
+theorem rocq_add_assoc(a: RN, b: RN, c: RN) -> REq(radd(radd(a, b), c), radd(a, radd(b, c))) =
+  rtrans(radd(radd(a, b), c), to_rocq(ladd(ladd(to_lean(a), to_lean(b)), to_lean(c))), radd(a, radd(b, c)),
+    // (a + b) + c, as the image of a Lean sum
+    rtrans(radd(radd(a, b), c), radd(to_rocq(ladd(to_lean(a), to_lean(b))), to_rocq(to_lean(c))), to_rocq(ladd(ladd(to_lean(a), to_lean(b)), to_lean(c))),
+      rcong_add(radd(a, b), to_rocq(ladd(to_lean(a), to_lean(b))), c, to_rocq(to_lean(c)), sum_image(a, b), rsym(to_rocq(to_lean(c)), c, round_trip(c))),
+      rsym(to_rocq(ladd(ladd(to_lean(a), to_lean(b)), to_lean(c))), radd(to_rocq(ladd(to_lean(a), to_lean(b))), to_rocq(to_lean(c))), add_hom(ladd(to_lean(a), to_lean(b)), to_lean(c)))),
+    rtrans(to_rocq(ladd(ladd(to_lean(a), to_lean(b)), to_lean(c))), to_rocq(ladd(to_lean(a), ladd(to_lean(b), to_lean(c)))), radd(a, radd(b, c)),
+      transport(ladd(ladd(to_lean(a), to_lean(b)), to_lean(c)), ladd(to_lean(a), ladd(to_lean(b), to_lean(c))), Nat.add_assoc(to_lean(a), to_lean(b), to_lean(c))),
+      // a + (b + c), back from the image
+      rtrans(to_rocq(ladd(to_lean(a), ladd(to_lean(b), to_lean(c)))), radd(to_rocq(to_lean(a)), to_rocq(ladd(to_lean(b), to_lean(c)))), radd(a, radd(b, c)),
+        add_hom(to_lean(a), ladd(to_lean(b), to_lean(c))),
+        rcong_add(to_rocq(to_lean(a)), a, to_rocq(ladd(to_lean(b), to_lean(c))), radd(b, c), round_trip(a), rsym(radd(b, c), to_rocq(ladd(to_lean(b), to_lean(c))), sum_image(b, c))))))
+
+axioms rocq_add_comm
+axioms rocq_add_assoc

@@ -329,6 +329,30 @@ ok: ... (928 declarations)
 
 `tools/check-absorbed.sh` checks every absorbed library and the bridge.
 
+### Lean's theorems about Rocq's numbers
+
+[examples/transport.arlk](examples/transport.arlk) goes further: a checked correspondence between
+the two libraries' natural numbers, built once, and then theorems about **Rocq's own addition on
+arbitrary Rocq numbers, in Rocq's equality**, proved by Lean's theorems:
+
+```
+def to_rocq(n: LN) -> RN = Nat.rec@1(...)                    // Lean's recursor, Rocq's numbers
+def to_lean(a: RN) -> LN = Init.Datatypes.nat_rect(...)      // Rocq's recursor, Lean's numbers
+
+theorem round_trip(a: RN) -> REq(to_rocq(to_lean(a)), a)                              // Rocq induction
+theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_rocq(m)))  // Lean induction
+theorem transport(n: LN, m: LN, h: LEq(n, m)) -> REq(to_rocq(n), to_rocq(m))
+
+theorem rocq_add_comm(a: RN, b: RN) -> REq(radd(a, b), radd(b, a))            // by Lean's Nat.add_comm
+theorem rocq_add_assoc(a: RN, b: RN, c: RN) -> REq(radd(radd(a, b), c), radd(a, radd(b, c)))  // Nat.add_assoc
+```
+
+Here `RN` is Rocq's `nat`, `radd` is Rocq's `Init.Nat.add` and `REq` is Rocq's `eq`. Every step is a
+checked definition or theorem; the correspondence adds no assumption, so `axioms` lists only what
+the two absorbed libraries already assume, with Lean's `Init.Nat.add_comm` among the theorems used.
+CI also checks that a broken translation (`to_lean` forgetting `succ`) or a false preservation
+lemma is rejected.
+
 ## Usage
 
 CI (`.github/workflows/ci.yml`) runs [tools/ci.sh](tools/ci.sh) on a pinned toolchain (Almide

@@ -88,6 +88,21 @@ else
   record "Rocq Corelib.Init (known baseline)" FAIL "differs from the baseline, see $LOGS/rocq-init.diff"
 fi
 
+# Lean's theorems on Rocq's numbers (examples/transport.arlk): checked, and
+# a broken translation or a false preservation lemma must be rejected.
+LIBS="lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk"
+must_pass "transport: Rocq add_comm from Lean" 1200 ./arlk check $LIBS examples/transport.arlk
+tampered() { # name sed-expression
+  sed "$2" examples/transport.arlk >"$LOGS/transport-$1.arlk"
+  if cmp -s examples/transport.arlk "$LOGS/transport-$1.arlk"; then
+    record "transport tampered: $1" FAIL "the edit did not apply"
+  else
+    must_reject "transport tampered: $1" 1200 "type mismatch" ./arlk check $LIBS "$LOGS/transport-$1.arlk"
+  fi
+}
+tampered broken-to_lean 's/(x: RN, r: LN) => Nat.succ(r)/(x: RN, r: LN) => r/'
+tampered false-add_hom 's/^theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_rocq(m)))/theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(m), to_rocq(m)))/'
+
 for f in spec/fixtures/reject/*.arlk; do
   want="$(sed -nE 's|^// expect: (.*)$|\1|p' "$f" | head -1)"
   must_reject "reject $(basename "$f")" 120 "$want" ./arlk check "$f"
