@@ -13,7 +13,7 @@
 // Nothing here is trusted. The output has no holes left and goes to the
 // kernel like any hand-written term; a wrong solution is a type error.
 
-import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta}
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta, occurs}
 import self.syntax.{Raw}
 import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
@@ -24,17 +24,25 @@ import self.kernel
 type ElabState = {
   metas: Map[Int, Term],
   lmetas: Map[Int, Level],
+  // Every hole solved, in order, so a failed attempt can undo exactly its
+  // own solutions (copying the maps to restore them made unification
+  // quadratic in the number of holes).
+  trail: List[Int],
+  ltrail: List[Int],
   next: Int,
   bu: Budget,
   typed: List[(Ctx, Term, Term)],
   // Equations between types that could not be decided yet (both sides
   // waiting on holes); retried as holes get solved.
-  postponed: List[(Ctx, Term, Term, String)],
+  // The term each is about is kept, not its message: printing the term
+  // at every postponement (each level of a nested proof) made elaboration
+  // quadratic in time and memory (#17's term family).
+  postponed: List[(Ctx, Term, Term, Term)],
   // `?`: goals left open on purpose, reported with their types
   goals: List[(Ctx, Term, Term)],
 }
 
-fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [], postponed: [], goals: [] }
+fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], trail: [], ltrail: [], next: 0, bu: budget(), typed: [], postponed: [], goals: [] }
 
 // ── Holes ───────────────────────────────────────────────────────────
 
@@ -58,17 +66,22 @@ fn zonk(st: ElabState, t: Term) -> Term = match t {
     some(v) => zonk(st, v),
     none => t,
   },
-  App(_, _) => {
-    let (h, args) = spine(t)
-    let zargs = args |> list.map((a) => zonk(st, a))
-    match h {
-      Meta(n) => match map.get(st.metas, n) {
-        some(v) => zonk(st, beta(v, zargs)),
-        none => apply(h, zargs),
-      },
-      _ => apply(zonk(st, h), zargs),
-    }
-  },
+  // Only an application headed by a solved hole needs its spine (to
+  // compute the solution applied); any other one is zonked part by part,
+  // since taking the spine copies the arguments, at every level of a
+  // nested term (almide/almide#3434).
+  App(f, a) =>
+    if solved_head(st, f) then {
+      let (h, args) = spine(t)
+      let zargs = args |> list.map((x) => zonk(st, x))
+      match h {
+        Meta(n) => match map.get(st.metas, n) {
+          some(v) => zonk(st, beta(v, zargs)),
+          none => apply(h, zargs),
+        },
+        _ => apply(zonk(st, h), zargs),
+      }
+    } else App(zonk(st, f), zonk(st, a)),
   Sort(l) => Sort(zonk_level(st, l)),
   Const(c, ls) => Const(c, ls |> list.map((l) => zonk_level(st, l))),
   Lam(x, ty, b) => Lam(x, zonk(st, ty), zonk(st, b)),
@@ -82,6 +95,39 @@ local fn beta(f: Term, args: List[Term]) -> Term = match args {
     Lam(_, _, b) => beta(subst(b, a), rest),
     _ => apply(f, args),
   },
+}
+
+local fn solved_head(st: ElabState, t: Term) -> Bool = match t {
+  App(f, _) => solved_head(st, f),
+  Meta(n) => map.contains(st.metas, n),
+  _ => false,
+}
+
+local fn solve(mut st: ElabState, n: Int, v: Term) -> Unit = {
+  map.insert(st.metas, n, v)
+  list.push(st.trail, n)
+}
+
+local fn solve_level(mut st: ElabState, n: Int, l: Level) -> Unit = {
+  map.insert(st.lmetas, n, l)
+  list.push(st.ltrail, n)
+}
+
+// Undo the solutions made since `mark` (lengths of the two trails).
+local fn undo(mut st: ElabState, mark: (Int, Int)) -> Unit = {
+  let (m, l) = mark
+  while list.len(st.trail) > m {
+    match list.pop(st.trail) {
+      some(n) => map.delete(st.metas, n),
+      none => (),
+    }
+  }
+  while list.len(st.ltrail) > l {
+    match list.pop(st.ltrail) {
+      some(n) => map.delete(st.lmetas, n),
+      none => (),
+    }
+  }
 }
 
 fn zonk_level(st: ElabState, l: Level) -> Level = match l {
@@ -111,12 +157,12 @@ fn unify_level(mut st: ElabState, a: Level, b: Level) -> Bool = {
   if x == y then true
   else match x {
     LMeta(n) => if level_mentions(y, n) then false else {
-      map.insert(st.lmetas, n, y)
+      solve_level(st, n, y)
       true
     },
     _ => match y {
       LMeta(n) => if level_mentions(x, n) then false else {
-        map.insert(st.lmetas, n, x)
+        solve_level(st, n, x)
         true
       },
       _ =>
@@ -224,7 +270,7 @@ local fn try_solve(mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
               sol = Lam(name_of(ctx, i), ty, sol)
               j = j - 1
             }
-            map.insert(st.metas, n, sol)
+            solve(st, n, sol)
             true
           },
           none => false,
@@ -257,7 +303,7 @@ local fn prune(mut st: ElabState, t: Term, allowed: List[Int], depth: Int) -> Te
               some(j) => Var(k - 1 - j),
               none => Var(0),
             }))
-            map.insert(st.metas, n, list.fold(vars, body, (acc, _) => Lam("x", type0(), acc)))
+            solve(st, n, list.fold(vars, body, (acc, _) => Lam("x", type0(), acc)))
             apply(Meta(m), keep |> list.map((i) => Var(i)))
           }
         },
@@ -403,35 +449,24 @@ local fn unify_here(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> 
 // length[u](A, ..)` would fix ?l := u before both sides compute to the
 // same number.
 local fn neutral_attempts(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
-  let metas = st.metas
-  let lmetas = st.lmetas
+  let mark = (list.len(st.trail), list.len(st.ltrail))
   var found = false
   var i = 0
   while not found and i < 3 {
-    if i > 0 then {
-      st.metas = metas
-      st.lmetas = lmetas
-    } else ()
+    if i > 0 then undo(st, mark) else ()
     found = if i == 0 then unify_spines(env, st, ctx, x, y)
       else if i == 1 then first_order(env, st, ctx, x, y)
       else first_order(env, st, ctx, y, x)
     i = i + 1
   }
-  if not found then {
-    st.metas = metas
-    st.lmetas = lmetas
-  } else ()
+  if not found then undo(st, mark) else ()
   found
 }
 
 local fn attempt_eta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
-  let metas = st.metas
-  let lmetas = st.lmetas
+  let mark = (list.len(st.trail), list.len(st.ltrail))
   let found = unify_eta(env, st, ctx, x, y)
-  if not found then {
-    st.metas = metas
-    st.lmetas = lmetas
-  } else ()
+  if not found then undo(st, mark) else ()
   found
 }
 
@@ -640,7 +675,11 @@ fn infer(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Ter
     match reduce_type(env, sc, st, ctx, ty) {
       Pi(_, dom, cod) => {
         let ta = check(env, sc, st, ctx, a, dom)!
-        ok((App(tf, ta), subst(cod, ta)))
+        // Substituted only when the result depends on it, and before it is
+        // placed in the application: either way would copy it otherwise
+        // (almide/almide#3434), once per level of a nested term.
+        let rty = if occurs(cod, 0) then subst(cod, ta) else shift(cod, -1, 1)
+        ok((App(tf, ta), rty))
       },
       other => {
         guard not st.bu.exhausted else err(exhausted_error())
@@ -744,6 +783,9 @@ fn check(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Ter
   _ => infer_then_unify(env, sc, st, ctx, r, expected),
 }
 
+local fn mismatch(env: Env, st: ElabState, ctx: Ctx, t: Term, expected: Term, ty: Term) -> String =
+  "type mismatch for ${show(env, ctx, zonk(st, t))}\n    expected: ${show(env, ctx, zonk(st, expected))}\n    found:    ${show(env, ctx, zonk(st, ty))}"
+
 local fn infer_then_unify(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
   let (t, ty) = infer(env, sc, st, ctx, r)!
   let same = unify(env, st, ctx, ty, expected)
@@ -752,12 +794,11 @@ local fn infer_then_unify(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: R
   else {
     let zt = zonk(st, ty)
     let ze = zonk(st, expected)
-    let what = "type mismatch for ${show(env, ctx, zonk(st, t))}\n    expected: ${show(env, ctx, ze)}\n    found:    ${show(env, ctx, zt)}"
     // Holes on both sides may be decided later; otherwise it is an error.
     if has_meta(zt) and has_meta(ze) then {
-      list.push(st.postponed, (ctx, ty, expected, what))
+      list.push(st.postponed, (ctx, ty, expected, t))
       ok(t)
-    } else err(what)
+    } else err(mismatch(env, st, ctx, t, expected, ty))
   }
 }
 
@@ -773,12 +814,12 @@ local fn settle(env: Env, sc: Scope, mut st: ElabState) -> Unit! = {
     progress = false
     // Postponed equations first: one may now be decidable.
     let pending = st.postponed
-    let none_yet: List[(Ctx, Term, Term, String)] = []
+    let none_yet: List[(Ctx, Term, Term, Term)] = []
     st.postponed = none_yet
-    for (ctx, a, b, what) in pending {
+    for (ctx, a, b, t) in pending {
       if unify(env, st, ctx, a, b) then {
         progress = true
-      } else list.push(st.postponed, (ctx, a, b, what))
+      } else list.push(st.postponed, (ctx, a, b, t))
     }
     var later: List[(Ctx, Term, Term)] = []
     for (ctx, m, dom) in waiting {
@@ -800,7 +841,7 @@ local fn settle(env: Env, sc: Scope, mut st: ElabState) -> Unit! = {
   }
   guard failure == "" else err(failure)
   match list.first(st.postponed) {
-    some((_, _, _, what)) => err(what),
+    some((ctx, ty, expected, t)) => err(mismatch(env, st, ctx, t, expected, ty)),
     none => ok(()),
   }
 }

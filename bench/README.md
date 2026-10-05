@@ -164,8 +164,17 @@ Observations, not claims:
   The issue measured 15, 19 and 79 ms on its Linux host at cc7ba40; the two are not comparable.
 - **Declarations.** `decls`/`shared` grow linearly: 800 theorems in 0.20 s. Before 70de056 the
   elaborator copied the whole environment for every declaration, and 800 took 1.19 s.
-- **Proof-term depth.** `term-N` grows quadratically in memory: 439 MB at 400 nested steps. This is
-  recorded and not yet fixed.
+- **Proof-term depth.** `term-N` grows quadratically in memory: 439 MB at 400 nested steps at
+  70de056. Since then, several sources have been removed:
+  - substituting non-dependent arguments, in the kernel and the elaborator;
+  - taking spines in `zonk`;
+  - a copying `size_upto`;
+  - printing terms when unification is postponed;
+  - copying hole maps for backtracking (now an undo trail).
+
+  `term-400` is down to 261 MB, a single implicit argument nested 1600 deep from 2.5 GB to 0.56 GB,
+  and the peak for Lean `Nat.Lemmas` from 2.3 GB to 1.2 GB. The rest is Almide copying an argument
+  that is used again after a call (almide/almide#3434).
 - **Numerals.** `numeral-1600` and `numeral-6400` exceed the unification depth and end as budget,
   every run, in under 0.4 s. Before 70de056, 6400 overflowed the native stack.
 - **Cross-logic reuse.** It is dominated by checking the absorbed libraries: Lean `Nat.Basic` plus

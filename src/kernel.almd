@@ -167,35 +167,26 @@ local fn spend_size(mut b: Budget, t: Term) -> Bool = {
   }
 }
 
-// The number of nodes of t, counting no further than cap.
-local fn size_upto(t: Term, cap: Int) -> Int = {
-  var n = 0
-  var stack: List[Term] = [t]
-  while n < cap and not list.is_empty(stack) {
-    match list.pop(stack) {
-      some(x) => {
-        n = n + 1
-        match x {
-          App(f, a) => {
-            list.push(stack, f)
-            list.push(stack, a)
-          },
-          Lam(_, a, c) => {
-            list.push(stack, a)
-            list.push(stack, c)
-          },
-          Pi(_, a, c) => {
-            list.push(stack, a)
-            list.push(stack, c)
-          },
-          _ => (),
-        }
-      },
-      none => (),
-    }
+// The number of nodes of t, counting no further than cap. A recursion
+// that only reads (nesting at most cap deep): an explicit stack of
+// subterms copied each one (almide/almide#3434).
+local fn size_upto(t: Term, cap: Int) -> Int =
+  if cap <= 0 then 0
+  else match t {
+    App(f, a) => {
+      let l = size_upto(f, cap - 1)
+      1 + l + size_upto(a, cap - 1 - l)
+    },
+    Lam(_, a, c) => {
+      let l = size_upto(a, cap - 1)
+      1 + l + size_upto(c, cap - 1 - l)
+    },
+    Pi(_, a, c) => {
+      let l = size_upto(a, cap - 1)
+      1 + l + size_upto(c, cap - 1 - l)
+    },
+    _ => 1,
   }
-  n
-}
 
 // Enter one level of nesting; false (and exhausted) past the bound.
 fn enter(mut b: Budget) -> Bool = enter_up_to(b, MAX_DEPTH)
@@ -732,15 +723,22 @@ fn infer(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term! = match t {
     none => err("unknown constant ${c}"),
   },
   App(f, a) => {
+    // Neither f nor a is used after the call that checks it: a value used
+    // again is copied first (almide/almide#3434), and in a deep proof term,
+    // each step an argument of the next, those copies made checking
+    // quadratic in time and memory (#17's term family).
+    let label = brief(env, ctx, f)
     let tf = infer(env, ctx, f, bu)!
     match whnf(env, ctx, tf, bu) {
       Pi(_, dom, cod) => {
+        // A non-dependent argument is not substituted at all.
+        let result = if occurs(cod, 0) then subst(cod, a) else shift(cod, -1, 1)
         check(env, ctx, a, dom, bu)!
-        ok(subst(cod, a))
+        ok(result)
       },
       other => {
         guard not bu.exhausted else err(exhausted_error())
-        let msg = "${show(env, ctx, f)} is applied to an argument, but its type is ${show(env, ctx, other)}"
+        let msg = "${label} is applied to an argument, but its type is ${show(env, ctx, other)}"
         err(msg)
       },
     }
@@ -771,11 +769,34 @@ fn expect_sort(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Level! = {
 }
 
 fn check(env: Env, ctx: Ctx, t: Term, expected: Term, mut bu: Budget) -> Unit! = {
+  // The term is described before it is checked, not after (see infer's
+  // application case).
+  let label = brief(env, ctx, t)
   let actual = infer(env, ctx, t, bu)!
   let same = conv(env, ctx, actual, expected, bu)
   guard not bu.exhausted else err(exhausted_error())
-  guard same else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(env, ctx, actual)}")
+  guard same else err("type mismatch for ${label}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(env, ctx, actual)}")
   ok(())
+}
+
+// A term for an error message: in full when it is small, otherwise its
+// head and arguments elided, so describing it costs little.
+let BRIEF = 400
+
+fn brief(env: Env, ctx: Ctx, t: Term) -> String =
+  if size_upto(t, BRIEF) < BRIEF then show(env, ctx, t)
+  else "${head_text(env, ctx, t)}(… ${int.to_string(nargs(t))} arguments …)"
+
+// The head of an application and its number of arguments, by recursions
+// that only read the term (a loop over a `var` would copy it).
+local fn head_text(env: Env, ctx: Ctx, t: Term) -> String = match t {
+  App(f, _) => head_text(env, ctx, f),
+  _ => if size_upto(t, BRIEF) < BRIEF then show(env, ctx, t) else "…",
+}
+
+local fn nargs(t: Term) -> Int = match t {
+  App(f, _) => 1 + nargs(f),
+  _ => 0,
 }
 
 // ── Rooms and names ─────────────────────────────────────────────────
