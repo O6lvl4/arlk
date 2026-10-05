@@ -553,6 +553,6 @@ test "a cycle through rule matching runs out of budget instead of the stack" {
     rule f(g(x)) = x  where x: A
     rule g(x) = f(g(x))  where x: A
     """
-  assert(rejects_with(src + "eval f(g(z))", "out of budget"))
-  assert(rejects_with(src + "symbol P(x: A) -> Type\nsymbol p: P(z)\ntheorem t: P(f(g(z))) = p", "out of budget"))
+  assert(rejects_with(src + "\neval f(g(z))", "out of budget"))
+  assert(rejects_with(src + "\nsymbol P(x: A) -> Type\nsymbol p: P(z)\ntheorem t: P(f(g(z))) = p", "out of budget"))
 }
