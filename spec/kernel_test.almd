@@ -1110,3 +1110,130 @@ test "a long chain of definitions unfolds in a loop" {
 test "a computation too deep to compare runs out of budget" {
   assert(rejects_with(numeral_source(3000), "out of budget"))
 }
+
+// ── Mutual inductive types and definitions ─────────────────────────
+
+let MUTUAL_BASE = """
+room mt
+type Nat: Type = | zero | succ(pred: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+def add(m: Nat, n: Nat) -> Nat = match m {
+  zero => n,
+  succ(k) => Nat.succ(add(k, n)),
+}
+type Tree: Type =
+  | node(x: Nat, kids: Forest)
+type Forest: Type =
+  | nil
+  | cons(t: Tree, rest: Forest)
+"""
+
+test "mutually recursive definitions compute" {
+  let src = MUTUAL_BASE + """
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(kids)),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+theorem two: Eq(Nat, tree_size(Tree.node(Nat.zero, Forest.cons(Tree.node(Nat.zero, Forest.nil), Forest.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "a mutual definition that is not structural is rejected" {
+  let src = MUTUAL_BASE + """
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(Forest.cons(t, kids))),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+"""
+  assert(rejects_with(src, "structural recursion"))
+}
+
+test "a wrong value from a mutual definition is rejected" {
+  let src = MUTUAL_BASE + """
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(kids)),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+theorem wrong: Eq(Nat, tree_size(Tree.node(Nat.zero, Forest.nil)), Nat.zero) = Eq.refl
+"""
+  assert(rejects_with(src, "mismatch"))
+}
+
+test "a negative occurrence across a mutual group is rejected" {
+  let src = """
+room bad
+type A: Type =
+  | mk(f: B -> A)
+type B: Type =
+  | mk(f: A -> B)
+"""
+  assert(rejects_with(src, "negative"))
+}
+
+test "a proposition group cannot be matched into data" {
+  let src = MUTUAL_BASE + """
+type Bool: Type = | tt | ff
+type Even: (n: Nat) -> Sort(0) =
+  | zero: Even(Nat.zero)
+  | succ(n: Nat, h: Odd(n)): Even(Nat.succ(n))
+type Odd: (n: Nat) -> Sort(0) =
+  | succ(n: Nat, h: Even(n)): Odd(Nat.succ(n))
+def even_bool(n: Nat, e: Even(n)) -> Bool = match e {
+  zero => Bool.tt,
+  succ(m, o) => odd_bool(m, o),
+}
+def odd_bool(n: Nat, o: Odd(n)) -> Bool = match o {
+  succ(m, e) => even_bool(m, e),
+}
+"""
+  assert(rejects_with(src, "only into Prop"))
+}
+
+test "a function on some types of a mutual group, in any order" {
+  let src = MUTUAL_BASE + """
+type Bool: Type = | tt | ff
+def label(t: Tree) -> Nat = match t {
+  node(x, kids) => x,
+}
+def is_nil(f: Forest) -> Bool = match f {
+  nil => Bool.tt,
+  _ => Bool.ff,
+}
+def forest_len(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => Nat.succ(forest_len(rest)),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(kids)),
+}
+def two: Forest = Forest.cons(Tree.node(Nat.zero, Forest.nil), Forest.cons(Tree.node(Nat.zero, Forest.nil), Forest.nil))
+theorem len_two: Eq(Nat, forest_len(two), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+theorem size_two: Eq(Nat, forest_size(two), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+theorem not_nil: Eq(Bool, is_nil(two), Bool.ff) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "a recursive call on a part of another type is not structural for a single function" {
+  let src = MUTUAL_BASE + """
+def forest_len(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => Nat.succ(forest_len(Forest.cons(t, rest))),
+}
+"""
+  assert(rejects_with(src, "structural recursion"))
+}

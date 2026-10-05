@@ -9,6 +9,7 @@ import self.inductive
 import self.elab
 import self.patterns
 import self.search
+import self.mutual
 import self.pretty
 
 // Named surface terms → de Bruijn terms. `scope` is innermost first; `lv`
@@ -341,11 +342,257 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
       },
     }
   },
+  // All or nothing.
+  DMutualDefs(group) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match add_mutual_defs(env, d.line, group) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
+  // All or nothing, like a type.
+  DMutual(inds) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match add_mutual(env, d.line, inds) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
+  // A definition matching on one type of a mutual group: through the
+  // group's family, like a group of functions (one function here).
+  DDef(sig, body) if matches_mutual(env, sig, body) => process(env, { ...d, decl: DMutualDefs([d.decl]) }),
+  DTheorem(sig, body) if matches_mutual(env, sig, body) => process(env, { ...d, decl: DMutualDefs([d.decl]) }),
   _ => {
     let (change, lines) = examine(env, d)!
     commit(env, change)
     ok(lines)
   },
+}
+
+local fn matches_mutual(env: Env, sig: Sig, body: Raw) -> Bool = {
+  let (x, sty) = last_param(sig, body)
+  var b = body
+  var going = true
+  while going {
+    match b {
+      RLam(_, _, inner) => {
+        b = inner
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  let on_last = match b {
+    RMatch(RName(v), _) => v == x and x != "",
+    _ => false,
+  }
+  on_last and mutual_member(env, raw_head_name(sty)) != none
+}
+
+// Mutually recursive definitions (mutual.encode_defs): the combined
+// definition, then each one, checked as usual.
+local fn add_mutual_defs(mut env: Env, line: Int, group: List[Decl]) -> List[String]! = {
+  var defs: List[mutual.MutualDef] = []
+  for d in group {
+    match d {
+      DDef(sig, body) => list.push(defs, mutual.MutualDef { kind: "def", sig: sig, body: body }),
+      DTheorem(sig, body) => list.push(defs, mutual.MutualDef { kind: "theorem", sig: sig, body: body }),
+      _ => (),
+    }
+  }
+  // The sort of each result type: they must agree (it is the sort the
+  // combined definition's result type, picked by the tag, lands in).
+  var sorts: List[Level] = []
+  for d in defs {
+    list.push(sorts, result_sort(env, d.sig, d.body)!)
+  }
+  let s0 = list.first(sorts) ?? LZero
+  guard list.all(sorts, (l) => level_eq(l, s0)) else err("the mutually recursive definitions ${list.join(defs |> list.map((d) => d.sig.name), ", ")} have results in different universes")
+  let member = (n: String) => mutual_member(env, n)
+  let ctors = (q: String) => ctors_of(env, q)
+  // A group of propositions that eliminates only into Prop can only be
+  // matched to build proofs.
+  for d in defs {
+    let (_, sty) = last_param(d.sig, d.body)
+    match mutual_member(env, raw_head_name(sty)) {
+      some(m) => {
+        let own = list.len(d.sig.levels)
+        let large = list.len(map.get(env.lparams, m.family + ".rec") ?? []) > list.len(map.get(env.lparams, m.family) ?? [])
+        guard large or level_eq(s0, LZero) else err("${d.sig.name} matches on ${raw_head_name(sty)}, a proposition that eliminates only into Prop (like Lean's and Rocq's), so it can only build proofs; its result lives in ${show(env, [], Sort(s0))}")
+        if own < 0 then () else ()
+      },
+      none => (),
+    }
+  }
+  var lines: List[String] = []
+  for decl in mutual.encode_defs(defs, member, ctors, RApp(RSort, level_raw(s0)))! {
+    lines = lines + process(env, Located { line: line, decl: decl })!
+  }
+  ok(lines)
+}
+
+local fn last_param(sig: Sig, body: Raw) -> (String, Raw) = {
+  var ty = sig.ty
+  var b = body
+  var last = ("", RType)
+  var going = true
+  while going {
+    match b {
+      RLam(x, _, inner) => match ty {
+        RPi(_, dom, rest) => {
+          last = (x, dom)
+          ty = rest
+          b = inner
+        },
+        _ => {
+          going = false
+        },
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  last
+}
+
+local fn raw_head_name(r: Raw) -> String = {
+  let (h, _) = raw_head(r)
+  match h {
+    RName(x) => x,
+    RInst(x, _) => x,
+    _ => "",
+  }
+}
+
+// The universe a definition's result type lives in (its parameters are
+// the binders its body takes).
+local fn result_sort(mut env: Env, sig: Sig, body: Raw) -> Level! = {
+  let ty = surface_type(env, sig.levels, sig.ty)!
+  var n = 0
+  var b = body
+  var going = true
+  while going {
+    match b {
+      RLam(_, _, inner) => {
+        n = n + 1
+        b = inner
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  var ctx: Ctx = []
+  var t = ty
+  var k = 0
+  while k < n {
+    match t {
+      Pi(x, dom, cod) => {
+        ctx = [(x, dom)] + ctx
+        t = cod
+      },
+      _ => (),
+    }
+    k = k + 1
+  }
+  var bu = budget()
+  expect_sort(env, ctx, t, bu)
+}
+
+// A level as written: `0`, `u`, `u + 1`, `max(u, v)`.
+local fn level_raw(l: Level) -> Raw = match l {
+  LZero => RName("0"),
+  LParam(u) => RName(u),
+  LMax(a, b) => RApp(RApp(RName("max"), level_raw(a)), level_raw(b)),
+  LIMax(a, b) => RApp(RApp(RName("imax"), level_raw(a)), level_raw(b)),
+  LSucc(_) => {
+    var k = 0
+    var base = l
+    var going = true
+    while going {
+      match base {
+        LSucc(x) => {
+          k = k + 1
+          base = x
+        },
+        _ => {
+          going = false
+        },
+      }
+    }
+    match base {
+      LZero => RName(int.to_string(k)),
+      _ => RApp(RApp(RName("+"), level_raw(base)), RName(int.to_string(k))),
+    }
+  },
+  _ => RName("0"),
+}
+
+// For a type of a mutual group (a definition `X(params, idx) =
+// family(params, tag.X, idx)`), its family, tag constructor and number of
+// parameters.
+local fn mutual_member(env: Env, n: String) -> Option[mutual.Member] = {
+  let q = match resolve_const(env, n) {
+    ok(c) => c,
+    err(_) => "",
+  }
+  var b = map.get(env.bodies, q) ?? type0()
+  var going = true
+  while going {
+    match b {
+      Lam(_, _, inner) => {
+        b = inner
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  let (h, args) = spine(b)
+  match h {
+    Const(fam, _) => match map.get(env.inductives, fam) {
+      some(info) => if not string.ends_with(fam, ".mutual") or info.indices < 1 then none
+        else match list.get(args, info.params) {
+          some(Const(tag, _)) => some(mutual.Member { family: fam, tag: tag, nparams: info.params }),
+          _ => none,
+        },
+      none => none,
+    },
+    _ => none,
+  }
+}
+
+// An inductive type's constructors, named after the type's own name, with
+// their numbers of fields.
+local fn ctors_of(env: Env, q: String) -> List[(String, Int)] = match map.get(env.inductives, q) {
+  none => [],
+  some(info) => info.ctors |> list.map((c) => (string.drop(c, string.len(q) + 1), list.len(pi_domains(map.get(env.types, c) ?? type0())) - info.params)),
+}
+
+// A mutual group: the family it is encoded as, then each type, each
+// constructor and each recursor (mutual.almd), all checked as usual.
+local fn add_mutual(mut env: Env, line: Int, inds: List[Inductive]) -> List[String]! = {
+  let names = inds |> list.map((i) => i.name)
+  for decl in mutual.encode(inds)! {
+    process(env, Located { line: line, decl: decl })!
+  }
+  let g = env.room + "." + mutual.group_name(inds)
+  let own = list.len((list.first(inds) ?? mutual.empty_ind()).levels)
+  let large = list.len(map.get(env.lparams, g + ".rec") ?? []) > own
+  for decl in mutual.recursors(inds, large) {
+    process(env, Located { line: line, decl: decl })!
+  }
+  ok(["✓ types ${list.join(names |> list.map((n) => env.room + "." + n), ", ")}: mutual, encoded as the family ${g} (recursors ${list.join(names |> list.map((n) => n + ".rec"), ", ")}${if large then " into any universe" else " into Prop"})"])
 }
 
 local fn step(mut env: Env, line: Int, d: Decl) -> Unit! = {
@@ -974,6 +1221,8 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     ok((c, ["✓ found by search: ${sig.name} = ${show(env, [], t)}", "✓ ${kind} ${env.room}.${sig.name}: ${show(env, [], ty)}"]))
   },
   DTranslate(_, _) => err("a translation is processed by `process`"),
+  DMutual(_) => err("a mutual group is processed by `process`"),
+  DMutualDefs(_) => err("mutually recursive definitions are processed by `process`"),
 }
 
 // Surface syntax that uses implicit arguments, inferred universe levels or

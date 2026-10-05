@@ -205,9 +205,38 @@ is not trusted: its output is a complete kernel term, checked like a hand-writte
 inference is a type error, never a false theorem. What it cannot infer it reports. See
 [examples/data.arlk](examples/data.arlk).
 
-Next on this road: unification of indices and course-of-values recursion in `match`, mutual and
-nested types, and reading Lean and Rocq libraries directly into these native features instead of
-through the `core` encoding.
+**Mutual types and functions.** Types that refer to each other are written one after the other,
+as in Almide, and so are the functions on them:
+
+```
+type Tree: Type =
+  | node(x: Nat, kids: Forest)
+type Forest: Type =
+  | nil
+  | cons(t: Tree, rest: Forest)
+
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(kids)),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+```
+
+A group of types is encoded as one family indexed by which type is meant, which is the standard
+reduction ([src/mutual.almd](src/mutual.almd)). The family goes through the usual admission:
+strict positivity across the whole group, universes, and elimination. Each type, constructor and
+mutual recursor (`Tree.rec` takes a motive per type and a minor per constructor) is a generated
+definition that the kernel checks, and the recursors compute. A group of functions becomes one
+structurally recursive definition on the family, whose result type is picked by the tag, so
+recursion stays structural. A proposition group (`Even`/`Odd`) can only be matched to build proofs,
+as in Lean and Rocq. For now the types of a group share their parameters and indices, and there is
+one function per type. See [examples/mutual.arlk](examples/mutual.arlk).
+
+Next on this road: unification of indices and course-of-values recursion in `match`, nested types,
+and reading Lean and Rocq libraries directly into these native features instead of through the
+`core` encoding.
 
 ## Absorbing provers
 
@@ -692,3 +721,5 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 | [almide#3415](https://github.com/almide/almide/issues/3415) `err(..)` in a let-bound match takes the enclosing `Unit!` type | one small function per object kind (`pop_tyop`, `as_ty`, ...) |
 | [almide#3416](https://github.com/almide/almide/issues/3416) tuple-of-variants match leaves recursive payloads boxed | one value at a time (`as_list`, `as_var`) |
 | [almide#3421](https://github.com/almide/almide/issues/3421) a variant pattern nested in `some(...)` leaves payloads boxed | fetch, then match (`patterns.sub_at`) |
+| [almide#3431](https://github.com/almide/almide/issues/3431) a closure passing a captured `var` to a `mut` parameter emits `.get()` on `&mut` | explicit loop (`session.first_changed`) |
+| [almide#3434](https://github.com/almide/almide/issues/3434) an argument used again after a call is deep-copied at the call | describe terms before checking them (`kernel.brief`), substitute only dependent arguments |

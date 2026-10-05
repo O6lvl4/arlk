@@ -1,0 +1,470 @@
+// Mutual inductive types, as one family indexed by which type is meant.
+//
+//   type Even: (n: Nat) -> Sort(0) =
+//     | zero: Even(Nat.zero)
+//     | succ(n: Nat, h: Odd(n)): Even(Nat.succ(n))
+//   type Odd: (n: Nat) -> Sort(0) =
+//     | succ(n: Nat, h: Even(n)): Odd(Nat.succ(n))
+//
+// Consecutive `type` declarations that refer forward to each other form a
+// group, as Almide's own types may (no keyword). A group becomes:
+//
+//   type Even.mutual.tag: Type = | Even | Odd
+//   type Even.mutual(tag: Even.mutual.tag): (n: Nat) -> Sort(0) =
+//     | Even.zero: Even.mutual(tag.Even, Nat.zero)
+//     | Even.succ(n: Nat, h: Even.mutual(tag.Odd, n)): Even.mutual(tag.Even, Nat.succ(n))
+//     | Odd.succ(n: Nat, h: Even.mutual(tag.Even, n)): Even.mutual(tag.Odd, Nat.succ(n))
+//   def Even(n: Nat) -> Sort(0) = Even.mutual(tag.Even, n)        (one per type)
+//   def Even.succ(n: Nat, h: Odd(n)) -> Even(Nat.succ(n)) = ...    (one per constructor)
+//   def Even.rec(motive_Even, motive_Odd, minors..., n, t: Even(n)) -> motive_Even(n, t)
+//     = Even.mutual.rec(motive picked by the tag, minors..., tag.Even, n, t)
+//
+// This is the standard reduction of mutual types to an indexed family; the
+// family goes through the ordinary inductive admission (strict positivity,
+// universes, elimination), and every generated definition is checked by
+// the kernel. Nothing here is trusted: a wrong encoding fails to check.
+// Each type's recursor takes a motive for every type of the group and a
+// minor premise for every constructor (Lean's mutual recursors), and
+// computes on constructors (through the family's rules).
+//
+// For now the types of a group share their universe parameters, their
+// parameters and their indices, and are not records.
+
+import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm, Sub}
+import self.inductive
+
+// ── Grouping ────────────────────────────────────────────────────────
+
+// Every name a raw term mentions.
+local fn mentions(r: Raw) -> List[String] = match r {
+  RName(x) => [x],
+  RInst(x, _) => [x],
+  RExplicit(x, _) => [x],
+  RApp(f, a) => mentions(f) + mentions(a),
+  RLam(_, ty, b) => mentions(ty) + mentions(b),
+  RPi(_, ty, b) => mentions(ty) + mentions(b),
+  RBracket(b) => mentions(b),
+  _ => [],
+}
+
+fn ind_mentions(ind: Inductive) -> List[String] =
+  (ind.params |> list.flat_map(((_, t)) => mentions(t))) + mentions(ind.arity)
+    + (ind.ctors |> list.flat_map((c) => (c.args |> list.flat_map(((_, t)) => mentions(t))) + match c.result {
+      some(r) => mentions(r),
+      none => [],
+    }))
+
+// ── The encoding ────────────────────────────────────────────────────
+
+fn empty_ind() -> Inductive = Inductive { name: "", levels: [], params: [], arity: RType, ctors: [], fields: [] }
+
+fn group_name(inds: List[Inductive]) -> String = (list.first(inds) ?? empty_ind()).name + ".mutual"
+
+local fn names(bs: List[(String, Raw)]) -> List[Raw] = bs |> list.map(((x, _)) => RName(x))
+
+local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+local fn lams(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
+
+local fn levels_of(ls: List[String]) -> List[Raw] = ls |> list.map((l) => RName(l))
+
+// The final sort of an arity, after its indices.
+local fn sort_of(r: Raw) -> Raw = match r {
+  RPi(_, _, b) => sort_of(b),
+  other => other,
+}
+
+// `X(params, idx)` for X in the group, as the family at X's tag.
+local fn to_family(g: String, members: List[String], np: Int, r: Raw) -> Raw = {
+  let (h, args) = inductive.raw_spine(r)
+  let head = match h {
+    RName(x) => if list.contains(members, x) then some(x) else none,
+    _ => none,
+  }
+  match head {
+    some(x) => {
+      let fargs = args |> list.map((a) => to_family(g, members, np, a))
+      inductive.raw_apply(RName(g), list.take(fargs, np) + [RName(g + ".tag." + x)] + list.drop(fargs, np))
+    },
+    none => match r {
+      RApp(f, a) => RApp(to_family(g, members, np, f), to_family(g, members, np, a)),
+      RLam(x, ty, b) => RLam(x, to_family(g, members, np, ty), to_family(g, members, np, b)),
+      RPi(x, ty, b) => RPi(x, to_family(g, members, np, ty), to_family(g, members, np, b)),
+      RBracket(b) => RBracket(to_family(g, members, np, b)),
+      other => other,
+    },
+  }
+}
+
+// The family at its own levels, applied to the parameters, a tag and indices.
+local fn fam(g: String, levels: List[String], params: List[(String, Raw)], tag: Raw, idx: List[Raw]) -> Raw =
+  inductive.raw_apply(RExplicit(g, levels_of(levels)), names(params) + [tag] + idx)
+
+// Is an argument recursive: `(ys) -> Z(params, idx)` with Z in the group?
+// Its binders, Z, and Z's index arguments.
+local fn recursive_arg(members: List[String], np: Int, ty: Raw) -> Option[(List[(String, Raw)], String, List[Raw])] = rec_acc(members, np, ty, [])
+
+local fn rec_acc(members: List[String], np: Int, ty: Raw, ys: List[(String, Raw)]) -> Option[(List[(String, Raw)], String, List[Raw])] = match ty {
+  RPi(y, b, rest) => rec_acc(members, np, rest, ys + [(if y == "_" then "y" + int.to_string(list.len(ys) + 1) else y, b)]),
+  other => {
+    let (h, args) = inductive.raw_spine(other)
+    match h {
+      RName(x) => if list.contains(members, x) then some((ys, x, list.drop(args, np))) else none,
+      _ => none,
+    }
+  },
+}
+
+// The declarations a group stands for, in checking order (the recursors
+// come after, once the family is admitted); or why the group is not
+// supported yet.
+fn encode(inds: List[Inductive]) -> List[Decl]! = {
+  let first = list.first(inds) ?? empty_ind()
+  for ind in inds {
+    guard list.is_empty(ind.fields) else err("${ind.name}: a record cannot be part of a mutual group yet")
+    guard ind.levels == first.levels and ind.params == first.params and ind.arity == first.arity else err("${ind.name} and ${first.name} refer to each other, so they form a mutual group; for now its types must have the same universe parameters, parameters and indices")
+  }
+  let g = group_name(inds)
+  let members = inds |> list.map((i) => i.name)
+  let np = list.len(first.params)
+  let levels = first.levels
+  let params = first.params
+  let idx = inductive.indices(first.arity)
+  let sort = sort_of(first.arity)
+  let tag_ty = RName(g + ".tag")
+  var out: List[Decl] = []
+  // A unit type in any universe: the result, for a group of functions,
+  // at a type no function of the group is for.
+  list.push(out, DInductive(Inductive { name: g + ".unit", levels: ["u"], params: [], arity: RApp(RSort, RName("u")), ctors: [Constructor { name: "star", args: [], result: none }], fields: [] }))
+  // The tag: which type of the group.
+  list.push(out, DInductive(Inductive { name: g + ".tag", levels: [], params: [], arity: RType, ctors: members |> list.map((x) => Constructor { name: x, args: [], result: none }), fields: [] }))
+  // The family.
+  var fctors: List[Constructor] = []
+  for ind in inds {
+    for c in ind.ctors {
+      let result = match c.result {
+        some(r) => to_family(g, members, np, r),
+        none => inductive.raw_apply(RName(g), names(params) + [RName(g + ".tag." + ind.name)]),
+      }
+      list.push(fctors, Constructor { name: ind.name + "." + c.name, args: c.args |> list.map(((x, t)) => (x, to_family(g, members, np, t))), result: some(result) })
+    }
+  }
+  list.push(out, DInductive(Inductive { name: g, levels: levels, params: params, arity: RPi("tag", tag_ty, first.arity), ctors: fctors, fields: [] }))
+  // Each type: the family at its tag.
+  for ind in inds {
+    let body = fam(g, levels, params, RName(g + ".tag." + ind.name), names(idx))
+    list.push(out, DDef(Sig { name: ind.name, levels: levels, implicits: 0, ty: pis(params + idx, sort) }, lams(params + idx, body)))
+  }
+  // Each constructor, under its type's name, with implicit parameters.
+  for ind in inds {
+    for c in ind.ctors {
+      let result = match c.result {
+        some(r) => r,
+        none => inductive.raw_apply(RName(ind.name), names(params)),
+      }
+      let body = inductive.raw_apply(RExplicit(g + "." + ind.name + "." + c.name, levels_of(levels)), names(params) + names(c.args))
+      list.push(out, DDef(Sig { name: ind.name + "." + c.name, levels: levels, implicits: np, ty: pis(params + c.args, result) }, lams(params + c.args, body)))
+    }
+  }
+  ok(out)
+}
+
+// Each type's recursor: a motive per type, a minor per constructor, the
+// family's recursor at that type's tag.
+// `large`: whether the family was admitted to eliminate into any universe
+// (else only into Prop).
+fn recursors(inds: List[Inductive], large: Bool) -> List[Decl] = {
+  let first = list.first(inds) ?? empty_ind()
+  let g = group_name(inds)
+  let levels = first.levels
+  let params = first.params
+  let idx = inductive.indices(first.arity)
+  let members = inds |> list.map((i) => i.name)
+  let np = list.len(params)
+  let taken = members + levels + (params |> list.map(((x, _)) => x)) + (idx |> list.map(((x, _)) => x))
+    + (inds |> list.flat_map((i) => i.ctors |> list.flat_map((c) => c.args |> list.map(((x, _)) => x))))
+  let v = inductive.fresh("v", taken)
+  let t = inductive.fresh("t", taken)
+  let tg = inductive.fresh("tag", taken)
+  let small = not large
+  let msort = if small then RApp(RSort, RName("0")) else RApp(RSort, RName(v))
+  let rlevels = if small then levels else [v] + levels
+  let motive_name = (x: String) => inductive.fresh("motive_" + string.replace(x, ".", "_"), taken)
+  let motives = inds |> list.map((i) => (motive_name(i.name), pis(idx + [(t, inductive.raw_apply(RName(i.name), names(params) + names(idx)))], msort)))
+  // Minor premises, in the family's constructor order.
+  var minors: List[(String, Raw)] = []
+  for ind in inds {
+    for c in ind.ctors {
+      var ihs: List[(String, Raw)] = []
+      for (a, ty) in c.args {
+        match recursive_arg(members, np, ty) {
+          some((ys, z, zidx)) => list.push(ihs, (inductive.fresh("ih_" + a, taken), pis(ys, inductive.raw_apply(RName(motive_name(z)), zidx + [inductive.raw_apply(RName(a), names(ys))])))),
+          none => (),
+        }
+      }
+      let res_idx = match c.result {
+        some(r) => {
+          let (_, rargs) = inductive.raw_spine(r)
+          list.drop(rargs, np)
+        },
+        none => [],
+      }
+      let built = inductive.raw_apply(RExplicit(g + "." + ind.name + "." + c.name, levels_of(levels)), names(params) + names(c.args))
+      let mname = inductive.fresh("on_" + string.replace(ind.name, ".", "_") + "_" + c.name, taken + (minors |> list.map(((x, _)) => x)))
+      list.push(minors, (mname, pis(c.args + ihs, inductive.raw_apply(RName(motive_name(ind.name)), res_idx + [built]))))
+    }
+  }
+  // The motive the family's recursor gets: the one for the tag's type.
+  let tag_motive = RLam(tg, RName(g + ".tag"), pis(idx + [(t, fam(g, levels, params, RName(tg), names(idx)))], msort))
+  let branches = inds |> list.map((i) => lams(idx + [(t, inductive.raw_apply(RName(i.name), names(params) + names(idx)))], inductive.raw_apply(RName(motive_name(i.name)), names(idx) + [RName(t)])))
+  let pick = lams([(tg, RName(g + ".tag"))] + idx + [(t, fam(g, levels, params, RName(tg), names(idx)))],
+    inductive.raw_apply(RName(g + ".tag.rec"), [tag_motive] + branches + [RName(tg)] + names(idx) + [RName(t)]))
+  inds |> list.map((ind) => {
+    let target = inductive.raw_apply(RName(ind.name), names(params) + names(idx))
+    let binders = params + motives + minors + idx + [(t, target)]
+    let body = inductive.raw_apply(RExplicit(g + ".rec", levels_of(rlevels)),
+      names(params) + [pick] + names(minors) + [RName(g + ".tag." + ind.name)] + names(idx) + [RName(t)])
+    DDef(Sig { name: ind.name + ".rec", levels: rlevels, implicits: np, ty: pis(binders, inductive.raw_apply(RName(motive_name(ind.name)), names(idx) + [RName(t)])) }, lams(binders, body))
+  })
+}
+
+// ── Mutually recursive definitions ──────────────────────────────────
+//
+//   def tree_size(t: Tree(Nat)) -> Nat = match t {
+//     node(x, kids) => Nat.succ(forest_size(kids)),
+//   }
+//   def forest_size(f: Forest(Nat)) -> Nat = match f {
+//     nil => Nat.zero,
+//     cons(t, rest) => add(tree_size(t), forest_size(rest)),
+//   }
+//
+// Consecutive definitions that refer forward to each other form a group.
+// Each matches on its last parameter, a type of one mutual group, and
+// together they cover every type of it. They become one definition by
+// structural recursion on the family, whose result type is picked by the
+// tag,
+//
+//   def tree_size.mutual(tag, t: Tree.mutual(tag)) -> (the result type at tag) =
+//     match t { Tree.node(x, kids) => ..., Forest.nil => ..., Forest.cons(t, rest) => ... }
+//
+// where a call to a definition of the group is a call at that type's tag
+// (so recursion stays structural, through the ordinary pattern compiler);
+// and each definition is that one at its own tag. Nothing new is trusted:
+// everything goes through the elaborator, the pattern compiler and the
+// kernel as usual.
+
+// What a definition of a group needs: its kind, signature and body, and
+// for its matched type the family, the tag constructor and the number of
+// type parameters (found from the type's own definition).
+type MutualDef = { kind: String, sig: Sig, body: Raw }
+type Member = { family: String, tag: String, nparams: Int }
+
+local fn split_params(sig: Sig, body: Raw) -> (List[(String, Raw)], Raw, Raw) = {
+  var params: List[(String, Raw)] = []
+  var ty = sig.ty
+  var b = body
+  var going = true
+  while going {
+    match b {
+      RLam(x, _, inner) => match ty {
+        RPi(_, dom, rest) => {
+          list.push(params, (x, dom))
+          ty = rest
+          b = inner
+        },
+        _ => {
+          going = false
+        },
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (params, ty, b)
+}
+
+// Free occurrences of names renamed (binders that rebind them stop it).
+fn rename(r: Raw, from: List[String], to: List[String]) -> Raw = match r {
+  RName(x) => match list.index_of(from, x) {
+    some(i) => RName(list.get(to, i) ?? x),
+    none => r,
+  },
+  RApp(f, a) => RApp(rename(f, from, to), rename(a, from, to)),
+  RLam(x, ty, b) => RLam(x, rename(ty, from, to), rename(b, without(from, x), drop_at(to, from, x))),
+  RPi(x, ty, b) => RPi(x, rename(ty, from, to), rename(b, without(from, x), drop_at(to, from, x))),
+  RBracket(b) => RBracket(rename(b, from, to)),
+  RMatch(s, arms) => RMatch(rename(s, from, to), arms |> list.map((a) => {
+    let bound = a.subs |> list.flat_map((x) => sub_binders(x))
+    var f2 = from
+    var t2 = to
+    for x in bound {
+      t2 = drop_at(t2, f2, x)
+      f2 = without(f2, x)
+    }
+    { ...a, body: rename(a.body, f2, t2) }
+  })),
+  other => other,
+}
+
+local fn sub_binders(s: Sub) -> List[String] = match s {
+  SName(x) => [x],
+  SCon(_, ss) => ss |> list.flat_map((t) => sub_binders(t)),
+}
+
+local fn without(xs: List[String], x: String) -> List[String] = xs |> list.filter((y) => y != x)
+
+local fn drop_at(to: List[String], from: List[String], x: String) -> List[String] = match list.index_of(from, x) {
+  some(i) => list.take(to, i) + list.drop(to, i + 1),
+  none => to,
+}
+
+// Calls to the group's definitions become calls to the combined one at the
+// callee's tag.
+local fn redirect(r: Raw, calls: List[(String, String)], combined: String) -> Raw = {
+  let (h, args) = inductive.raw_spine(r)
+  let target = match h {
+    RName(x) => match list.find(calls, ((n, _)) => n == x) {
+      some((_, tag)) => some(tag),
+      none => none,
+    },
+    _ => none,
+  }
+  match target {
+    some(tag) => inductive.raw_apply(RName(combined), [RName(tag)] + (args |> list.map((a) => redirect(a, calls, combined)))),
+    none => match r {
+      RApp(f, a) => RApp(redirect(f, calls, combined), redirect(a, calls, combined)),
+      RLam(x, ty, b) => RLam(x, redirect(ty, calls, combined), redirect(b, calls, combined)),
+      RPi(x, ty, b) => RPi(x, redirect(ty, calls, combined), redirect(b, calls, combined)),
+      RBracket(b) => RBracket(redirect(b, calls, combined)),
+      RMatch(s, arms) => RMatch(redirect(s, calls, combined), arms |> list.map((a) => { ...a, body: redirect(a.body, calls, combined) })),
+      other => other,
+    },
+  }
+}
+
+// The combined definition and the group's definitions in terms of it.
+// `member` finds, for a type name as written, its family, tag constructor
+// and number of parameters; `ctors` lists an inductive type's constructors
+// (the part of the name after the type's) with their numbers of fields.
+// `sort` is the sort the definitions' result types live in (the same for
+// all of them).
+fn encode_defs(defs: List[MutualDef], member: (String) -> Member?, ctors: (String) -> List[(String, Int)], sort: Raw) -> List[Decl]! = {
+  let d0 = list.first(defs) ?? MutualDef { kind: "def", sig: Sig { name: "", levels: [], implicits: 0, ty: RType }, body: RType }
+  let combined = d0.sig.name + ".mutual"
+  var family = ""
+  var tag_type = ""
+  var nparams = 0
+  var calls: List[(String, String)] = []
+  var shapes: List[(MutualDef, List[(String, Raw)], Raw, String, List[Arm], String)] = []
+  var types_seen: List[String] = []
+  for d in defs {
+    let (params, ret, b) = split_params(d.sig, d.body)
+    guard d.sig.implicits == d0.sig.implicits and d.sig.levels == d0.sig.levels else err("${d.sig.name} and ${d0.sig.name} are mutually recursive, so they need the same universe and implicit parameters")
+    let (scrut, sty) = list.last(params) ?? ("", RType)
+    let (x, arms) = match b {
+      RMatch(RName(v), arms) => (v, arms),
+      _ => ("", []),
+    }
+    guard x != "" and x == scrut else err("${d.sig.name} is mutually recursive: its body must be a match on its last parameter, ${scrut}")
+    let (h, _) = inductive.raw_spine(sty)
+    let tyname = match h {
+      RName(n) => n,
+      RInst(n, _) => n,
+      _ => "",
+    }
+    let m = match member(tyname) {
+      some(mm) => ok(mm),
+      none => err("${d.sig.name} is mutually recursive with ${d0.sig.name}: it must match on a type of a mutual group, and ${scrut}: ${tyname} is not one"),
+    }!
+    guard family == "" or family == m.family else err("the definitions of a mutual group must match on types of one mutual group")
+    guard not list.contains(types_seen, m.tag) else err("two definitions of the group match on ${tyname}; there must be one per type")
+    family = m.family
+    tag_type = m.family + ".tag"
+    nparams = m.nparams
+    list.push(types_seen, m.tag)
+    list.push(calls, (d.sig.name, m.tag))
+    list.push(shapes, (d, params, ret, scrut, arms, m.tag))
+  }
+  // Tags in the tag type's order (the order its recursor takes branches).
+  let all_tags = ctors(tag_type) |> list.map(((c, _)) => tag_type + "." + c)
+  // The combined signature: the implicit parameters, the tag, the indices,
+  // the value; d0's names for them.
+  let (_, params0, _, scrut0, _, _) = list.first(shapes) ?? (d0, [], RType, "", [], "")
+  let implicit = list.take(params0, d0.sig.implicits)
+  let idx0 = list.drop(list.take(params0, list.len(params0) - 1), d0.sig.implicits)
+  let pnames = implicit |> list.map(((x, _)) => x)
+  let taken = pnames + (idx0 |> list.map(((x, _)) => x)) + [scrut0]
+  let tg = inductive.fresh("tag", taken)
+  let tparams = list.take(implicit, nparams)
+  let fam_of = (tag: Raw) => inductive.raw_apply(RName(family), names(tparams) + [tag] + names(idx0))
+  // The result type at each tag, over d0's names for the indices and value.
+  var branch_of: List[(String, Raw)] = []
+  var merged: List[Arm] = []
+  for (d, params, ret, scrut, arms, tag) in shapes {
+    let idx = list.drop(list.take(params, list.len(params) - 1), d.sig.implicits)
+    let from = (idx |> list.map(((x, _)) => x)) + [scrut]
+    let to = (idx0 |> list.map(((x, _)) => x)) + [scrut0]
+    let tyname = list.last(string.split(tag, ".")) ?? ""
+    list.push(branch_of, (tag, lams(idx0 + [(scrut0, fam_of(RName(tag)))], rename(ret, from, to))))
+    // Arms: the constructor named in full (`Tree.node`), wildcards spelled
+    // out for this type's constructors only, bodies on the combined names,
+    // calls redirected.
+    // Constructors an earlier arm already covers in full (only names
+    // below it) get no arm from a later wildcard.
+    var covered: List[String] = []
+    for a in arms {
+      let body = redirect(rename(a.body, from, to), calls, combined)
+      if a.ctor == "_" then {
+        for (c, n) in ctors(family) {
+          if string.starts_with(c, tyname + ".") and not list.contains(covered, c) then {
+            list.push(merged, Arm { ctor: c, subs: list.map(0..<n, (_) => SName("_")), body: body })
+            list.push(covered, c)
+          } else ()
+        }
+      } else {
+        let full = tyname + "." + a.ctor
+        if list.all(a.subs, (x) => match x {
+          SName(_) => true,
+          SCon(_, _) => false,
+        }) then list.push(covered, full) else ()
+        list.push(merged, { ...a, ctor: full, body: body })
+      }
+    }
+  }
+  // A type no function is for: its result is the unit, its constructors'
+  // arms return the unit's value.
+  let level = match sort {
+    RApp(_, l) => l,
+    _ => RName("0"),
+  }
+  let unit = inductive.raw_apply(RExplicit(family + ".unit", [level]), [])
+  var branches: List[Raw] = []
+  for tag in all_tags {
+    match list.find(branch_of, ((t, _)) => t == tag) {
+      some((_, b)) => list.push(branches, b),
+      none => {
+        list.push(branches, lams(idx0 + [(scrut0, fam_of(RName(tag)))], unit))
+        let tyname = list.last(string.split(tag, ".")) ?? ""
+        for (c, n) in ctors(family) {
+          if string.starts_with(c, tyname + ".") then {
+            list.push(merged, Arm { ctor: c, subs: list.map(0..<n, (_) => SName("_")), body: RExplicit(family + ".unit.star", [level]) })
+          } else ()
+        }
+      },
+    }
+  }
+  let ret_by_tag = inductive.raw_apply(RName(tag_type + ".rec"),
+    [RLam(tg, RName(tag_type), pis(idx0 + [(scrut0, fam_of(RName(tg)))], sort))] + branches + [RName(tg)] + names(idx0) + [RName(scrut0)])
+  let cparams = implicit + [(tg, RName(tag_type))] + idx0 + [(scrut0, fam_of(RName(tg)))]
+  var out: List[Decl] = [DDef(Sig { name: combined, levels: d0.sig.levels, implicits: d0.sig.implicits, ty: pis(cparams, ret_by_tag) }, lams(cparams, RMatch(RName(scrut0), merged)))]
+  for (d, params, ret, scrut, _, tag) in shapes {
+    let explicit = list.drop(params, d.sig.implicits)
+    let call = inductive.raw_apply(RName(combined), [RName(tag)] + names(explicit))
+    let decl = if d.kind == "theorem" then DTheorem(d.sig, lams(params, call)) else DDef(d.sig, lams(params, call))
+    list.push(out, decl)
+  }
+  ok(out)
+}

@@ -1,0 +1,78 @@
+// Mutual inductive types and mutually recursive definitions, Almide-style:
+// types that refer to each other are just written one after the other,
+// and so are the functions on them. Each group is encoded as one family
+// indexed by which type is meant (see src/mutual.almd); the kernel checks
+// the encoding, so nothing new is trusted.
+
+room mutual_example
+type Nat: Type = | zero | succ(pred: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+type Bool: Type = | tt | ff
+def add(m: Nat, n: Nat) -> Nat = match m {
+  zero => n,
+  succ(k) => Nat.succ(add(k, n)),
+}
+
+type Tree: Type =
+  | node(x: Nat, kids: Forest)
+type Forest: Type =
+  | nil
+  | cons(t: Tree, rest: Forest)
+
+// Wildcards, and a proof by mutual recursion.
+def tree_leaf(t: Tree) -> Bool = match t {
+  node(x, kids) => forest_empty(kids),
+}
+def forest_empty(f: Forest) -> Bool = match f {
+  nil => Bool.tt,
+  _ => Bool.ff,
+}
+
+def tree_size(t: Tree) -> Nat = match t {
+  node(x, kids) => Nat.succ(forest_size(kids)),
+}
+def forest_size(f: Forest) -> Nat = match f {
+  nil => Nat.zero,
+  cons(t, rest) => add(tree_size(t), forest_size(rest)),
+}
+
+def add_zero_r(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
+  zero => Eq.refl,
+  succ(k) => Eq.rec((m: Nat, e: Eq(Nat, add(k, Nat.zero), m)) => Eq(Nat, Nat.succ(add(k, Nat.zero)), Nat.succ(m)), Eq.refl, k, add_zero_r(k)),
+}
+
+type Even: (n: Nat) -> Sort(0) =
+  | zero: Even(Nat.zero)
+  | succ(n: Nat, h: Odd(n)): Even(Nat.succ(n))
+type Odd: (n: Nat) -> Sort(0) =
+  | succ(n: Nat, h: Even(n)): Odd(Nat.succ(n))
+
+
+type Ev: (n: Nat) -> Sort(0) =
+  | z: Ev(Nat.zero)
+  | ss(n: Nat, h: Ev(n)): Ev(Nat.succ(Nat.succ(n)))
+
+// Indexed, and a proof by mutual recursion: Even n gives Ev n, Odd n gives Ev (n + 1).
+theorem even_ev(n: Nat, e: Even(n)) -> Ev(n) = match e {
+  zero => Ev.z,
+  succ(m, o) => odd_ev(m, o),
+}
+theorem odd_ev(n: Nat, o: Odd(n)) -> Ev(Nat.succ(n)) = match o {
+  succ(m, e) => Ev.ss(m, even_ev(m, e)),
+}
+
+// The recursors compute, so properties hold by computation.
+def leaf(n: Nat) -> Tree = Tree.node(n, Forest.nil)
+def three: Tree = Tree.node(Nat.zero, Forest.cons(leaf(Nat.zero), Forest.cons(leaf(Nat.zero), Forest.nil)))
+theorem size_three: Eq(Nat, tree_size(three), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+theorem three_not_leaf: Eq(Bool, tree_leaf(three), Bool.ff) = Eq.refl
+
+// Mutual induction with the generated recursors.
+theorem even_plus_two(n: Nat, h: Even(n)) -> Even(Nat.succ(Nat.succ(n))) =
+  Even.rec((m: Nat, e: Even(m)) => Even(Nat.succ(Nat.succ(m))), (m: Nat, o: Odd(m)) => Odd(Nat.succ(Nat.succ(m))),
+    Even.succ(Nat.succ(Nat.zero), Odd.succ(Nat.zero, Even.zero)),
+    (m: Nat, o: Odd(m), ih: Odd(Nat.succ(Nat.succ(m)))) => Even.succ(Nat.succ(Nat.succ(m)), ih),
+    (m: Nat, e: Even(m), ih: Even(Nat.succ(Nat.succ(m)))) => Odd.succ(Nat.succ(Nat.succ(m)), ih),
+    n, h)
+
+axioms even_ev

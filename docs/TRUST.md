@@ -67,6 +67,12 @@ never a false theorem; a term with unresolved holes is rejected (by `elab.comple
 the kernel). Structural recursion is enforced by construction: a `match` only produces recursor
 applications, and a recursive call that is not on a constructor argument has no translation.
 
+Mutual types and mutually recursive functions ([src/mutual.almd](../src/mutual.almd)) add
+nothing either. A group of types is encoded as one indexed family, which is admitted by part 3 like
+any other type. Its types, constructors and recursors, and the single definition a group of
+functions becomes, are ordinary definitions, checked by part 1. A wrong encoding fails to check;
+it cannot make a false theorem true.
+
 ## 4a. Proof search — not trusted
 
 `search` ([src/search.almd](../src/search.almd)) only proposes a term; the declaration is then

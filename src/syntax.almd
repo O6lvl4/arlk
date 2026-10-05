@@ -66,6 +66,12 @@ type Decl =
   // `views`: the catalog; `routes from S`: ways from S into this room.
   | DViews
   | DRoutes(String)
+  // Consecutive types that refer forward to each other: one mutual group
+  // (see mutual.almd). Formed after parsing, never written directly.
+  | DMutual(List[Inductive])
+  // Consecutive definitions that refer forward to each other (formed after
+  // parsing): mutually recursive, see mutual.almd.
+  | DMutualDefs(List[Decl])
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -744,7 +750,170 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
 
 fn parse(src: String) -> List[Located]! = {
   let ts = lex(src)!
-  decls(ts, 0, [])
+  ok(group_mutual_defs(group_mutual(decls(ts, 0, [])!)))
+}
+
+// Consecutive `type` declarations where one refers to a later one form a
+// mutual group (everything from the first to the last one it reaches).
+fn group_mutual(ds: List[Located]) -> List[Located] = {
+  var out: List[Located] = []
+  var i = 0
+  let n = list.len(ds)
+  while i < n {
+    let d = list.get(ds, i) ?? Located { line: 0, decl: DViews }
+    // How far the run of types starting here reaches by forward references.
+    var j = i
+    var end = i
+    while j <= end and j < n {
+      match ind_at(ds, j) {
+        some(ind) => {
+          let refs = mutual_refs(ind)
+          var k = j + 1
+          while k < n {
+            match ind_at(ds, k) {
+              some(other) => if list.contains(refs, other.name) and k > end then {
+                end = k
+              } else (),
+              none => {
+                k = n
+              },
+            }
+            k = k + 1
+          }
+        },
+        none => (),
+      }
+      j = j + 1
+    }
+    if end > i then {
+      var group: List[Inductive] = []
+      var m = i
+      while m <= end {
+        match ind_at(ds, m) {
+          some(ind) => list.push(group, ind),
+          none => (),
+        }
+        m = m + 1
+      }
+      list.push(out, Located { line: d.line, decl: DMutual(group) })
+      i = end + 1
+    } else {
+      list.push(out, d)
+      i = i + 1
+    }
+  }
+  out
+}
+
+// The same for definitions and theorems: a group from the first to the
+// last one reached by forward references.
+fn group_mutual_defs(ds: List[Located]) -> List[Located] = {
+  var out: List[Located] = []
+  var i = 0
+  let n = list.len(ds)
+  while i < n {
+    let d = list.get(ds, i) ?? Located { line: 0, decl: DViews }
+    var j = i
+    var end = i
+    while j <= end and j < n {
+      match def_at(ds, j) {
+        some((_, refs)) => {
+          var k = j + 1
+          var going = true
+          while going and k < n {
+            match def_at(ds, k) {
+              some((name, _)) => {
+                if list.contains(refs, name) and k > end then {
+                  end = k
+                } else ()
+              },
+              none => {
+                going = false
+              },
+            }
+            k = k + 1
+          }
+        },
+        none => (),
+      }
+      j = j + 1
+    }
+    if end > i then {
+      var group: List[Decl] = []
+      var m = i
+      while m <= end {
+        match list.get(ds, m) {
+          some(l) => list.push(group, l.decl),
+          none => (),
+        }
+        m = m + 1
+      }
+      list.push(out, Located { line: d.line, decl: DMutualDefs(group) })
+      i = end + 1
+    } else {
+      list.push(out, d)
+      i = i + 1
+    }
+  }
+  out
+}
+
+// A definition's name and every name its type and body mention.
+local fn def_at(ds: List[Located], i: Int) -> Option[(String, List[String])] = match list.get(ds, i) {
+  some(l) => match l.decl {
+    DDef(sig, body) => some((sig.name, free_names(sig.ty, []) + free_names(body, []))),
+    DTheorem(sig, body) => some((sig.name, free_names(sig.ty, []) + free_names(body, []))),
+    _ => none,
+  },
+  none => none,
+}
+
+// The names a term mentions that it does not bind itself (binders,
+// pattern variables): what may refer to other declarations.
+local fn free_names(r: Raw, bound: List[String]) -> List[String] = match r {
+  RName(x) => if list.contains(bound, x) then [] else [x],
+  RInst(x, _) => if list.contains(bound, x) then [] else [x],
+  RApp(f, a) => free_names(f, bound) + free_names(a, bound),
+  RLam(x, ty, b) => free_names(ty, bound) + free_names(b, [x] + bound),
+  RPi(x, ty, b) => free_names(ty, bound) + free_names(b, [x] + bound),
+  RBracket(b) => free_names(b, bound),
+  RMatch(sc, arms) => free_names(sc, bound) + (arms |> list.flat_map((a) => free_names(a.body, (a.subs |> list.flat_map((t) => sub_vars(t))) + bound))),
+  _ => [],
+}
+
+local fn sub_vars(s: Sub) -> List[String] = match s {
+  SName(x) => [x],
+  SCon(_, ss) => ss |> list.flat_map((t) => sub_vars(t)),
+}
+
+local fn ind_at(ds: List[Located], i: Int) -> Option[Inductive] = match list.get(ds, i) {
+  some(l) => match l.decl {
+    DInductive(ind) => some(ind),
+    _ => none,
+  },
+  none => none,
+}
+
+local fn raw_names(r: Raw) -> List[String] = match r {
+  RName(x) => [x],
+  RInst(x, _) => [x],
+  RApp(f, a) => raw_names(f) + raw_names(a),
+  RLam(_, ty, b) => raw_names(ty) + raw_names(b),
+  RPi(_, ty, b) => raw_names(ty) + raw_names(b),
+  RBracket(b) => raw_names(b),
+  _ => [],
+}
+
+local fn mutual_refs(ind: Inductive) -> List[String] = {
+  let ps = ind.params |> list.map(((x, _)) => x)
+  (ind.params |> list.flat_map(((_, t)) => free_names(t, ps))) + free_names(ind.arity, ps)
+    + (ind.ctors |> list.flat_map((c) => {
+      let bound = ps + (c.args |> list.map(((x, _)) => x))
+      (c.args |> list.flat_map(((_, t)) => free_names(t, bound))) + match c.result {
+        some(r) => free_names(r, bound),
+        none => [],
+      }
+    }))
 }
 
 local fn decls(ts: List[Token], p: Int, acc: List[Located]) -> List[Located]! = {
