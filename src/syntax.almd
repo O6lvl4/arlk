@@ -72,7 +72,14 @@ type Constructor = { name: String, args: List[(String, Raw)], result: Raw? }
 type Located = { line: Int, decl: Decl }
 
 // One arm of a match: a constructor (or `_`), the names it binds, the body.
-type Arm = { ctor: String, vars: List[String], body: Raw }
+type Arm = { ctor: String, subs: List[Sub], body: Raw }
+
+// A pattern inside an arm: a name (a variable, `_`, or a constructor
+// without arguments, told apart by the type it matches), or a constructor
+// applied to patterns: `succ(succ(n))`.
+type Sub =
+  | SName(String)
+  | SCon(String, List[Sub])
 
 // A declared name: its universe parameters, how many of its leading
 // parameters are implicit (written in `[...]`, inferred at each use), and
@@ -326,10 +333,10 @@ local fn arms(ts: List[Token], p: Int, acc: List[Arm]) -> (List[Arm], Int)! =
   if is_sym(ts, p, "}") then ok((acc, p + 1))
   else {
     let (ctor, p1) = ident(ts, p)!
-    let (vars, p2) = (if is_sym(ts, p1, "(") then arm_vars(ts, p1 + 1, []) else ok(([], p1)))!
+    let (subs, p2) = (if is_sym(ts, p1, "(") then arm_subs(ts, p1 + 1) else ok(([], p1)))!
     let p3 = expect(ts, p2, "=>")!
     let (body, p4) = term(ts, p3)!
-    let acc2 = acc + [Arm { ctor: ctor, vars: vars, body: body }]
+    let acc2 = acc + [Arm { ctor: ctor, subs: subs, body: body }]
     if is_sym(ts, p4, ",") then arms(ts, p4 + 1, acc2)
     else {
       let p5 = expect(ts, p4, "}")!
@@ -337,13 +344,30 @@ local fn arms(ts: List[Token], p: Int, acc: List[Arm]) -> (List[Arm], Int)! =
     }
   }
 
-local fn arm_vars(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int)! = {
-  let (x, p1) = ident(ts, p)!
-  if is_sym(ts, p1, ",") then arm_vars(ts, p1 + 1, acc + [x])
-  else {
-    let p2 = expect(ts, p1, ")")!
-    ok((acc + [x], p2))
+// Patterns up to the closing `)`.
+local fn arm_subs(ts: List[Token], p: Int) -> (List[Sub], Int)! = {
+  var out: List[Sub] = []
+  var q = p
+  var going = true
+  while going {
+    let (s, q1) = arm_sub(ts, q)!
+    list.push(out, s)
+    if is_sym(ts, q1, ",") then {
+      q = q1 + 1
+    } else {
+      q = expect(ts, q1, ")")!
+      going = false
+    }
   }
+  ok((out, q))
+}
+
+local fn arm_sub(ts: List[Token], p: Int) -> (Sub, Int)! = {
+  let (x, p1) = ident(ts, p)!
+  if is_sym(ts, p1, "(") then {
+    let (subs, p2) = arm_subs(ts, p1 + 1)!
+    ok((SCon(x, subs), p2))
+  } else ok((SName(x), p1))
 }
 
 local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
@@ -741,7 +765,7 @@ test "match: Almide's syntax, arms with and without bound names" {
       RLam(_, _, RMatch(RName(x), as)) => {
         assert_eq(x, "n")
         assert_eq(as |> list.map((a) => a.ctor), ["Nat.zero", "Nat.succ", "_"])
-        assert_eq(as |> list.map((a) => list.len(a.vars)), [0, 1, 0])
+        assert_eq(as |> list.map((a) => list.len(a.subs)), [0, 1, 0])
       },
       _ => assert(false),
     },

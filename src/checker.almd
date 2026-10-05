@@ -848,19 +848,8 @@ local fn compile_match(env: Env, sig: Sig, body: Raw) -> Raw! = {
         none => RType,
       }
       let target = match_target(env, dom)!
-      let resolved = arms |> list.map((a) => {
-        ...a,
-        // `succ` or `Nat.succ`: a constructor of the matched type first.
-        ctor: if a.ctor == "_" then "_" else match list.find(target.ctors, ((c, _, _)) => string.ends_with(c, "." + a.ctor)) {
-          some((c, _, _)) => c,
-          none => match resolve_const(env, a.ctor) {
-            ok(c) => c,
-            err(_) => a.ctor,
-          },
-        },
-      })
       let d = patterns.Def { name: sig.name, implicits: sig.implicits, params: params, ret: ty }
-      let compiled = patterns.compile(d, x, resolved, target)!
+      let compiled = patterns.compile(d, x, arms, target, (n) => target_named(env, n))!
       ok(list.fold(list.reverse(params), compiled, (acc, (p, pty)) => RLam(p, pty, acc)))
     },
     RMatch(_, _) => err("match on a parameter of ${sig.name} (by name)"),
@@ -877,24 +866,38 @@ local fn match_target(env: Env, dom: Raw) -> patterns.Target! = {
     RExplicit(x, _) => ok(x),
     _ => err("match needs a parameter whose type is an inductive type"),
   }!
-  let q = resolve_const(env, name)!
-  let info = match map.get(env.inductives, q) {
-    some(i) => ok(i),
+  match target_named(env, name) {
+    some(t) => ok(t),
     none => err("${name} is not an inductive type, so it cannot be matched"),
-  }!
-  guard info.indices == 0 else err("matching on an indexed family (${name}) is not supported yet")
-  var ctors: List[(String, Int, List[Int])] = []
-  for c in info.ctors {
-    let cty = map.get(env.types, c) ?? type0()
-    let args = pi_domains(cty)
-    let own = list.drop(args, info.params)
-    var recs: List[Int] = []
-    for (i, a) in list.enumerate(own) {
-      if result_head(a) == some(q) then list.push(recs, i) else ()
-    }
-    list.push(ctors, (c, list.len(own), recs))
   }
-  ok(patterns.Target { rec: q + ".rec", ctors: ctors })
+}
+
+// An inductive type by its name as written (or its full name), as the
+// match compiler needs it.
+local fn target_named(env: Env, name: String) -> patterns.Target? = {
+  let q = if map.contains(env.inductives, name) then name else match resolve_const(env, name) {
+    ok(c) => c,
+    err(_) => "",
+  }
+  match map.get(env.inductives, q) {
+    none => none,
+    some(info) => {
+      var ctors: List[patterns.Ctor] = []
+      for c in info.ctors {
+        let cty = map.get(env.types, c) ?? type0()
+        let own = list.drop(pi_domains(cty), info.params)
+        var recs: List[Int] = []
+        var heads: List[String] = []
+        for (i, a) in list.enumerate(own) {
+          let h = result_head(a)
+          if h == some(q) then list.push(recs, i) else ()
+          list.push(heads, h ?? "")
+        }
+        list.push(ctors, patterns.Ctor { name: c, nargs: list.len(own), recs: recs, heads: heads })
+      }
+      some(patterns.Target { rec: q + ".rec", indices: info.indices, ctors: ctors })
+    },
+  }
 }
 
 local fn raw_head(r: Raw) -> (Raw, Int) = match r {

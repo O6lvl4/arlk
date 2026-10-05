@@ -13,26 +13,52 @@
 //             (k: _, ih_k: _) => Nat.succ(ih_k),
 //             n)
 //
-// The match must be a definition's whole body, on one of its parameters.
-// A recursive call must pass, in that position, an argument the arm took
+// The match is a definition's whole body, on one of its parameters. A
+// recursive call must pass, in that position, an argument the arm took
 // apart (k above): that is structural recursion, so the definition always
 // terminates, and the call becomes the induction hypothesis for k.
 // Parameters before the matched one stay fixed in recursive calls;
 // parameters after it may change, and are passed along through the
 // motive. Theorems are proved by induction the same way.
 //
+// Arms may nest patterns (`succ(succ(n)) => ...`), and an arm's body may
+// itself be a `match` on any variable in scope. Both become case splits by
+// the inner type's recursor, with the arm's own type (the definition's, at
+// the constructor the arm took apart) as the motive; the arms are tried in
+// order, and `_` or a name matches anything. Recursion stays structural:
+// only the fields the outer match took apart have induction hypotheses.
+//
+// The matched parameter may belong to an indexed family (`v: Vec(A, n)`)
+// when its indices are parameters before it: the motive abstracts them,
+// and a recursive call may pass the field's own index there.
+//
 // The result still has holes (`_`) for binder types; the elaborator fills
 // them from the recursor's type, and the kernel checks the outcome, so
 // nothing here is trusted.
 
-import self.syntax.{Raw, Arm}
+import self.syntax.{Raw, Arm, Sub}
 
-// What the compiler needs to know about the matched type: its recursor,
-// and for each constructor its full name, its number of arguments and
-// which of them are recursive.
-type Target = { rec: String, ctors: List[(String, Int, List[Int])] }
+// What the compiler needs to know about a matched type: its recursor, how
+// many indices it has, and for each constructor its full name, its number
+// of arguments, which of them are recursive, and the inductive type (if
+// any) each argument belongs to, for matches on it.
+type Ctor = { name: String, nargs: Int, recs: List[Int], heads: List[String] }
+type Target = { rec: String, indices: Int, ctors: List[Ctor] }
 
 type Def = { name: String, implicits: Int, params: List[(String, Raw)], ret: Raw }
+
+// The compilation state: the definition, the matched parameter's position,
+// the names of its index parameters, the fields the top-level match took
+// apart with their induction hypotheses, a way to find the type behind a
+// name, and the types (heads) of the variables in scope.
+type Comp = {
+  d: Def,
+  k: Int,
+  index_params: List[String],
+  vars: List[String],
+  ihs: List[(Int, String)],
+  heads: List[(String, String)],
+}
 
 local fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
 
@@ -68,6 +94,11 @@ local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
 local fn fresh(x: String, taken: List[String]) -> String =
   if list.contains(taken, x) then fresh(x + "'", taken) else x
 
+local fn sub_names(s: Sub) -> List[String] = match s {
+  SName(x) => [x],
+  SCon(c, ss) => [c] + (ss |> list.flat_map((t) => sub_names(t))),
+}
+
 // Every name written in r (binders and references), to keep generated
 // names apart from them.
 local fn names_in(r: Raw) -> List[String] = match r {
@@ -76,101 +107,297 @@ local fn names_in(r: Raw) -> List[String] = match r {
   RLam(x, ty, b) => [x] + names_in(ty) + names_in(b),
   RPi(x, ty, b) => [x] + names_in(ty) + names_in(b),
   RBracket(b) => names_in(b),
-  RMatch(s, arms) => names_in(s) + (arms |> list.flat_map((a) => a.vars + names_in(a.body))),
+  RMatch(s, arms) => names_in(s) + (arms |> list.flat_map((a) => (a.subs |> list.flat_map((t) => sub_names(t))) + names_in(a.body))),
   _ => [],
 }
 
-// `match x { ... }` as the body of `d`. `arms` have their constructors
-// already resolved to full names (or "_").
-fn compile(d: Def, scrut: String, arms: List[Arm], t: Target) -> Raw! = {
+// r with the name x replaced by `by` where it refers to the outer x (not
+// under a binder that rebinds it). `by` is a fresh name or a term over
+// names that r does not bind, so nothing is captured.
+local fn replace(r: Raw, x: String, by: Raw) -> Raw = match r {
+  RName(y) => if y == x then by else r,
+  RApp(f, a) => RApp(replace(f, x, by), replace(a, x, by)),
+  RLam(y, ty, b) => RLam(y, replace(ty, x, by), if y == x then b else replace(b, x, by)),
+  RPi(y, ty, b) => RPi(y, replace(ty, x, by), if y == x then b else replace(b, x, by)),
+  RBracket(b) => RBracket(replace(b, x, by)),
+  RMatch(s, arms) => RMatch(replace(s, x, by), arms |> list.map((a) =>
+    if list.any(a.subs, (t) => list.contains(sub_names(t), x)) then a else { ...a, body: replace(a.body, x, by) })),
+  other => other,
+}
+
+// The constructor a name in an arm stands for: `succ` or `Nat.succ` both
+// name Nat.succ when Nat is matched.
+local fn ctor_of(t: Target, c: String) -> Ctor? =
+  list.find(t.ctors, (ci) => ci.name == c or string.ends_with(ci.name, "." + c))
+
+// ── The top-level match ─────────────────────────────────────────────
+
+// `match x { ... }` as the body of `d`. `look` finds the type a name (a
+// type's own name, or one written in a parameter's type) stands for.
+fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> Target?) -> Raw! = {
   let pnames = d.params |> list.map(((x, _)) => x)
   let k = match list.index_of(pnames, scrut) {
     some(i) => ok(i),
     none => err("match on ${scrut}: only a parameter of ${d.name} can be matched"),
   }!
   guard k >= d.implicits else err("match on ${scrut}: an implicit parameter cannot be matched")
+  for a in arms {
+    guard a.ctor == "_" or ctor_of(t, a.ctor) != none else err("${a.ctor} is not a constructor of ${scrut}'s type")
+  }
+  let named = arms |> list.filter((a) => a.ctor != "_" and list.all(a.subs, (s) => match s {
+    SName(_) => true,
+    SCon(_, _) => false,
+  })) |> list.map((a) => a.ctor)
+  guard list.len(list.unique(named)) == list.len(named) else err("a constructor has two arms in the match on ${scrut}")
   let others = list.drop(d.params, k + 1)
   let other_names = others |> list.map(((x, _)) => x)
-  // Each constructor gets exactly one arm (a `_` arm covers the rest).
-  for a in arms {
-    guard a.ctor == "_" or list.any(t.ctors, ((c, _, _)) => c == a.ctor) else err("${a.ctor} is not a constructor of ${scrut}'s type")
+  // An indexed family: its indices must be parameters before the matched one.
+  let (_, targs) = raw_spine(match list.get(d.params, k) {
+    some((_, ty)) => ty,
+    none => RType,
+  })
+  let idx_args = list.drop(targs, list.len(targs) - t.indices)
+  var index_params: List[String] = []
+  for a in idx_args {
+    list.push(index_params, index_param(a, list.take(pnames, k), index_params, scrut)!)
   }
-  let named = arms |> list.filter((a) => a.ctor != "_") |> list.map((a) => a.ctor)
-  guard list.len(list.unique(named)) == list.len(named) else err("a constructor has two arms in the match on ${scrut}")
-  let wildcard = list.find(arms, (a) => a.ctor == "_")
-  let motive = RLam(scrut, hole(), pis(others, d.ret))
+  let motive = lams(index_params, RLam(scrut, hole(), pis(others, d.ret)))
+  // Each arm is a row with one column, the matched parameter.
+  let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
+  let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [] }
   var minors: List[Raw] = []
-  for (c, nargs, recs) in t.ctors {
-    // A constructor without its own arm takes the `_` arm, with fresh
-    // names for its fields (they cannot capture a name the body uses).
-    let (arm, from_wildcard) = match list.find(arms, (a) => a.ctor == c) {
-      some(a) => ok((a, false)),
-      none => match wildcard {
-        some(w) => ok((w, true)),
-        none => err("the match on ${scrut} has no arm for ${c}"),
-      },
-    }!
-    let taken = pnames + other_names + names_in(arm.body) + arm.vars
-    var vars: List[String] = if from_wildcard then [] else arm.vars
-    if from_wildcard then {
-      var i = 0
-      while i < nargs {
-        list.push(vars, fresh("_" + int.to_string(i + 1), taken + vars))
-        i = i + 1
-      }
-    } else ()
-    guard list.len(vars) == nargs else err("${c} takes ${int.to_string(nargs)} arguments, the arm names ${int.to_string(list.len(vars))}")
+  for ci in t.ctors {
+    let taken = pnames + other_names + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s)))))
+    let fields = field_names(rows, 0, ci, taken)
     var ihs: List[(Int, String)] = []
-    for i in recs {
-      let v = list.get(vars, i) ?? ""
-      list.push(ihs, (i, fresh("ih_" + v, taken + vars + (ihs |> list.map(((_, n)) => n)))))
+    for i in ci.recs {
+      let v = list.get(fields, i) ?? ""
+      list.push(ihs, (i, fresh("ih_" + v, taken + fields + (ihs |> list.map(((_, n)) => n)))))
     }
-    let body = recursive_calls(d, k, arm.body, vars, ihs)!
-    list.push(minors, lams(vars + (ihs |> list.map(((_, n)) => n)) + other_names, body))
+    let rows2 = specialise(rows, 0, ci, fields, scrut, t)!
+    guard not list.is_empty(rows2) else err("the match on ${scrut} has no arm for ${ci.name}")
+    let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads) }
+    let body = matrix(cx2, fields, rows2, look, d.ret)!
+    list.push(minors, lams(fields + (ihs |> list.map(((_, n)) => n)) + other_names, body))
   }
-  let call = raw_apply(RName(t.rec), [motive] + minors + [RName(scrut)])
+  let call = raw_apply(RName(t.rec), [motive] + minors + (index_params |> list.map((x) => RName(x))) + [RName(scrut)])
   ok(raw_apply(call, other_names |> list.map((x) => RName(x))))
+}
+
+local fn index_param(a: Raw, before: List[String], seen: List[String], scrut: String) -> String! = {
+  let x = match a {
+    RName(n) => n,
+    _ => "",
+  }
+  guard x != "" and list.contains(before, x) and not list.contains(seen, x) else err("match on ${scrut}: its type's indices must be distinct parameters before it (Agda-style unification of indices is not supported yet)")
+  ok(x)
+}
+
+// Names for a constructor's fields: the name the first arm for it gives,
+// when it is a plain name, so recursive calls read as written.
+local fn field_names(rows: List[(List[Sub], Raw)], col: Int, ci: Ctor, taken: List[String]) -> List[String] = {
+  // Sub-patterns are fetched first and matched on their own, not as
+  // `some(SCon(c, ss))`: almide/almide#3421.
+  let first = list.find(rows, ((subs, _)) => match sub_at(subs, col) {
+    SCon(c, ss) => (c == ci.name or string.ends_with(ci.name, "." + c)) and list.len(ss) == ci.nargs,
+    SName(_) => false,
+  })
+  let given_subs = match first {
+    some((subs, _)) => match sub_at(subs, col) {
+      SCon(_, ss) => ss,
+      SName(_) => [],
+    },
+    none => [],
+  }
+  var out: List[String] = []
+  var i = 0
+  while i < ci.nargs {
+    let given = match sub_at(given_subs, i) {
+      SName(x) => if x == "_" then "" else x,
+      SCon(_, _) => "",
+    }
+    let base = if given == "" then "_" + int.to_string(i + 1) else given
+    let n = if given != "" and not list.contains(out, given) then given else fresh(base, taken + out)
+    list.push(out, n)
+    i = i + 1
+  }
+  out
+}
+
+local fn sub_at(subs: List[Sub], i: Int) -> Sub = list.get(subs, i) ?? SName("_")
+
+// The rows that can match constructor ci in column col, with that column
+// replaced by ci's fields. A name in the column matches anything: it stands
+// for the matched variable itself.
+local fn specialise(rows: List[(List[Sub], Raw)], col: Int, ci: Ctor, fields: List[String], v: String, t: Target) -> List[(List[Sub], Raw)]! = {
+  var out: List[(List[Sub], Raw)] = []
+  for (subs, body) in rows {
+    let before = list.take(subs, col)
+    let after = list.drop(subs, col + 1)
+    guard col < list.len(subs) else err("a pattern has too few parts")
+    match sub_at(subs, col) {
+      SCon(c, ss) => match ctor_of(t, c) {
+        some(cj) => if cj.name == ci.name then {
+          guard list.len(ss) == ci.nargs else err("${ci.name} takes ${int.to_string(ci.nargs)} arguments, the pattern gives ${int.to_string(list.len(ss))}")
+          list.push(out, (before + ss + after, body))
+        } else (),
+        none => {
+          guard list.is_empty(ss) else err("${c} is not a constructor of ${v}'s type")
+          // A plain name that is not a constructor: a variable.
+          list.push(out, (before + (fields |> list.map((_) => SName("_"))) + after, if c == "_" or c == v then body else replace(body, c, RName(v))))
+        },
+      },
+      SName(x) => match (if x == "_" then none else ctor_of(t, x)) {
+        some(cj) => if cj.name == ci.name then {
+          guard ci.nargs == 0 else err("${ci.name} takes ${int.to_string(ci.nargs)} arguments, the pattern gives none")
+          list.push(out, (before + after, body))
+        } else (),
+        none => list.push(out, (before + (fields |> list.map((_) => SName("_"))) + after, if x == "_" or x == v then body else replace(body, x, RName(v)))),
+      },
+    }
+  }
+  ok(out)
+}
+
+// Rows over columns (variables in scope): the first row decides, unless
+// one of its patterns is a constructor, which splits that column.
+local fn matrix(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], look: (String) -> Target?, ret: Raw) -> Raw! = {
+  let (subs, body) = match list.first(rows) {
+    some(r) => ok(r),
+    none => err("a match is missing a case"),
+  }!
+  // A column whose pattern is a constructor (a name counts when the
+  // column's type has a constructor of that name).
+  var split: Int = -1
+  var i = 0
+  for s in subs {
+    if split < 0 then match s {
+      SCon(_, _) => {
+        split = i
+      },
+      SName(x) => if x != "_" and is_ctor_name(cx, list.get(cols, i) ?? "", x, look) then {
+        split = i
+      } else (),
+    } else ()
+    i = i + 1
+  }
+  if split < 0 then {
+    // Every pattern is a variable: name the columns, and go on with the body.
+    var b = body
+    for (s, col) in list.zip(subs, cols) {
+      match s {
+        SName(x) => if x != "_" and x != col then {
+          b = replace(b, x, RName(col))
+        } else (),
+        SCon(_, _) => (),
+      }
+    }
+    arm_body(cx, b, look, ret)
+  } else split_on(cx, cols, rows, split, look, ret)
+}
+
+local fn head_of(cx: Comp, v: String) -> String = match list.find(cx.heads, ((x, _)) => x == v) {
+  some((_, h)) => h,
+  none => match list.find(cx.d.params, ((x, _)) => x == v) {
+    some((_, ty)) => {
+      let (h, _) = raw_spine(ty)
+      match h {
+        RName(n) => n,
+        RInst(n, _) => n,
+        RExplicit(n, _) => n,
+        _ => "",
+      }
+    },
+    none => "",
+  },
+}
+
+local fn is_ctor_name(cx: Comp, v: String, x: String, look: (String) -> Target?) -> Bool = match look(head_of(cx, v)) {
+  some(t) => ctor_of(t, x) != none,
+  none => false,
+}
+
+// Split column `col` by its type's recursor; the arms' type, with the
+// column at each constructor, is the motive.
+local fn split_on(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], col: Int, look: (String) -> Target?, ret: Raw) -> Raw! = {
+  let v = list.get(cols, col) ?? ""
+  let t = match look(head_of(cx, v)) {
+    some(x) => ok(x),
+    none => err("cannot match on ${v}: its type is not an inductive type"),
+  }!
+  guard t.indices == 0 else err("an inner match on ${v}, of an indexed family, is not supported yet")
+  let taken = cols + names_in(ret) + (rows |> list.flat_map(((subs, b)) => names_in(b) + (subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars + (cx.ihs |> list.map(((_, n)) => n))
+  var minors: List[Raw] = []
+  for ci in t.ctors {
+    let fields = field_names(rows, col, ci, taken)
+    let rows2 = specialise(rows, col, ci, fields, v, t)!
+    guard not list.is_empty(rows2) else err("the match on ${v} has no arm for ${ci.name}")
+    // Induction hypotheses of an inner split are not recursion on the
+    // definition: they are bound and left unused.
+    var unused: List[String] = []
+    for _ in ci.recs {
+      list.push(unused, fresh("_ih", taken + fields + unused))
+    }
+    let cols2 = list.take(cols, col) + fields + list.drop(cols, col + 1)
+    let cx2 = { ...cx, heads: cx.heads + list.zip(fields, ci.heads) }
+    let ret2 = replace(ret, v, raw_apply(RName(ci.name), fields |> list.map((f) => RName(f))))
+    let body = matrix(cx2, cols2, rows2, look, ret2)!
+    list.push(minors, lams(fields + unused, body))
+  }
+  ok(raw_apply(RName(t.rec), [RLam(v, hole(), ret)] + minors + [RName(v)]))
+}
+
+// An arm's body: itself a match on a variable in scope, or a term whose
+// recursive calls become induction hypotheses.
+local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> Raw! = match body {
+  RMatch(RName(v), arms) => {
+    let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
+    matrix(cx, [v], rows, look, ret)
+  },
+  _ => recursive_calls(cx, body),
 }
 
 // Replace each recursive call `d(..., v, others...)`, where v is a
 // recursive argument the arm bound, by its induction hypothesis applied to
 // the others. Anything else that calls d is not structural recursion.
-local fn recursive_calls(d: Def, k: Int, r: Raw, vars: List[String], ihs: List[(Int, String)]) -> Raw! = {
+local fn recursive_calls(cx: Comp, r: Raw) -> Raw! = {
   let (h, args) = raw_spine(r)
   match h {
     RName(f) =>
-      if f == d.name then call_to_ih(d, k, args, vars, ihs)
+      if f == cx.d.name then call_to_ih(cx, args)
       else {
         var out: List[Raw] = []
         for a in args {
-          list.push(out, recursive_calls(d, k, a, vars, ihs)!)
+          list.push(out, recursive_calls(cx, a)!)
         }
         ok(raw_apply(h, out))
       },
     _ => match r {
-      RApp(f, a) => ok(RApp(recursive_calls(d, k, f, vars, ihs)!, recursive_calls(d, k, a, vars, ihs)!)),
-      RLam(x, ty, b) => ok(RLam(x, recursive_calls(d, k, ty, vars, ihs)!, recursive_calls(d, k, b, vars, ihs)!)),
-      RPi(x, ty, b) => ok(RPi(x, recursive_calls(d, k, ty, vars, ihs)!, recursive_calls(d, k, b, vars, ihs)!)),
-      RMatch(_, _) => err("a match must be a definition's whole body"),
+      RApp(f, a) => ok(RApp(recursive_calls(cx, f)!, recursive_calls(cx, a)!)),
+      RLam(x, ty, b) => ok(RLam(x, recursive_calls(cx, ty)!, recursive_calls(cx, b)!)),
+      RPi(x, ty, b) => ok(RPi(x, recursive_calls(cx, ty)!, recursive_calls(cx, b)!)),
+      RMatch(_, _) => err("a match must be a definition's body, or an arm's body"),
       other => ok(other),
     },
   }
 }
 
-local fn call_to_ih(d: Def, k: Int, args: List[Raw], vars: List[String], ihs: List[(Int, String)]) -> Raw! = {
+local fn call_to_ih(cx: Comp, args: List[Raw]) -> Raw! = {
+  let d = cx.d
   // Recursive calls leave the implicit parameters out, like any call.
   let explicit = list.len(d.params) - d.implicits
   guard list.len(args) == explicit else err("the recursive call to ${d.name} must pass all ${int.to_string(explicit)} arguments")
-  let pos = k - d.implicits
-  // Parameters before the matched one are fixed.
+  let pos = cx.k - d.implicits
+  // Parameters before the matched one are fixed, apart from the indices
+  // of its type (the field's own indices go there).
   for (i, a) in list.enumerate(list.take(args, pos)) {
     let (p, _) = list.get(d.params, d.implicits + i) ?? ("", RType)
-    guard a == RName(p) else err("in a recursive call to ${d.name}, ${p} must be passed unchanged (it comes before the matched parameter)")
+    guard a == RName(p) or list.contains(cx.index_params, p) else err("in a recursive call to ${d.name}, ${p} must be passed unchanged (it comes before the matched parameter)")
   }
   let arg = list.get(args, pos) ?? RType
   let ih = match arg {
-    RName(v) => match list.index_of(vars, v) {
-      some(i) => match list.find(ihs, ((j, _)) => j == i) {
+    RName(v) => match list.index_of(cx.vars, v) {
+      some(i) => match list.find(cx.ihs, ((j, _)) => j == i) {
         some((_, n)) => some(n),
         none => none,
       },
@@ -182,10 +409,10 @@ local fn call_to_ih(d: Def, k: Int, args: List[Raw], vars: List[String], ihs: Li
     some(n) => {
       var rest: List[Raw] = []
       for a in list.drop(args, pos + 1) {
-        list.push(rest, recursive_calls(d, k, a, vars, ihs)!)
+        list.push(rest, recursive_calls(cx, a)!)
       }
       ok(raw_apply(RName(n), rest))
     },
-    none => err("${d.name} is called recursively on something that is not a smaller part of the matched value (structural recursion only)"),
+    none => err("${d.name} is called recursively on something that is not a smaller part of the matched value (structural recursion only, on the fields the definition's match takes apart)"),
   }
 }

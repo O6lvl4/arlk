@@ -72,6 +72,38 @@ type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
 
 def pair: Vec(Nat, two) = Vec.vcons(one, Nat.zero, Vec.vcons(Nat.zero, one, Vec.vnil))
 
+// Matching a family: the length index is generalised in the motive, and
+// the recursive call passes the field's own length.
+def vmap[u, v, A: Type(u), B: Type(v)](f: A -> B, n: Nat, xs: Vec(A, n)) -> Vec(B, n) = match xs {
+  vnil => Vec.vnil,
+  vcons(m, x, rest) => Vec.vcons(m, f(x), vmap(f, m, rest)),
+}
+
+eval vmap(Nat.succ, two, pair)
+
+// Nested patterns, tried in order, and a match inside an arm.
+def pred2(n: Nat) -> Nat = match n {
+  succ(succ(m)) => m,
+  _ => Nat.zero,
+}
+
+type Bool: Type =
+  | tt
+  | ff
+
+def le(m: Nat, n: Nat) -> Bool = match m {
+  zero => Bool.tt,
+  succ(k) => match n {
+    zero => Bool.ff,
+    succ(j) => le(k, j),
+  },
+}
+
+theorem le_refl(n: Nat) -> Eq(Bool, le(n, n), Bool.tt) = match n {
+  zero => Eq.refl,
+  succ(k) => le_refl(k),
+}
+
 // Records, like Almide's: fields, `p.x`, `Point { x: ..., y: ... }`.
 type Point = { x: Nat, y: Nat }
 

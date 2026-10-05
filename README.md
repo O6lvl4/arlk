@@ -167,7 +167,17 @@ compiled to x's recursor (src/patterns.almd): each arm becomes a minor premise, 
 call on an argument the arm took apart becomes the induction hypothesis. Anything else that calls
 the definition is rejected, so definitions always terminate. Parameters after the matched one may
 change in recursive calls (an accumulator) and travel through the motive. Arms may use short
-constructor names and `_` for the rest; a missing or repeated arm is an error.
+constructor names and `_` for the rest; a missing case is an error.
+
+Patterns nest (`succ(succ(m)) => m`), arms are tried in order, and an arm's body may itself be a
+`match` on any variable in scope; both become case splits by the inner type's recursor, with the
+arm's own type as the motive (pattern-matrix compilation, as in Agda and Lean). Recursion stays
+structural on the fields the definition's match takes apart, so `le(m, n)` matching both arguments
+works, while `even` recursing two constructors deep is refused (it needs course-of-values
+recursion, not there yet). A parameter of an indexed family (`xs: Vec(A, n)`) can be matched when
+its indices are parameters before it: the motive generalises them, and a recursive call passes the
+field's own index (`vmap(f, m, rest)`). Indices that are not variables would need Agda-style
+unification of indices; that is refused with a message for now.
 
 **Records.** `type Point = { x: Nat, y: Nat }` is a type with one constructor `Point.mk` and a
 projection per field, defined by a match; a field's type may mention earlier fields
@@ -182,8 +192,9 @@ is not trusted: its output is a complete kernel term, checked like a hand-writte
 inference is a type error, never a false theorem. What it cannot infer it reports. See
 [examples/data.arlk](examples/data.arlk).
 
-Next on this road: nested patterns and matching on indexed families, mutual and nested types, and reading Lean and Rocq libraries directly into these native
-features instead of through the `core` encoding.
+Next on this road: unification of indices and course-of-values recursion in `match`, mutual and
+nested types, and reading Lean and Rocq libraries directly into these native features instead of
+through the `core` encoding.
 
 ## Absorbing provers
 
@@ -556,3 +567,4 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 | [almide#3414](https://github.com/almide/almide/issues/3414) a guard on a variable bound in a nested variant pattern runs before the binding | test the variable in the arm body (`hol.dest_eq`) |
 | [almide#3415](https://github.com/almide/almide/issues/3415) `err(..)` in a let-bound match takes the enclosing `Unit!` type | one small function per object kind (`pop_tyop`, `as_ty`, ...) |
 | [almide#3416](https://github.com/almide/almide/issues/3416) tuple-of-variants match leaves recursive payloads boxed | one value at a time (`as_list`, `as_var`) |
+| [almide#3421](https://github.com/almide/almide/issues/3421) a variant pattern nested in `some(...)` leaves payloads boxed | fetch, then match (`patterns.sub_at`) |

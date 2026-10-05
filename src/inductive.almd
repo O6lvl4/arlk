@@ -24,7 +24,7 @@
 // second rests on this file. Both are part of the trusted base; see
 // docs/TRUST.md.
 
-import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm}
+import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm, Sub}
 
 // `large`: the motive may land in any universe (else only in Prop).
 // `k`: a proposition with one constructor and no arguments (like Eq):
@@ -286,7 +286,7 @@ fn projections(ind0: Inductive) -> List[Decl] = {
     let proj = (g: String) => RApp(RName(ind.name + "." + g), RName(p))
     let ty2 = substitute(ty, earlier, earlier |> list.map((g) => proj(g)))
     let sig = Sig { name: ind.name + "." + f, levels: ind.levels, implicits: list.len(ind.params), ty: pis(ind.params + [(p, target)], ty2) }
-    let arm = Arm { ctor: "mk", vars: ind.fields, body: RName(f) }
+    let arm = Arm { ctor: "mk", subs: ind.fields |> list.map((g) => SName(g)), body: RName(f) }
     let body = lams(ind.params + [(p, target)], RMatch(RName(p), [arm]))
     list.push(out, DDef(sig, body))
     list.push(earlier, f)

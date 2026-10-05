@@ -699,3 +699,96 @@ theorem later[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) = ?
     none => assert(false),
   }
 }
+
+// ── Pattern matching: nested patterns, inner matches, indexed families ─
+
+let NATS = """
+room pm
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+type Bool: Type =
+  | tt
+  | ff
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+"""
+
+test "nested patterns are tried in order" {
+  let src = NATS + """
+def pred2(n: Nat) -> Nat = match n {
+  succ(succ(m)) => m,
+  _ => Nat.zero,
+}
+theorem pred2_ss(m: Nat) -> Eq(Nat, pred2(Nat.succ(Nat.succ(m))), m) = Eq.refl
+theorem pred2_one: Eq(Nat, pred2(Nat.succ(Nat.zero)), Nat.zero) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "a match may leave a case out only if another arm covers it" {
+  let src = NATS + """
+def f(n: Nat) -> Nat = match n {
+  zero => Nat.zero,
+  succ(succ(m)) => m,
+}
+"""
+  assert(rejects_with(src, "no arm for pm.Nat.zero"))
+}
+
+test "an arm may match again, and recursion on the outer field is structural" {
+  let src = NATS + """
+def le(m: Nat, n: Nat) -> Bool = match m {
+  zero => Bool.tt,
+  succ(k) => match n {
+    zero => Bool.ff,
+    succ(j) => le(k, j),
+  },
+}
+theorem le_refl(n: Nat) -> Eq(Bool, le(n, n), Bool.tt) = match n {
+  zero => Eq.refl,
+  succ(k) => le_refl(k),
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "recursion two constructors deep is not structural here" {
+  let src = NATS + """
+def even(n: Nat) -> Bool = match n {
+  zero => Bool.tt,
+  succ(zero) => Bool.ff,
+  succ(succ(k)) => even(k),
+}
+"""
+  assert(rejects_with(src, "structural recursion"))
+}
+
+test "an indexed family is matched with its indices generalised" {
+  let src = NATS + """
+type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
+  | vnil: Vec(A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
+def vmap[u, v, A: Type(u), B: Type(v)](f: A -> B, n: Nat, xs: Vec(A, n)) -> Vec(B, n) = match xs {
+  vnil => Vec.vnil,
+  vcons(m, x, rest) => Vec.vcons(m, f(x), vmap(f, m, rest)),
+}
+def vhead_or[u, A: Type(u)](d: A, n: Nat, xs: Vec(A, n)) -> A = match xs {
+  vnil => d,
+  vcons(m, x, rest) => x,
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "an index that is not a parameter needs unification, which is refused" {
+  let src = NATS + """
+type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
+  | vnil: Vec(A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
+def vhead[u, A: Type(u)](n: Nat, xs: Vec(A, Nat.succ(n))) -> A = match xs {
+  vcons(m, x, rest) => x,
+}
+"""
+  assert(rejects_with(src, "indices must be distinct parameters"))
+}
