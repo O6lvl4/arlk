@@ -275,8 +275,8 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
    alone. Lean is needed only as the source of the original text, never to trust a result. The
    translation starts from Lean's kernel export, the same way
    [lean4-rust-backend](https://github.com/O6lvl4/lean4-rust-backend) takes Lean's compiler IR out
-   as JSON and rebuilds it outside Lean. Metamath has started too (set.mm's propositional calculus); next for it is `$d`
-   and predicate calculus up to ZFC. After that: Isabelle/HOL, Agda, and Dedukti `.dk` files, each
+   as JSON and rebuilds it outside Lean. Metamath has started too (set.mm's propositional
+   calculus); next for it is `$d` and predicate calculus up to ZFC. After that: Isabelle/HOL, Agda, and Dedukti `.dk` files, each
    into a room of its own.
 4. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
