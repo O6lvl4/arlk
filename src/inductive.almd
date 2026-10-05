@@ -41,11 +41,25 @@ local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
 local fn lams(bs: List[(String, Raw)], body: Raw) -> Raw =
   list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
 
-fn raw_spine(r: Raw) -> (Raw, List[Raw]) = spine_acc(r, [])
-
-local fn spine_acc(r: Raw, args: List[Raw]) -> (Raw, List[Raw]) = match r {
-  RApp(f, a) => spine_acc(f, [a] + args),
-  other => (other, args),
+fn raw_spine(r: Raw) -> (Raw, List[Raw]) = {
+  // A loop, not `spine_acc(f, [a] + args)`: on the native test build that
+  // form passes boxed payloads where values are expected (see the README's
+  // Almide issues).
+  var head = r
+  var rev: List[Raw] = []
+  var going = true
+  while going {
+    match head {
+      RApp(f, a) => {
+        list.push(rev, a)
+        head = f
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (head, list.reverse(rev))
 }
 
 local fn names(bs: List[(String, Raw)]) -> List[Raw] = bs |> list.map(((x, _)) => RName(x))

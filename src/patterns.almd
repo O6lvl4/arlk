@@ -36,11 +36,25 @@ type Def = { name: String, implicits: Int, params: List[(String, Raw)], ret: Raw
 
 local fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
 
-local fn raw_spine(r: Raw) -> (Raw, List[Raw]) = spine_acc(r, [])
-
-local fn spine_acc(r: Raw, args: List[Raw]) -> (Raw, List[Raw]) = match r {
-  RApp(f, a) => spine_acc(f, [a] + args),
-  other => (other, args),
+local fn raw_spine(r: Raw) -> (Raw, List[Raw]) = {
+  // A loop, not `spine_acc(f, [a] + args)`: on the native test build that
+  // form passes boxed payloads where values are expected (see the README's
+  // Almide issues).
+  var head = r
+  var rev: List[Raw] = []
+  var going = true
+  while going {
+    match head {
+      RApp(f, a) => {
+        list.push(rev, a)
+        head = f
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (head, list.reverse(rev))
 }
 
 local fn hole() -> Raw = RName("_")
