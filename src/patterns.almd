@@ -87,16 +87,24 @@ fn compile(d: Def, scrut: String, arms: List[Arm], t: Target) -> Raw! = {
   let motive = RLam(scrut, hole(), pis(others, d.ret))
   var minors: List[Raw] = []
   for (c, nargs, recs) in t.ctors {
-    let arm = match list.find(arms, (a) => a.ctor == c) {
-      some(a) => ok(a),
+    // A constructor without its own arm takes the `_` arm, with fresh
+    // names for its fields (they cannot capture a name the body uses).
+    let (arm, from_wildcard) = match list.find(arms, (a) => a.ctor == c) {
+      some(a) => ok((a, false)),
       none => match wildcard {
-        some(w) => ok(Arm { ctor: c, vars: [], body: w.body }),
+        some(w) => ok((w, true)),
         none => err("the match on ${scrut} has no arm for ${c}"),
       },
     }!
-    let taken = pnames + names_in(arm.body) + arm.vars
-    let vars = if arm.ctor == c and a_specific(arm, c) then arm.vars
-      else list.map(0..<nargs, (i) => fresh("_" + int.to_string(i + 1), taken))
+    let taken = pnames + other_names + names_in(arm.body) + arm.vars
+    var vars: List[String] = if from_wildcard then [] else arm.vars
+    if from_wildcard then {
+      var i = 0
+      while i < nargs {
+        list.push(vars, fresh("_" + int.to_string(i + 1), taken + vars))
+        i = i + 1
+      }
+    } else ()
     guard list.len(vars) == nargs else err("${c} takes ${int.to_string(nargs)} arguments, the arm names ${int.to_string(list.len(vars))}")
     var ihs: List[(Int, String)] = []
     for i in recs {
@@ -109,8 +117,6 @@ fn compile(d: Def, scrut: String, arms: List[Arm], t: Target) -> Raw! = {
   let call = raw_apply(RName(t.rec), [motive] + minors + [RName(scrut)])
   ok(raw_apply(call, other_names |> list.map((x) => RName(x))))
 }
-
-local fn a_specific(a: Arm, c: String) -> Bool = a.ctor == c
 
 // Replace each recursive call `d(..., v, others...)`, where v is a
 // recursive argument the arm bound, by its induction hypothesis applied to

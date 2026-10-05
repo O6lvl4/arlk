@@ -141,6 +141,22 @@ local fn leave(mut b: Budget) -> Unit = {
   b.depth = b.depth - 1
 }
 
+let REDUCE_WEIGHT = 4
+
+local fn enter_by(mut b: Budget, k: Int) -> Bool =
+  if not spend(b) then false
+  else if b.depth + k > MAX_DEPTH then {
+    b.exhausted = true
+    false
+  } else {
+    b.depth = b.depth + k
+    true
+  }
+
+local fn leave_by(mut b: Budget, k: Int) -> Unit = {
+  b.depth = b.depth - k
+}
+
 fn exhausted_error() -> String =
   "out of budget: reduction did not finish (a rule set that does not terminate, or a term too deep to compare)"
 
@@ -154,7 +170,20 @@ fn whnf(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term = reduce(env, ctx, t
 // `f a` with `f b` without unfolding f.
 fn whnf_core(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term = reduce(env, ctx, t, false, b)
 
-local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term = {
+local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term =
+  // Matching a rule reduces the arguments, which may match rules again
+  // (issue #7): each reduction is one level of nesting, so such a cycle
+  // ends at the depth bound instead of the native stack.
+  // A reduction nested in matching costs several native frames, so it
+  // counts as REDUCE_WEIGHT levels.
+  if not enter_by(b, REDUCE_WEIGHT) then t
+  else {
+    let r = reduce_loop(env, ctx, t, delta, b)
+    leave_by(b, REDUCE_WEIGHT)
+    r
+  }
+
+local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term = {
   var cur = t
   var going = true
   while going {

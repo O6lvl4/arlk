@@ -518,3 +518,41 @@ test "records: a field's type may depend on earlier fields" {
     def sized: Sigma(Nat, (n: Nat) => Vec(n)) = Sigma { fst: Nat.zero, snd: Vec.mkv }
     """))
 }
+
+// Issue #6: a `_` arm also covers constructors with fields.
+test "a wildcard arm covers constructors with fields, without capturing names" {
+  assert(accepts(NAT + "def constant(n: Nat) -> Nat = match n {\n  zero => Nat.zero,\n  _ => Nat.zero,\n}"))
+  assert(accepts(NAT + "def all(n: Nat) -> Nat = match n {\n  _ => n,\n}"))
+  // Several fields, one of them recursive; the body uses `_1`, which the
+  // generated field names must not capture.
+  assert(accepts(NAT + """
+    type Tree: Type =
+      | leaf
+      | node(l: Tree, x: Nat, r: Tree)
+    def _1: Nat = Nat.succ(Nat.zero)
+    def shape(t: Tree) -> Nat = match t {
+      leaf => Nat.zero,
+      _ => _1,
+    }
+    type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+      | refl: Eq(A, a, a)
+    theorem one: Eq(Nat, shape(Tree.node(Tree.leaf, Nat.zero, Tree.leaf)), Nat.succ(Nat.zero)) = Eq.refl
+    """))
+  // Explicit arms still need the right number of names.
+  assert(rejects_with(NAT + "def f(n: Nat) -> Nat = match n {\n  zero => n,\n  succ => n,\n}", "takes 1 arguments"))
+}
+
+// Issue #7: matching a rule reduces arguments, which may match rules again.
+test "a cycle through rule matching runs out of budget instead of the stack" {
+  let src = """
+    room nested
+    symbol A: Type
+    symbol z: A
+    symbol f(x: A) -> A
+    symbol g(x: A) -> A
+    rule f(g(x)) = x  where x: A
+    rule g(x) = f(g(x))  where x: A
+    """
+  assert(rejects_with(src + "eval f(g(z))", "out of budget"))
+  assert(rejects_with(src + "symbol P(x: A) -> Type\nsymbol p: P(z)\ntheorem t: P(f(g(z))) = p", "out of budget"))
+}
