@@ -20,7 +20,16 @@ type Raw =
   | RPi(String, Raw, Raw)
   | RBracket(Raw)
 
-type Decl = | DRoom(String, List[String]) | DSymbol(String, Raw) | DDef(String, Raw, Raw) | DTheorem(String, Raw, Raw) | DRule(List[(String, Raw)], Raw, Raw) | DCheck(Raw) | DEval(Raw) | DAxioms(String)
+type Decl =
+  | DRoom(String, List[String])
+  | DSymbol(String, Raw)
+  | DDef(String, Raw, Raw)
+  | DTheorem(String, Raw, Raw)
+  | DRule(List[(String, Raw)], Raw, Raw)
+  | DIrrelevant(List[(String, Raw)], Raw)
+  | DCheck(Raw)
+  | DEval(Raw)
+  | DAxioms(String)
 
 type Located = { line: Int, decl: Decl }
 
@@ -31,6 +40,7 @@ let KEYWORDS = [
   "def",
   "theorem",
   "rule",
+  "irrelevant",
   "fun",
   "Type"
 ]
@@ -71,6 +81,18 @@ local fn scan_ident(cs: List[String], i: Int) -> Int = if is_ident_char(at(cs, i
 )
 else if at(cs, i) == "." and is_ident_char(at(cs, i + 1)) then scan_ident(cs, i + 1) else i
 
+// Copy element by element: `list.slice` clones the whole list per call on
+// native (almide/almide#3397), which made lexing quadratic.
+local fn text_between(cs: List[String], i: Int, j: Int) -> String = {
+  var parts: List[String] = []
+  var k = i
+  while k < j {
+    list.push(parts, at(cs, k))
+    k = k + 1
+  }
+  list.join(parts, "")
+}
+
 fn lex(src: String) -> List[Token]! = {
   let cs = string.chars(src)
   let n = list.len(cs)
@@ -91,31 +113,23 @@ fn lex(src: String) -> List[Token]! = {
       }
     } else if c == "#" and is_ident_char(at(cs, i + 1)) then {
       let j = scan_ident(cs, i + 1)
-      toks = toks + [
-        Token { kind: "ident", text: list.join(list.slice(cs, i, j), ""), line: line }
-      ]
+      list.push(toks, Token { kind: "ident", text: text_between(cs, i, j), line: line })
       i = j
     } else if c == "λ" then {
       // λ is a letter to Unicode, so it must be claimed before identifiers.
-      toks = toks + [
-        Token { kind: "kw", text: "fun", line: line }
-      ]
+      list.push(toks, Token { kind: "kw", text: "fun", line: line })
       i = i + 1
     } else if is_ident_char(c) then {
       let j = scan_ident(cs, i)
-      let text = list.join(list.slice(cs, i, j), "")
+      let text = text_between(cs, i, j)
       let kind = if list.contains(KEYWORDS, text) then "kw" else "ident"
-      toks = toks + [
-        Token { kind: kind, text: text, line: line }
-      ]
+      list.push(toks, Token { kind: kind, text: text, line: line })
       i = j
     } else {
       match punct(cs, i) {
         some((text, len)) => {
           let kind = if text == "fun" then "kw" else "sym"
-          toks = toks + [
-            Token { kind: kind, text: text, line: line }
-          ]
+          list.push(toks, Token { kind: kind, text: text, line: line })
           i = i + len
         },
         none => {
@@ -321,6 +335,11 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       let (rhs, p4) = term(ts, p3)!
       ok((DRule(vars, lhs, rhs), p4))
     },
+    "irrelevant" => {
+      let (vars, p1) = rule_vars(ts, p + 1)!
+      let (ty, p2) = term(ts, p1)!
+      ok((DIrrelevant(vars, ty), p2))
+    },
     "#check" => {
       let (e, p1) = term(ts, p + 1)!
       ok((DCheck(e), p1))
@@ -336,7 +355,7 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
     _ => err(fail_at(
       ts,
       p,
-      "expected a declaration (room, symbol, def, theorem, rule, #check, #eval, #axioms)",
+      "expected a declaration (room, symbol, def, theorem, rule, irrelevant, #check, #eval, #axioms)",
     )),
   }
 }
@@ -346,14 +365,27 @@ fn parse(src: String) -> List[Located]! = {
   decls(ts, 0, [])
 }
 
-local fn decls(ts: List[Token], p: Int, acc: List[Located]) -> List[Located]! = if tok(ts, p).kind == "eof" then ok(acc)
-else {
-  let line = tok(ts, p).line
-  let (d, p1) = decl(ts, p)!
-  let p2 = expect(ts, p1, ".")!
-  decls(ts, p2, acc + [
-    Located { line: line, decl: d }
-  ])
+local fn decls(ts: List[Token], p: Int, acc: List[Located]) -> List[Located]! = {
+  // A loop with push, not recursion with `acc + [d]`: absorbed files hold
+  // thousands of declarations.
+  var out = acc
+  var q = p
+  var failure = ""
+  while failure == "" and tok(ts, q).kind != "eof" {
+    let line = tok(ts, q).line
+    match decl(ts, q) {
+      ok((d, p1)) => match expect(ts, p1, ".") {
+        ok(p2) => {
+          list.push(out, Located { line: line, decl: d })
+          q = p2
+        },
+        err(e) => { failure = e },
+      },
+      err(e) => { failure = e },
+    }
+  }
+  guard failure == "" else err(failure)
+  ok(out)
 }
 
 test "lexer separates qualified names from the terminating dot" {

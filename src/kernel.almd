@@ -12,7 +12,14 @@ import self.term.{Term, shift, instantiate, subst, spine, apply, occurs, consts}
 import self.pretty
 import self.syntax.{Raw, Decl, Located}
 
-type Entry = { name: String, room: String, kind: String, ty: Term, body: Term? }
+// `height` is the declaration's position in the file: a def can only
+// mention earlier names, so unfolding the higher one first is the
+// cheapest way to make two terms meet.
+//
+// Entries hold only small fields: Almide copies a value on every lookup,
+// so types and bodies live in their own maps and are fetched only when
+// they are needed.
+type Entry = { room: String, kind: String, height: Int }
 
 // A rule's left-hand side, below its head symbol.
 //   PVar(k)      binds rule variable k (Var(k) in the rule's context)
@@ -36,9 +43,21 @@ type Rule = {
   text: String,
 }
 
+// What rewriting needs of a rule, and nothing else.
+type Rw = { arity: Int, nvars: Int, lhs_args: List[Pat], rhs: Term }
+
 type Env = {
   entries: Map[String, Entry],
-  rules: Map[String, List[Rule]],
+  types: Map[String, Term],
+  // bodies of defs and theorems
+  bodies: Map[String, Term],
+  // def name → height; only defs unfold
+  defs: Map[String, Int],
+  rws: Map[String, List[Rw]],
+  // every rule in declaration order, for reports
+  rules: List[Rule],
+  // `irrelevant` declarations, stored as rules without a right-hand side
+  irrelevants: List[Rule],
   // room → every room it can see, transitively
   rooms: Map[String, List[String]],
   room: String,
@@ -50,7 +69,18 @@ type Ctx = List[(String, Term)]
 
 let FUEL = 1_000_000
 
-fn empty() -> Env = Env { entries: [:], rules: [:], rooms: ["main": []], room: "main", order: [] }
+fn empty() -> Env = Env {
+  entries: [:],
+  types: [:],
+  bodies: [:],
+  defs: [:],
+  rws: [:],
+  rules: [],
+  irrelevants: [],
+  rooms: ["main": []],
+  room: "main",
+  order: [],
+}
 
 local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
 
@@ -83,15 +113,13 @@ local fn whnf_fuel(env: Env, t: Term, fuel: Int) -> Term =
     }
   }
 
-local fn unfold(env: Env, c: String) -> Term? = match map.get(env.entries, c) {
-  some(e) => if e.kind == "def" then e.body else none,
-  none => none,
-}
+local fn unfold(env: Env, c: String) -> Term? =
+  if map.contains(env.defs, c) then map.get(env.bodies, c) else none
 
 local fn rewrite(env: Env, c: String, args: List[Term]) -> Term? =
-  first_rewrite(env, map.get(env.rules, c) ?? [], args)
+  first_rewrite(env, map.get(env.rws, c) ?? [], args)
 
-local fn first_rewrite(env: Env, rules: List[Rule], args: List[Term]) -> Term? = match rules {
+local fn first_rewrite(env: Env, rules: List[Rw], args: List[Term]) -> Term? = match rules {
   [] => none,
   [r, ..rest] => match try_rule(env, r, args) {
     some(t) => some(t),
@@ -103,14 +131,14 @@ local fn first_rewrite(env: Env, rules: List[Rule], args: List[Term]) -> Term? =
 // checks to run once all of them are known.
 type MState = { sub: Map[Int, Term], pending: List[(Term, Term)] }
 
-local fn try_rule(env: Env, r: Rule, args: List[Term]) -> Term? =
+local fn try_rule(env: Env, r: Rw, args: List[Term]) -> Term? =
   if list.len(args) < r.arity then none
   else {
     let pairs = list.zip(r.lhs_args, list.take(args, r.arity))
     match match_all(env, pairs, MState { sub: [:], pending: [] }) {
       some(st) => {
         let vals = list.map(0..<r.nvars, (k) => map.get(st.sub, k) ?? Var(k))
-        let brackets_hold = list.all(st.pending, ((b, t)) => conv(env, instantiate(b, vals, 0), t))
+        let brackets_hold = list.all(st.pending, ((b, t)) => conv(env, [], instantiate(b, vals, 0), t))
         if brackets_hold then some(apply(instantiate(r.rhs, vals, 0), list.drop(args, r.arity)))
         else none
       },
@@ -155,34 +183,107 @@ fn nf(env: Env, t: Term) -> Term = {
 
 // ── Conversion ──────────────────────────────────────────────────────
 
-fn conv(env: Env, a: Term, b: Term) -> Bool =
-  if a == b then true
+// β and rules only: definitions stay folded, so conversion can compare
+// `f a` with `f b` without unfolding f.
+local fn whnf_core(env: Env, t: Term) -> Term = whnf_core_fuel(env, t, FUEL)
+
+local fn whnf_core_fuel(env: Env, t: Term, fuel: Int) -> Term =
+  if fuel <= 0 then t
   else {
-    let wa = whnf(env, a)
-    let wb = whnf(env, b)
+    let (h, args) = spine(t)
+    match h {
+      Lam(_, _, body) => match list.first(args) {
+        some(a) => whnf_core_fuel(env, apply(subst(body, a), list.drop(args, 1)), fuel - 1),
+        none => t,
+      },
+      Const(c) => match rewrite(env, c, args) {
+        some(t2) => whnf_core_fuel(env, t2, fuel - 1),
+        none => t,
+      },
+      _ => t,
+    }
+  }
+
+// The height of the definition at the head of t, if t's head unfolds.
+local fn def_height(env: Env, t: Term) -> Int? = {
+  let (h, _) = spine(t)
+  match h {
+    Const(c) => map.get(env.defs, c),
+    _ => none,
+  }
+}
+
+local fn unfold_head(env: Env, t: Term) -> Term = {
+  let (h, args) = spine(t)
+  match h {
+    Const(c) => match unfold(env, c) {
+      some(body) => apply(body, args),
+      none => t,
+    },
+    _ => t,
+  }
+}
+
+// `ctx` types the free variables of a and b. It is only consulted for
+// proof irrelevance; with an empty context that check simply fails.
+fn conv(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool =
+  if a == b then true
+  else conv_whnf(env, ctx, whnf_core(env, a), whnf_core(env, b)) or irrelevant_eq(env, ctx, a, b)
+
+local fn conv_whnf(env: Env, ctx: Ctx, wa: Term, wb: Term) -> Bool =
+  if wa == wb then true
+  else {
     // Nested matches rather than `match (wa, wb)`: almide/almide#3390.
     match wa {
       Sort(i) => match wb {
         Sort(j) => i == j,
-        _ => false,
+        _ => conv_delta(env, ctx, wa, wb),
       },
-      Pi(_, t1, b1) => match wb {
-        Pi(_, t2, b2) => conv(env, t1, t2) and conv(env, b1, b2),
-        _ => false,
+      Pi(x, t1, b1) => match wb {
+        Pi(_, t2, b2) => conv(env, ctx, t1, t2) and conv(env, [(x, t1)] + ctx, b1, b2),
+        _ => conv_delta(env, ctx, wa, wb),
       },
       // η: (fun x => f x) ≡ f
-      Lam(_, t1, b1) => match wb {
-        Lam(_, t2, b2) => conv(env, t1, t2) and conv(env, b1, b2),
-        _ => conv(env, b1, App(shift(wb, 1, 0), Var(0))),
+      Lam(x, t1, b1) => match wb {
+        Lam(_, t2, b2) => conv(env, ctx, t1, t2) and conv(env, [(x, t1)] + ctx, b1, b2),
+        _ => conv(env, [(x, t1)] + ctx, b1, App(shift(wb, 1, 0), Var(0))),
       },
       _ => match wb {
-        Lam(_, _, b2) => conv(env, App(shift(wa, 1, 0), Var(0)), b2),
-        _ => conv_spines(env, wa, wb),
+        Lam(x, t2, b2) => conv(env, [(x, t2)] + ctx, App(shift(wa, 1, 0), Var(0)), b2),
+        _ => same_head_args(env, ctx, wa, wb) or conv_delta(env, ctx, wa, wb),
       },
     }
   }
 
-local fn conv_spines(env: Env, a: Term, b: Term) -> Bool = {
+// Same head constant and convertible arguments: equal without unfolding.
+local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
+  let (ha, xs) = spine(a)
+  let (hb, ys) = spine(b)
+  match ha {
+    Const(c) => match hb {
+      Const(d) => c == d and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, ctx, x, y)),
+      _ => false,
+    },
+    _ => false,
+  }
+}
+
+// Unfold one step on the side whose head was defined later, then retry.
+local fn conv_delta(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = match def_height(env, a) {
+  some(ha) => match def_height(env, b) {
+    some(hb) =>
+      if ha > hb then conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), b)
+      else if hb > ha then conv_whnf(env, ctx, a, whnf_core(env, unfold_head(env, b)))
+      else conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), whnf_core(env, unfold_head(env, b))),
+    none => conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), b),
+  },
+  none => match def_height(env, b) {
+    some(_) => conv_whnf(env, ctx, a, whnf_core(env, unfold_head(env, b))),
+    none => conv_spines(env, ctx, a, b),
+  },
+}
+
+local fn conv_spines(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
   let (ha, xs) = spine(a)
   let (hb, ys) = spine(b)
   let heads = match (ha, hb) {
@@ -190,8 +291,55 @@ local fn conv_spines(env: Env, a: Term, b: Term) -> Bool = {
     (Const(c), Const(d)) => c == d,
     _ => false,
   }
-  heads and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, x, y))
+  heads and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, ctx, x, y))
 }
+
+// ── Proof irrelevance ───────────────────────────────────────────────
+
+// Two terms are equal when both inhabit the same type and that type was
+// declared `irrelevant` (in Lean's room: every proposition).
+local fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool =
+  if list.is_empty(env.irrelevants) then false
+  else match infer(env, ctx, a) {
+    ok(ta) =>
+      if is_irrelevant_type(env, ta) then match infer(env, ctx, b) {
+        ok(tb) => conv(env, ctx, ta, tb),
+        err(_) => false,
+      }
+      else false,
+    err(_) => false,
+  }
+
+// Checked before and after reduction: reducing `El lz (p -> q)` turns it
+// into an Arlk function type, which no longer has the declared shape. A
+// function type into an irrelevant type is itself irrelevant (its values
+// are equal pointwise, and conversion has η).
+local fn is_irrelevant_type(env: Env, t: Term) -> Bool =
+  irrelevant_shape(env, t) or irrelevant_shape(env, whnf_core(env, t)) or {
+    let w = whnf(env, t)
+    match w {
+      Pi(_, _, b) => is_irrelevant_type(env, b),
+      _ => irrelevant_shape(env, w),
+    }
+  }
+
+local fn irrelevant_shape(env: Env, t: Term) -> Bool = {
+  let (h, args) = spine(t)
+  match h {
+    Const(c) => list.any(env.irrelevants, (ir) => ir.head == c and irrelevant_matches(env, ir, args)),
+    _ => false,
+  }
+}
+
+local fn irrelevant_matches(env: Env, ir: Rule, args: List[Term]) -> Bool =
+  if list.len(args) != ir.arity then false
+  else match match_all(env, list.zip(ir.lhs_args, args), MState { sub: [:], pending: [] }) {
+    some(st) => {
+      let vals = list.map(0..<ir.nvars, (k) => map.get(st.sub, k) ?? Var(k))
+      list.all(st.pending, ((b, t)) => conv(env, [], instantiate(b, vals, 0), t))
+    },
+    none => false,
+  }
 
 // ── Typing ──────────────────────────────────────────────────────────
 
@@ -202,8 +350,8 @@ fn infer(env: Env, ctx: Ctx, t: Term) -> Term! = match t {
     some((_, ty)) => ok(shift(ty, i + 1, 0)),
     none => err("unbound variable #${int.to_string(i)}"),
   },
-  Const(c) => match map.get(env.entries, c) {
-    some(e) => ok(e.ty),
+  Const(c) => match map.get(env.types, c) {
+    some(ty) => ok(ty),
     none => err("unknown constant ${c}"),
   },
   App(f, a) => {
@@ -247,7 +395,7 @@ fn check(env: Env, ctx: Ctx, t: Term, expected: Term) -> Unit! = {
   let actual = infer(env, ctx, t)!
   let expected_s = show(env, ctx, expected)
   let actual_s = show(env, ctx, actual)
-  guard conv(env, actual, expected) else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${expected_s}\n    found:    ${actual_s}")
+  guard conv(env, ctx, actual, expected) else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${expected_s}\n    found:    ${actual_s}")
   ok(())
 }
 
@@ -321,8 +469,14 @@ local fn no_brackets(rs: List[Raw]) -> Unit! = {
 local fn declare(env: Env, name: String, kind: String, ty: Term, body: Term?) -> Env! = {
   let q = env.room + "." + name
   guard not map.contains(env.entries, q) else err("${q} is already declared")
-  let entry = Entry { name: q, room: env.room, kind: kind, ty: ty, body: body }
-  ok({ ...env, entries: map.set(env.entries, q, entry), order: env.order + [q] })
+  let height = list.len(env.order)
+  let entry = Entry { room: env.room, kind: kind, height: height }
+  let bodies = match body {
+    some(b) => map.set(env.bodies, q, b),
+    none => env.bodies,
+  }
+  let defs = if kind == "def" then map.set(env.defs, q, height) else env.defs
+  ok({ ...env, entries: map.set(env.entries, q, entry), types: map.set(env.types, q, ty), bodies: bodies, defs: defs, order: env.order + [q] })
 }
 
 local fn enter_room(env: Env, name: String, uses: List[String]) -> Env! = {
@@ -396,7 +550,11 @@ local fn free_vars(t: Term, depth: Int) -> List[Int] = match t {
   _ => [],
 }
 
-local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> (Env, String)! = {
+// The shared front half of `rule` and `irrelevant`: the variable context,
+// the head symbol (of this room), and the argument patterns.
+type Lhs = { ctx: Ctx, scope: List[String], head: String, pats: List[Pat], term: Term }
+
+local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw) -> Lhs! = {
   // Build the rule context left to right; Var(0) is the last variable.
   var ctx: Ctx = []
   var scope: List[String] = []
@@ -407,17 +565,16 @@ local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Ra
     ctx = [(x, ty)] + ctx
     scope = [x] + scope
   }
-  no_brackets([rhs_raw])!
   let n = list.len(vars)
   let (head_raw, arg_raws) = raw_spine(lhs_raw, [])
   let head = match head_raw {
     RName(x) => ok(resolve_const(env, x)!),
-    _ => err("the left-hand side of a rule must start with a symbol"),
+    _ => err("the left-hand side must start with a symbol"),
   }!
   guard is_symbol(env, head) else err("${head} is not a symbol; only symbols can have rules")
   let owner = room_of(env, head)
   guard owner == env.room else err("${head} belongs to room ${owner}; rules can only be added to symbols of the current room (${env.room})")
-  guard not list.is_empty(arg_raws) else err("a rule needs at least one argument pattern")
+  guard not list.is_empty(arg_raws) else err("the left-hand side needs at least one argument pattern")
   let pats = arg_raws |> list.map((a) => resolve_pat(env, scope, a)!)!
   let bound = pats |> list.flat_map((p) => pat_vars(p))
   guard list.len(list.unique(bound)) == list.len(bound) else err("a rule variable can be matched only once; write {x} for the other occurrences")
@@ -425,28 +582,54 @@ local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Ra
   guard list.is_empty(unbound) else err("every rule variable must appear on the left-hand side outside brackets")
   let in_brackets = pats |> list.flat_map((p) => pat_brackets(p)) |> list.flat_map((t) => free_vars(t, 0))
   guard list.all(in_brackets, (k) => list.contains(bound, k)) else err("a bracket mentions a variable that the pattern does not bind")
-  // Type the rule with brackets read as the terms they stand for.
+  // Brackets read as the terms they stand for.
   let lhs = resolve(env, scope, lhs_raw)!
-  let rhs = resolve(env, scope, rhs_raw)!
-  let tl = infer(env, ctx, lhs)!
+  ok(Lhs { ctx: ctx, scope: scope, head: head, pats: pats, term: lhs })
+}
+
+local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> (Env, String)! = {
+  no_brackets([rhs_raw])!
+  let l = rule_lhs(env, vars, lhs_raw)!
+  let ctx = l.ctx
+  let rhs = resolve(env, l.scope, rhs_raw)!
+  let tl = infer(env, ctx, l.term)!
   let tr = infer(env, ctx, rhs)!
-  let text = "${show(env, ctx, lhs)} --> ${show(env, ctx, rhs)}"
+  let text = "${show(env, ctx, l.term)} --> ${show(env, ctx, rhs)}"
   let tl_s = show(env, ctx, tl)
   let tr_s = show(env, ctx, tr)
-  guard conv(env, tl, tr) else err("rule does not preserve types: ${text}\n    left:  ${tl_s}\n    right: ${tr_s}")
+  guard conv(env, ctx, tl, tr) else err("rule does not preserve types: ${text}\n    left:  ${tl_s}\n    right: ${tr_s}")
   let r = Rule {
     id: "${env.room}:${int.to_string(line)}",
-    head: head,
+    head: l.head,
     room: env.room,
-    arity: list.len(pats),
-    nvars: n,
+    arity: list.len(l.pats),
+    nvars: list.len(vars),
     var_tys: ctx |> list.map(((_, ty)) => ty),
-    lhs_args: pats,
+    lhs_args: l.pats,
     rhs: rhs,
     text: text,
   }
-  let existing = map.get(env.rules, head) ?? []
-  ok(({ ...env, rules: map.set(env.rules, head, existing + [r]) }, text))
+  let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs }
+  let existing = map.get(env.rws, l.head) ?? []
+  ok(({ ...env, rws: map.set(env.rws, l.head, existing + [rw]), rules: env.rules + [r] }, text))
+}
+
+// `irrelevant [x : A] T.`: every two values of an instance of T are equal.
+local fn add_irrelevant(env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Env! = {
+  let l = rule_lhs(env, vars, ty_raw)!
+  expect_sort(env, l.ctx, l.term, false)!
+  let r = Rule {
+    id: "${env.room}:${int.to_string(line)}",
+    head: l.head,
+    room: env.room,
+    arity: list.len(l.pats),
+    nvars: list.len(vars),
+    var_tys: l.ctx |> list.map(((_, ty)) => ty),
+    lhs_args: l.pats,
+    rhs: l.term,
+    text: "irrelevant ${show(env, l.ctx, l.term)}",
+  }
+  ok({ ...env, irrelevants: env.irrelevants + [r] })
 }
 
 // Process one declaration; returns the new environment and lines to print.
@@ -471,6 +654,7 @@ fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
     let (env2, _) = add_rule(env, vars, lhs, rhs, d.line)!
     ok((env2, []))
   },
+  DIrrelevant(vars, ty) => ok((add_irrelevant(env, vars, ty, d.line)!, [])),
   DCheck(e_raw) => {
     no_brackets([e_raw])!
     let e = resolve(env, [], e_raw)!
@@ -516,17 +700,21 @@ local fn deps_walk(env: Env, queue: List[String], seen: List[String], acc: Deps,
     else match map.get(env.entries, c) {
       none => deps_walk(env, rest, seen + [c], acc, root),
       some(e) => {
-        let body_consts = match e.body {
+        let body_consts = match map.get(env.bodies, c) {
           some(b) => consts(b),
           none => [],
         }
-        let rules = if e.kind == "symbol" then map.get(env.rules, c) ?? [] else []
+        let rules = if e.kind == "symbol" then (env.rules + env.irrelevants) |> list.filter((r) => r.head == c) else []
         let rule_consts = rules |> list.flat_map((r) => rule_mentions(r))
         let acc2 = match e.kind {
           "symbol" => { ...acc, symbols: acc.symbols + [c], rules: acc.rules + rules },
           _ => if c == root then acc else { ...acc, lemmas: acc.lemmas + [c] },
         }
-        deps_walk(env, rest + consts(e.ty) + body_consts + rule_consts, seen + [c], acc2, root)
+        let ty_consts = match map.get(env.types, c) {
+          some(ty) => consts(ty),
+          none => [],
+        }
+        deps_walk(env, rest + ty_consts + body_consts + rule_consts, seen + [c], acc2, root)
       },
     },
 }

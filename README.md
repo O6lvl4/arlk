@@ -10,9 +10,9 @@ Arlk is meant for programmers, not only mathematicians. Its syntax reads like co
 `symbol`, `rule`, `room`), Unicode is only an optional alias, and errors say what was expected
 and what was found.
 
-**Lean 4 is absorbed, not linked.** Lean's `Nat.add_zero`, together with everything it depends
-on, has been translated into Arlk source and is checked by Arlk's kernel alone. See
-[Absorbing Lean](#absorbing-lean).
+**Lean 4 is absorbed, not linked.** Lean's whole `Init.Data.Nat.Basic` module (308 of its 310
+theorems, 822 declarations with their dependencies) has been translated into Arlk source and is
+checked by Arlk's kernel alone, in about 40 seconds. See [Absorbing Lean](#absorbing-lean).
 
 ```
 room logic.
@@ -122,9 +122,25 @@ How it works:
   deleting one projection rule breaks the proof. The proof really goes through Lean's definitions
   of `+` and `0`.
 
-Not yet absorbed: definitional proof irrelevance, structure eta, quotients, and Lean's fast
-kernel arithmetic on numerals (numerals are spelled out as `Nat.succ` chains). These come next,
-in that order of need.
+What the `lean` room already covers, beyond the basics:
+
+| Lean kernel feature | How Arlk does it |
+|---|---|
+| Definitional proof irrelevance | `irrelevant [P : Univ lz] El lz P.` A room may declare that all values of a type family are equal. Lean's room does, and a Rocq room would not. |
+| K-like reduction (`Eq.rec` on any proof of `a = a`) | The exporter emits a rule whose major premise is a variable. Proof irrelevance makes it type-check. |
+| Quotients (`Quot.lift`, `Quot.ind`) | Ordinary rewrite rules. `Quot.sound` stays an axiom and shows up in `#axioms`. |
+| Projections, including into `Prop` | One rule per projection function. |
+
+| Module | Theorems | Declarations | Time |
+|---|---|---|---|
+| `Nat.add_zero` | 1 | 33 | < 0.1 s |
+| `Init.Data.Nat.Basic` | 308 of 310 | 822 | ~40 s |
+
+The two theorems left out are universe-polymorphic. Not absorbed yet: universe polymorphism
+(constants are instantiated at concrete levels instead), structure eta, and Lean's fast kernel
+arithmetic on numerals (numerals are spelled out as `Nat.succ` chains).
+
+`tools/check-absorbed.sh` checks every absorbed file.
 
 ## Usage
 
@@ -182,3 +198,4 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 | [almide#3391](https://github.com/almide/almide/issues/3391) wasm: `o?.field` walls | `is_symbol` helper |
 | [almide#3392](https://github.com/almide/almide/issues/3392) wasm: fallible lambda calling a same-module fn walls | none yet: `spec/` runs on native only |
 | [almide#3393](https://github.com/almide/almide/issues/3393) `almide fmt` moves trailing comments and collapses variants | sources are not run through `almide fmt` for now |
+| [almide#3397](https://github.com/almide/almide/issues/3397) native `list.slice` clones the whole list per call | copy ranges with `list.get` in the lexer |

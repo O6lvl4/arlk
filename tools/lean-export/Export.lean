@@ -13,7 +13,8 @@
     function, which is exported as a symbol with a rewrite rule.
   - Recursors are exported with one rewrite rule per constructor.
 
-  Usage: lean --run Export.lean Nat.add_zero > nat_add_zero.json
+  Usage: lean --run Export.lean Nat.add_zero Nat.add_comm > out.json
+         lean --run Export.lean --module Init.Data.Nat.Basic > out.json
 -/
 import Lean
 open Lean Meta
@@ -65,15 +66,24 @@ partial def ensure (c : Name) (us : List Level) : M String := do
   let tl ← levelOf ty
   let base := [("name", toJson k), ("type", jty), ("level", toJson tl)]
   let env ← getEnv
+  -- A projection function is a symbol with a rule, whatever Lean declared
+  -- it as (projections into Prop are theorems in Lean).
   let decl ← match info with
+    | _ =>
+    if let some p := env.getProjectionFnInfo? c then
+      let rule ← projRule c us p
+      pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr #[rule])]))
+    else match info with
     | .defnInfo d =>
-      if let some p := env.getProjectionFnInfo? c then
-        let rule ← projRule c us p
-        pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr #[rule])]))
-      else
-        pure (Json.mkObj (base ++ [("kind", toJson "def"), ("value", ← exportExpr #[] (inst d.value))]))
+      pure (Json.mkObj (base ++ [("kind", toJson "def"), ("value", ← exportExpr #[] (inst d.value))]))
     | .thmInfo d =>
       pure (Json.mkObj (base ++ [("kind", toJson "theorem"), ("value", ← exportExpr #[] (inst d.value))]))
+    | .quotInfo q =>
+      match q.kind with
+      | .lift | .ind =>
+        let rule ← quotRule c us
+        pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr #[rule])]))
+      | _ => pure (Json.mkObj (base ++ [("kind", toJson "symbol")]))
     | .recInfo r =>
       let rules ← r.rules.toArray.mapM (recRule c us r)
       pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr rules)]))
@@ -154,6 +164,20 @@ partial def recRule (rec : Name) (us : List Level) (r : RecursorVal) (rule : Rec
       | none => Level.zero
     let ctorTy ← instantiateForall (ctorInfo.type.instantiateLevelParams ctorInfo.levelParams ctorUs) params
     forallTelescope ctorTy fun fields resTy => do
+      if r.k then
+        -- K-like: the major premise need not be the constructor itself; any
+        -- proof whose indices match reduces (proof irrelevance makes it so).
+        return ← withLocalDecl `h .default resTy fun h => do
+          let vars := pmm.push h
+          let jvars ← exportVars vars
+          let mut args := #[]
+          for x in pmm do args := args.push (← patVar vars x)
+          for i in resTy.getAppArgs[np:].toArray do args := args.push (← patBracket vars i)
+          args := args.push (← patVar vars h)
+          let rhs := (rule.rhs.instantiateLevelParams r.levelParams us).beta pmm
+          let jrhs ← exportExpr vars rhs
+          let head ← ensure rec us
+          return Json.mkObj [("vars", jvars), ("head", toJson head), ("args", Json.arr args), ("rhs", jrhs)]
       let vars := pmm ++ fields
       let jvars ← exportVars vars
       let ctorKey ← ensure rule.ctor ctorUs
@@ -168,6 +192,30 @@ partial def recRule (rec : Name) (us : List Level) (r : RecursorVal) (rule : Rec
       let rhs := (rule.rhs.instantiateLevelParams r.levelParams us).beta vars
       let jrhs ← exportExpr vars rhs
       let head ← ensure rec us
+      return Json.mkObj [("vars", jvars), ("head", toJson head), ("args", Json.arr args), ("rhs", jrhs)]
+
+/-- Lean's built-in quotient computation, as ordinary rules:
+    `Quot.lift f h (Quot.mk r a) --> f a` and `Quot.ind mk (Quot.mk r a) --> mk a`. -/
+partial def quotRule (c : Name) (us : List Level) : M Json := do
+  let info ← getConstInfo c
+  let ty := info.type.instantiateLevelParams info.levelParams us
+  forallTelescope ty fun xs _ => do
+    -- lift: α r β f h q    ind: α r β mk q
+    let α := xs[0]!
+    let r := xs[1]!
+    let pre := xs[:xs.size - 1].toArray
+    -- lift takes f before the proof h; ind's function is right before q
+    let fn := if c == ``Quot.lift then xs[3]! else xs[xs.size - 2]!
+    withLocalDecl `a .default α fun a => do
+      let vars := pre.push a
+      let jvars ← exportVars vars
+      let mkKey ← ensure ``Quot.mk [us.head!]
+      let mut args := #[]
+      for x in pre do args := args.push (← patVar vars x)
+      args := args.push (Json.mkObj [("pc", toJson mkKey),
+        ("args", Json.arr #[← patBracket vars α, ← patBracket vars r, ← patVar vars a])])
+      let jrhs ← exportExpr vars (mkApp fn a)
+      let head ← ensure c us
       return Json.mkObj [("vars", jvars), ("head", toJson head), ("args", Json.arr args), ("rhs", jrhs)]
 
 /-- `proj params (ctor {params} fields) --> field_i`. -/
@@ -194,18 +242,41 @@ partial def projRule (fn : Name) (us : List Level) (p : ProjectionFunctionInfo) 
 
 end
 
-def run (target : Name) : MetaM Json := do
-  let info ← getConstInfo target
-  unless info.levelParams.isEmpty do
-    throwError "{target} is universe polymorphic; export a monomorphic instance instead"
-  let (k, st) ← (ensure target []).run {}
-  return Json.mkObj [("target", toJson k), ("decls", Json.arr st.decls)]
+/-- Export every target that can be exported; a target that fails is
+    skipped whole (the state is rolled back), and the reason recorded. -/
+def run (targets : List Name) : MetaM Json := do
+  let mut st : St := {}
+  let mut ok := #[]
+  let mut skipped := #[]
+  for t in targets do
+    let info ← getConstInfo t
+    if !info.levelParams.isEmpty then
+      skipped := skipped.push (Json.mkObj [("name", toJson t.toString), ("reason", toJson "universe polymorphic")])
+      continue
+    try
+      let (k, st') ← (ensure t []).run st
+      st := st'
+      ok := ok.push (toJson k)
+    catch e =>
+      skipped := skipped.push (Json.mkObj [("name", toJson t.toString), ("reason", toJson (← e.toMessageData.toString))])
+  return Json.mkObj [("targets", Json.arr ok), ("skipped", Json.arr skipped), ("decls", Json.arr st.decls)]
+
+/-- The theorems a module declares, in a stable order. -/
+def moduleTheorems (env : Environment) (mod : Name) : List Name := Id.run do
+  let some idx := env.getModuleIdx? mod | return []
+  let mut out := #[]
+  for (n, info) in env.constants.toList do
+    if env.getModuleIdxFor? n == some idx && !n.isInternalDetail then
+      if let .thmInfo _ := info then out := out.push n
+  return out.qsort (fun a b => a.toString < b.toString) |>.toList
 
 def main (args : List String) : IO Unit := do
-  let some target := args.head? | throw (IO.userError "usage: lean --run Export.lean NAME")
   initSearchPath (← findSysroot)
   let env ← importModules #[{ module := `Init }] {} (trustLevel := 1024)
-  let name := target.toName
+  let targets := match args with
+    | ["--module", m] => moduleTheorems env m.toName
+    | names => names.map String.toName
+  if targets.isEmpty then throw (IO.userError "usage: lean --run Export.lean (NAME... | --module MODULE)")
   let ctx : Core.Context := { fileName := "<export>", fileMap := default, maxHeartbeats := 0 }
-  let (j, _, _) ← (run name).toIO ctx { env }
+  let (j, _, _) ← (run targets).toIO ctx { env }
   IO.println j.compress

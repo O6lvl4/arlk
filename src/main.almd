@@ -3,6 +3,7 @@
 //   arlk check FILE.arlk                 check every declaration
 //   arlk absorb EXPORT.json [-o OUT]     turn a Lean export into Arlk source
 
+import env
 import fs
 import process
 import self.syntax
@@ -11,14 +12,14 @@ import self.absorb
 
 let USAGE = """
   usage:
-    arlk check FILE.arlk                 check every declaration
+    arlk check FILE.arlk [--timing]      check every declaration (--timing: list the slowest)
     arlk absorb EXPORT.json [-o OUT]     turn a Lean export (tools/lean-export) into Arlk source
   """
 
 effect fn main() -> Unit = {
   let args = process.args()
   match (list.get(args, 1), list.get(args, 2)) {
-    (some("check"), some(path)) => run_check(path)!,
+    (some("check"), some(path)) => run_check(path, list.contains(args, "--timing"))!,
     (some("absorb"), some(path)) => run_absorb(path, output_flag(args))!,
     _ => {
       println(USAGE)
@@ -32,7 +33,7 @@ local fn output_flag(args: List[String]) -> String? = match list.index_of(args, 
   none => none,
 }
 
-effect fn run_check(path: String) -> Unit = {
+effect fn run_check(path: String, timing: Bool) -> Unit = {
   let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
   match syntax.parse(src) {
     err(e) => {
@@ -40,18 +41,47 @@ effect fn run_check(path: String) -> Unit = {
       process.exit(1)
     },
     ok(ds) => {
-      let out = kernel.check_all(kernel.empty(), ds)
-      for line in out.output {
-        println(line)
+      // Declarations are checked and reported one at a time, so a long file
+      // shows progress and the first failure stops the run.
+      var kenv = kernel.empty()
+      var failure: String? = none
+      var times: List[(Int, Int)] = []
+      for d in ds {
+        if failure == none then {
+          let started = env.millis()
+          let result = kernel.process(kenv, d)
+          times = times + [(env.millis() - started, d.line)]
+          match result {
+            ok((env2, lines)) => {
+              kenv = env2
+              for line in lines {
+                println(line)
+              }
+            },
+            err(e) => {
+              failure = some("${int.to_string(d.line)}: ${e}")
+            },
+          }
+        }
       }
-      match out.error {
+      if timing then report_timing(times)! else ()
+      match failure {
         some(e) => {
           println("✗ ${path}:${e}")
           process.exit(1)
         },
-        none => println("ok: ${path} (${int.to_string(list.len(out.env.order))} declarations)"),
+        none => println("ok: ${path} (${int.to_string(list.len(kenv.order))} declarations)"),
       }
     },
+  }
+}
+
+effect fn report_timing(times: List[(Int, Int)]) -> Unit = {
+  let total = list.sum(times |> list.map(((ms, _)) => ms))
+  println("timing: ${int.to_string(total)} ms in ${int.to_string(list.len(times))} declarations; slowest:")
+  let slowest = times |> list.sort_by(((ms, _)) => 0 - ms) |> list.take(10)
+  for (ms, line) in slowest {
+    println("  ${int.to_string(ms)} ms  line ${int.to_string(line)}")
   }
 }
 

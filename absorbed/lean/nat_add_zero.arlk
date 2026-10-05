@@ -33,6 +33,10 @@ rule [l : Lvl] El {ls l} (sort l) --> Univ l.
 symbol pi : (a : Lvl) -> (b : Lvl) -> (A : Univ a) -> (El a A -> Univ b) -> Univ (imax a b).
 rule [a : Lvl, b : Lvl, A : Univ a, B : El a A -> Univ b]
   El {imax a b} (pi a b A B) --> (x : El a A) -> El b (B x).
+
+-- Lean's Prop is proof-irrelevant: two proofs of the same proposition
+-- are the same value.
+irrelevant [P : Univ lz] El lz P.
 def l0 : Lvl := lz.
 def l1 : Lvl := ls l0.
 def l2 : Lvl := ls l1.

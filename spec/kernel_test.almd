@@ -240,3 +240,45 @@ test "names inside a room may contain dots" {
     def two : Nat := nat.Nat.one@0.
     """))
 }
+
+test "irrelevant: two proofs of the same proposition are equal" {
+  let without = """
+    symbol a : Prop.
+    symbol h1 : Prf a.
+    symbol h2 : Prf a.
+    symbol P : Prf a -> Prop.
+    symbol ph1 : Prf (P h1).
+    def q : Prf (P h2) := ph1.
+    """
+  assert(rejects_with(without, "type mismatch"))
+  assert(accepts("irrelevant [a : Prop] Prf a.\n" + without))
+}
+
+test "irrelevant only applies to the declared types" {
+  assert(rejects_with("""
+    room p uses logic.
+    symbol N : Type.
+    symbol a : N.
+    symbol b : N.
+    symbol P : N -> Prop.
+    symbol pa : Prf (P a).
+    def q : Prf (P b) := pa.
+    """, "type mismatch"))
+}
+
+test "an irrelevant declaration may only target symbols of its own room" {
+  assert(rejects_with("room p uses logic. irrelevant [a : Prop] Prf a.", "rules can only be added to symbols of the current room"))
+}
+
+test "functions into an irrelevant type are irrelevant too" {
+  assert(accepts("""
+    irrelevant [a : Prop] Prf a.
+    symbol a : Prop.
+    symbol b : Prop.
+    symbol f : Prf (imp a b).
+    symbol g : Prf (imp a b).
+    symbol P : Prf (imp a b) -> Prop.
+    symbol pf : Prf (P f).
+    def q : Prf (P g) := pf.
+    """))
+}
