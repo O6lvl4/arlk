@@ -862,33 +862,57 @@ fn group_mutual(ds: List[Located]) -> List[Located] = {
 // The same for definitions and theorems: a group from the first to the
 // last one reached by forward references.
 fn group_mutual_defs(ds: List[Located]) -> List[Located] = {
+  let n = list.len(ds)
+  // Each definition's name and the names it mentions, computed once, and
+  // where each name is defined: a library has tens of thousands of
+  // definitions, so nothing here may look at every pair.
+  var names: List[String] = []
+  var refs: List[List[String]] = []
+  var at: Map[String, List[Int]] = [:]
+  for (i, l) in list.enumerate(ds) {
+    match def_at(ds, i) {
+      some((name, rs)) => {
+        list.push(names, name)
+        list.push(refs, list.unique(rs))
+        map.insert(at, name, (map.get(at, name) ?? []) + [i])
+      },
+      none => {
+        list.push(names, "")
+        list.push(refs, [])
+      },
+    }
+  }
+  // The end of the run of consecutive definitions each one is in.
+  var run_end: List[Int] = []
+  var pending = 0
+  for (k, nm) in list.enumerate(names) {
+    if nm == "" then {
+      for _ in 0..<pending {
+        list.push(run_end, k - 1)
+      }
+      pending = 0
+      list.push(run_end, k)
+    } else {
+      pending = pending + 1
+    }
+  }
+  for _ in 0..<pending {
+    list.push(run_end, n - 1)
+  }
   var out: List[Located] = []
   var i = 0
-  let n = list.len(ds)
   while i < n {
     let d = list.get(ds, i) ?? Located { line: 0, decl: DViews }
     var j = i
     var end = i
-    while j <= end and j < n {
-      match def_at(ds, j) {
-        some((_, refs)) => {
-          var k = j + 1
-          var going = true
-          while going and k < n {
-            match def_at(ds, k) {
-              some((name, _)) => {
-                if list.contains(refs, name) and k > end then {
-                  end = k
-                } else ()
-              },
-              none => {
-                going = false
-              },
-            }
-            k = k + 1
-          }
-        },
-        none => (),
+    let limit = list.get(run_end, i) ?? i
+    while j <= end and j < n and (list.get(names, j) ?? "") != "" {
+      for r in list.get(refs, j) ?? [] {
+        for idx in map.get(at, r) ?? [] {
+          if idx > end and idx <= limit then {
+            end = idx
+          } else ()
+        }
       }
       j = j + 1
     }
@@ -912,7 +936,6 @@ fn group_mutual_defs(ds: List[Located]) -> List[Located] = {
   out
 }
 
-// A definition's name and every name its type and body mention.
 local fn def_at(ds: List[Located], i: Int) -> Option[(String, List[String])] = match list.get(ds, i) {
   some(l) => match l.decl {
     DDef(sig, body) => some((sig.name, free_names(sig.ty, []) + free_names(body, []))),
