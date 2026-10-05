@@ -1,6 +1,6 @@
 // Printing kernel terms back into Arlk surface syntax.
 
-import self.term.{Term, spine, occurs}
+import self.term.{Term, Level, spine, occurs, level_simp}
 
 // `room` is the room the reader is in: its own names print unqualified.
 fn show(room: String, names: List[String], t: Term) -> String = pp(room, names, t, 0)
@@ -17,10 +17,9 @@ local fn short(room: String, c: String) -> String = string.strip_prefix(c, room 
 // prec 0: anywhere; 1: a callee or the left of an arrow, where a function
 // or a function type needs parentheses.
 local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = match t {
-  Sort(0) => "Type",
-  Sort(_) => "Kind",
+  Sort(l) => sort_text(level_simp(l)),
   Var(i) => list.get(names, i) ?? "#${int.to_string(i)}",
-  Const(c) => short(room, c),
+  Const(c, ls) => if list.is_empty(ls) then short(room, c) else short(room, c) + "[" + list.join(ls |> list.map((l) => level(l)), ", ") + "]",
   App(_, _) => {
     let (h, args) = spine(t)
     let parts = args |> list.map((a) => pp(room, names, a, 0))
@@ -28,6 +27,35 @@ local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = m
   },
   Lam(_, _, _) => paren(prec > 0, lambdas(room, names, t, [])),
   Pi(_, _, _) => paren(prec > 0, pis(room, names, t, [], false)),
+}
+
+// Sort(1) is `Type`, Sort(u + 1) is `Type(u)`.
+local fn sort_text(l: Level) -> String = match l {
+  LSucc(LZero) => "Type",
+  LSucc(u) => "Type(" + level(u) + ")",
+  _ => "Sort(" + level(l) + ")",
+}
+
+// `3`, `u`, `u + 2`, `max(u, v)`, `imax(u, v)`.
+fn level(l: Level) -> String = {
+  let (base, k) = offset(l, 0)
+  match base {
+    LZero => int.to_string(k),
+    _ => {
+      let b = match base {
+        LParam(p) => p,
+        LMax(a, c) => "max(" + level(a) + ", " + level(c) + ")",
+        LIMax(a, c) => "imax(" + level(a) + ", " + level(c) + ")",
+        _ => "?",
+      }
+      if k == 0 then b else b + " + " + int.to_string(k)
+    },
+  }
+}
+
+local fn offset(l: Level, k: Int) -> (Level, Int) = match l {
+  LSucc(a) => offset(a, k + 1),
+  other => (other, k),
 }
 
 // (x: A, y: B) => body
@@ -58,21 +86,28 @@ local fn pis(room: String, names: List[String], t: Term, items: List[String], na
 }
 
 test "calls print with parentheses and commas" {
-  let t = App(App(Const("r.f"), Var(0)), App(Const("r.g"), Const("r.a")))
+  let t = App(App(Const("r.f", []), Var(0)), App(Const("r.g", []), Const("r.a", [])))
   assert_eq(show("r", ["x"], t), "f(x, g(a))")
 }
 
 test "a plain argument prints as an arrow, several as a list" {
-  assert_eq(show("r", ["x"], Pi("_", App(Const("r.P"), Var(0)), Const("r.C"))), "P(x) -> C")
-  assert_eq(show("r", [], Pi("_", Const("r.A"), Pi("_", Const("r.B"), Const("r.C")))), "(A, B) -> C")
-  assert_eq(show("r", [], Pi("_", Pi("_", Const("r.A"), Const("r.B")), Const("r.C"))), "(A -> B) -> C")
+  assert_eq(show("r", ["x"], Pi("_", App(Const("r.P", []), Var(0)), Const("r.C", []))), "P(x) -> C")
+  assert_eq(show("r", [], Pi("_", Const("r.A", []), Pi("_", Const("r.B", []), Const("r.C", [])))), "(A, B) -> C")
+  assert_eq(show("r", [], Pi("_", Pi("_", Const("r.A", []), Const("r.B", [])), Const("r.C", []))), "(A -> B) -> C")
 }
 
 test "dependent binders keep their names and foreign rooms stay qualified" {
-  let t = Pi("n", Const("nat.Nat"), App(Const("logic.Prf"), Var(0)))
+  let t = Pi("n", Const("nat.Nat", []), App(Const("logic.Prf", []), Var(0)))
   assert_eq(show("nat", [], t), "(n: Nat) -> logic.Prf(n)")
 }
 
 test "functions print as Almide lambdas, shadowed names are freshened" {
-  assert_eq(show("r", ["x"], Lam("x", Const("r.A"), Lam("y", Const("r.B"), Var(2)))), "(x': A, y: B) => x")
+  assert_eq(show("r", ["x"], Lam("x", Const("r.A", []), Lam("y", Const("r.B", []), Var(2)))), "(x': A, y: B) => x")
+}
+
+test "universes print as Type and Sort" {
+  assert_eq(show("r", [], Sort(LSucc(LZero))), "Type")
+  assert_eq(show("r", [], Sort(LZero)), "Sort(0)")
+  assert_eq(show("r", [], Sort(LSucc(LSucc(LParam("u"))))), "Type(u + 1)")
+  assert_eq(show("r", [], Const("r.id", [LMax(LParam("u"), LSucc(LZero))])), "id[max(u, 1)]")
 }

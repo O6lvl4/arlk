@@ -19,9 +19,14 @@ type Token = { kind: String, text: String, line: Int }
 
 // `RBracket` is `{t}`: only legal in a rule's left-hand side, where it
 // stands for a subterm fixed by typing and checked by conversion.
+// `RSort` is the keyword `Sort`, applied to a level: `Sort(u)`.
+// `RInst(c, ls)` is a constant at explicit universe levels: `id[u](A, x)`.
+// Levels are written as terms: `0`, `u`, `u + 1`, `max(u, v)`, `imax(u, v)`.
 type Raw =
   | RName(String)
   | RType
+  | RSort
+  | RInst(String, List[Raw])
   | RApp(Raw, Raw)
   | RLam(String, Raw, Raw)
   | RPi(String, Raw, Raw)
@@ -29,14 +34,23 @@ type Raw =
 
 type Decl =
   | DRoom(String, List[String])
-  | DSymbol(String, Raw)
-  | DDef(String, Raw, Raw)
-  | DTheorem(String, Raw, Raw)
+  | DSymbol(String, List[String], Raw)
+  | DDef(String, List[String], Raw, Raw)
+  | DTheorem(String, List[String], Raw, Raw)
   | DRule(List[(String, Raw)], Raw, Raw)
   | DIrrelevant(List[(String, Raw)], Raw)
   | DCheck(Raw)
   | DEval(Raw)
   | DAxioms(String)
+  | DInductive(Inductive)
+
+// `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
+// `params` are fixed across the family, `arity` is the rest of its type
+// (the indices, then a sort). A constructor without a result type builds
+// the type applied to its parameters.
+type Inductive = { name: String, levels: List[String], params: List[(String, Raw)], arity: Raw, ctors: List[Constructor] }
+
+type Constructor = { name: String, args: List[(String, Raw)], result: Raw? }
 
 type Located = { line: Int, decl: Decl }
 
@@ -53,6 +67,8 @@ let KEYWORDS = [
   "eval",
   "axioms",
   "Type",
+  "Sort",
+  "type",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
@@ -71,7 +87,7 @@ local fn punct(cs: List[String], i: Int) -> (String, Int)? = {
     "->" => some(("->", 2)),
     "=>" => some(("=>", 2)),
     _ => match c {
-      "(" | ")" | "{" | "}" | ":" | "," | "=" | "|" => some((c, 1)),
+      "(" | ")" | "{" | "}" | "[" | "]" | ":" | "," | "=" | "|" | "+" => some((c, 1)),
       "→" => some(("->", 1)),
       "⇒" => some(("=>", 1)),
       _ => none,
@@ -245,7 +261,12 @@ fn term(ts: List[Token], p: Int) -> (Raw, Int)! = {
 }
 
 local fn arrow(ts: List[Token], p: Int, lhs: Raw) -> (Raw, Int)! =
-  if is_sym(ts, p, "->") then {
+  if is_sym(ts, p, "+") then {
+    // Only levels add: `u + 1`.
+    let (head, p1) = atom(ts, p + 1)!
+    let (rhs, p2) = calls(ts, p1, head)!
+    arrow(ts, p2, RApp(RApp(RName("+"), lhs), rhs))
+  } else if is_sym(ts, p, "->") then {
     let (rhs, p1) = term(ts, p + 1)!
     ok((RPi("_", lhs, rhs), p1))
   } else ok((lhs, p))
@@ -269,13 +290,43 @@ local fn args_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)!
 
 local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   let t = tok(ts, p)
-  if t.kind == "ident" then ok((RName(t.text), p + 1))
+  if t.kind == "ident" then {
+    if is_sym(ts, p + 1, "[") then {
+      let (ls, p1) = level_list(ts, p + 2, [])!
+      ok((RInst(t.text, ls), p1))
+    } else ok((RName(t.text), p + 1))
+  }
   else if is_kw(ts, p, "Type") then ok((RType, p + 1))
+  else if is_kw(ts, p, "Sort") then ok((RSort, p + 1))
   else if is_sym(ts, p, "{") then {
     let (inner, p1) = term(ts, p + 1)!
     let p2 = expect(ts, p1, "}")!
     ok((RBracket(inner), p2))
   } else err(fail_at(ts, p, "expected a term"))
+}
+
+// `[u, v + 1]`, after the opening bracket.
+local fn level_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)! = {
+  let (l, p1) = term(ts, p)!
+  let acc2 = acc + [l]
+  if is_sym(ts, p1, ",") then level_list(ts, p1 + 1, acc2)
+  else {
+    let p2 = expect(ts, p1, "]")!
+    ok((acc2, p2))
+  }
+}
+
+// `[u, v]` after a declaration's name: its universe parameters.
+local fn level_params(ts: List[Token], p: Int) -> (List[String], Int)! =
+  if is_sym(ts, p, "[") then param_names(ts, p + 1, []) else ok(([], p))
+
+local fn param_names(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int)! = {
+  let (x, p1) = ident(ts, p)!
+  if is_sym(ts, p1, ",") then param_names(ts, p1 + 1, acc + [x])
+  else {
+    let p2 = expect(ts, p1, "]")!
+    ok((acc + [x], p2))
+  }
 }
 
 // `where x: A, y: B` after a rule; absent means no variables.
@@ -295,24 +346,51 @@ local fn room_uses(ts: List[Token], p: Int, acc: List[String]) -> (List[String],
   if is_sym(ts, p1, ",") then room_uses(ts, p1 + 1, acc + [r]) else ok((acc + [r], p1))
 }
 
-// `name(x: A, ...) -> T` or `name: T`: the declared type, with the
-// parameters bound around it, and the parameters themselves.
-local fn signature(ts: List[Token], p: Int) -> (String, List[(String, Raw)], Raw, Int)! = {
-  let (name, p1) = ident(ts, p)!
+// `name[u](x: A, ...) -> T` or `name[u]: T`: the universe parameters, the
+// declared type with the parameters bound around it, and the parameters.
+type Signature = { name: String, levels: List[String], params: List[(String, Raw)], ty: Raw }
+
+local fn signature(ts: List[Token], p: Int) -> (Signature, Int)! = {
+  let (name, p0) = ident(ts, p)!
+  let (levels, p1) = level_params(ts, p0)!
   if is_sym(ts, p1, "(") then {
     let (its, p2) = items(ts, p1 + 1, [])!
     let params = binders_of(ts, p1, its)!
     let p3 = expect(ts, p2, "->")!
     let (ret, p4) = term(ts, p3)!
-    ok((name, params, wrap_pis(params, ret), p4))
+    ok((Signature { name: name, levels: levels, params: params, ty: wrap_pis(params, ret) }, p4))
   } else {
     let p2 = expect(ts, p1, ":")!
     let (ty, p3) = term(ts, p2)!
-    ok((name, [], ty, p3))
+    ok((Signature { name: name, levels: levels, params: [], ty: ty }, p3))
   }
 }
 
-let DECL_HINT = "expected a declaration (room, symbol, def, theorem, rule, irrelevant, check, eval, axioms)"
+let DECL_HINT = "expected a declaration (room, type, symbol, def, theorem, rule, irrelevant, check, eval, axioms)"
+
+// `(x: A, y: B)` if present.
+local fn opt_binders(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! =
+  if is_sym(ts, p, "(") then {
+    let (its, q) = items(ts, p + 1, [])!
+    ok((binders_of(ts, p, its)!, q))
+  } else ok(([], p))
+
+// `: T` if present.
+local fn opt_result(ts: List[Token], p: Int) -> (Raw?, Int)! =
+  if is_sym(ts, p, ":") then {
+    let (r, q) = term(ts, p + 1)!
+    ok((some(r), q))
+  } else ok((none, p))
+
+// `| name`, `| name(x: A, ...)`, either optionally followed by `: Result`.
+local fn constructors(ts: List[Token], p: Int, acc: List[Constructor]) -> (List[Constructor], Int)! =
+  if not is_sym(ts, p, "|") then ok((acc, p))
+  else {
+    let (name, p1) = ident(ts, p + 1)!
+    let (args, p2) = opt_binders(ts, p1)!
+    let (result, p3) = opt_result(ts, p2)!
+    constructors(ts, p3, acc + [Constructor { name: name, args: args, result: result }])
+  }
 
 local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
   let t = tok(ts, p)
@@ -325,16 +403,26 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
         ok((DRoom(name, rs), p2))
       } else ok((DRoom(name, []), p1))
     },
+    "type" => {
+      let (name, p0) = ident(ts, p + 1)!
+      let (levels, p1) = level_params(ts, p0)!
+      let (params, p2) = opt_binders(ts, p1)!
+      let p3 = expect(ts, p2, ":")!
+      let (arity, p4) = term(ts, p3)!
+      let p5 = expect(ts, p4, "=")!
+      let (ctors, p6) = constructors(ts, p5, [])!
+      ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: ctors }), p6))
+    },
     "symbol" => {
-      let (name, _, ty, p1) = signature(ts, p + 1)!
-      ok((DSymbol(name, ty), p1))
+      let (sg, p1) = signature(ts, p + 1)!
+      ok((DSymbol(sg.name, sg.levels, sg.ty), p1))
     },
     "def" | "theorem" => {
-      let (name, params, ty, p1) = signature(ts, p + 1)!
+      let (sg, p1) = signature(ts, p + 1)!
       let p2 = expect(ts, p1, "=")!
       let (body, p3) = term(ts, p2)!
-      let value = wrap_lams(params, body)
-      if t.text == "def" then ok((DDef(name, ty, value), p3)) else ok((DTheorem(name, ty, value), p3))
+      let value = wrap_lams(sg.params, body)
+      if t.text == "def" then ok((DDef(sg.name, sg.levels, sg.ty, value), p3)) else ok((DTheorem(sg.name, sg.levels, sg.ty, value), p3))
     },
     "rule" => {
       let (lhs, p1) = term(ts, p + 1)!
@@ -411,7 +499,7 @@ test "calls apply each argument in turn" {
 }
 
 test "arrows associate to the right and bind looser than calls" {
-  assert_eq(first_decl("symbol f: A(B) -> C -> D"), DSymbol("f", RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D")))))
+  assert_eq(first_decl("symbol f: A(B) -> C -> D"), DSymbol("f", [], RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D")))))
 }
 
 test "a parameter list makes a function type or a function" {
@@ -421,7 +509,7 @@ test "a parameter list makes a function type or a function" {
 
 test "a declaration with parameters binds them in its type and its body" {
   let d = first_decl("def id(a: A) -> A = a")
-  assert_eq(d, DDef("id", RPi("a", RName("A"), RName("A")), RLam("a", RName("A"), RName("a"))))
+  assert_eq(d, DDef("id", [], RPi("a", RName("A"), RName("A")), RLam("a", RName("A"), RName("a"))))
 }
 
 test "rules take their variables from a where clause" {
@@ -434,5 +522,22 @@ test "declarations need no terminator" {
   match parse("symbol A: Type\nsymbol a: A\ncheck a") {
     ok(ds) => assert_eq(list.len(ds), 3),
     err(e) => assert_eq(e, ""),
+  }
+}
+
+test "inductive types: parameters, indices, constructors with and without results" {
+  match first_decl("type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =\n  | nil: Vec[u](A, zero)\n  | cons(n: Nat, x: A, xs: Vec[u](A, n)): Vec[u](A, succ(n))") {
+    DInductive(ind) => {
+      assert_eq(ind.name, "Vec")
+      assert_eq(ind.levels, ["u"])
+      assert_eq(list.len(ind.params), 1)
+      assert_eq(ind.ctors |> list.map((c) => c.name), ["nil", "cons"])
+      assert_eq(list.len((list.get(ind.ctors, 1) ?? Constructor { name: "", args: [], result: none }).args), 3)
+    },
+    _ => assert(false),
+  }
+  match first_decl("type Nat: Type = | zero | succ(n: Nat)") {
+    DInductive(ind) => assert_eq(ind.ctors |> list.map((c) => c.result == none), [true, true]),
+    _ => assert(false),
   }
 }

@@ -98,6 +98,48 @@ Nat.add   Eq@1                         names may contain dots and @ (absorbed na
 Unicode aliases: `→` for `->`, `⇒` for `=>`. Declarations need no terminator: each one starts with
 its keyword.
 
+## Universes and inductive types
+
+Arlk's kernel has its own universe hierarchy and inductive types, implemented in Almide, not
+borrowed from a prover. They are the core of Lean's, Rocq's and Agda's kernels:
+
+```
+// Sort(0) is Prop (impredicative, proofs irrelevant), Type is Sort(1), Type(u) is Sort(u + 1).
+// Universe parameters are written like Almide generics.
+def id[u](A: Sort(u), x: A) -> A = x
+
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq[u](A, a, a)
+
+type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
+  | vnil: Vec[u](A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec[u](A, n)): Vec[u](A, Nat.succ(n))
+
+def add(m: Nat, n: Nat) -> Nat =
+  Nat.rec[1]((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+
+theorem one_plus_one: Eq[1](Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), Nat.succ(Nat.succ(Nat.zero))) =
+  Eq.refl[1](Nat, Nat.succ(Nat.succ(Nat.zero)))
+```
+
+A `type` declaration gives the type former, its constructors (`Nat.succ`), the recursor
+(`Nat.rec`) and one computation rule per constructor. Before anything is added the kernel checks
+that the type is admissible: constructors build the type at its own parameters, the type occurs
+only strictly positively, arguments fit the type's universe, and a proposition eliminates into
+`Type` only when it is a subsingleton (`And`, `Eq`, `False` may; `Or`, `Exists` may not, exactly as
+in Lean). Propositions with one argument-free constructor (`Eq`) also get K-style computation. The
+generated recursor and rules are then checked by the kernel like any declaration, and a rejected
+type leaves nothing behind. See [examples/data.arlk](examples/data.arlk).
+
+Next on this road: universe and argument inference (so `Nat.rec[1](...)` and `List.cons[0](Nat, ...)`
+lose their bookkeeping), pattern-matching definitions compiled to recursors, structures with
+projections, mutual and nested types, and reading Lean and Rocq libraries directly into these native
+features instead of through the `core` encoding.
+
 ## Absorbing provers
 
 ```

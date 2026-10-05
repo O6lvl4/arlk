@@ -346,3 +346,72 @@ test "brackets see the binders of the term they match" {
   assert(accepts(bracket(true, "symbol c1: Prf(p)\nsymbol c2: Prf(p)\ntheorem t: Pred(f(c1, c2)) = pz")))
   assert(rejects_with(bracket(false, "theorem t(h1: Prf(p), h2: Prf(p)) -> Pred(f(h1, h2)) = pz"), "type mismatch"))
 }
+
+// ── Inductive types ─────────────────────────────────────────────────
+
+let NAT = """
+  room data
+  type Nat: Type =
+    | zero
+    | succ(n: Nat)
+  """
+
+test "an inductive type gets a recursor that computes" {
+  assert(accepts(NAT + """
+    type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+      | refl: Eq[u](A, a, a)
+    def add(m: Nat, n: Nat) -> Nat = Nat.rec[1]((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+    theorem two: Eq[1](Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), Nat.succ(Nat.succ(Nat.zero))) =
+      Eq.refl[1](Nat, Nat.succ(Nat.succ(Nat.zero)))
+    """))
+  assert(rejects_with(NAT + """
+    type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+      | refl: Eq[u](A, a, a)
+    theorem wrong: Eq[1](Nat, Nat.zero, Nat.succ(Nat.zero)) = Eq.refl[1](Nat, Nat.zero)
+    """, "type mismatch"))
+}
+
+test "a type in a negative position is rejected, and leaves nothing behind" {
+  assert(rejects_with(NAT + "type Bad: Type = | mk(f: Bad -> Nat)", "negative position"))
+  assert(rejects_with(NAT + "type Bad: Type = | mk(f: (Bad -> Nat) -> Nat)", "negative position"))
+  // Nothing of a rejected type stays declared, so a later file can reuse its names.
+  match syntax.parse(NAT + "type Bad: Type = | mk(f: Bad -> Nat)") {
+    ok(ds) => {
+      var env = kernel.empty()
+      for d in ds {
+        match kernel.process(env, d) {
+          _ => (),
+        }
+      }
+      assert(kernel.resolve_const(env, "Nat") == ok("data.Nat"))
+      assert(kernel.resolve_const(env, "Bad") != ok("data.Bad"))
+      assert(kernel.resolve_const(env, "Bad.mk") != ok("data.Bad.mk"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}
+
+test "constructor arguments must fit the type's universe" {
+  assert(rejects_with(NAT + "type Big: Type = | mk(A: Type)", "too large"))
+  assert(accepts(NAT + "type Big: Type(1) = | mk(A: Type)"))
+  // Propositions may quantify over anything (impredicativity).
+  assert(accepts(NAT + "type Any: Sort(0) = | mk(A: Type(3))"))
+}
+
+test "constructors build the type itself at its own parameters" {
+  assert(rejects_with(NAT + "type T: Type = | mk: Nat", "must build T"))
+  assert(rejects_with(NAT + "type L(A: Type): Type = | mk(x: L(Nat))", "own parameters"))
+}
+
+test "propositions eliminate into Type only when they are subsingletons" {
+  let base = NAT + """
+    type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+      | inl(h: a)
+      | inr(h: b)
+    type And(a: Sort(0), b: Sort(0)): Sort(0) =
+      | intro(l: a, r: b)
+    """
+  // And may compute a Nat from a proof; Or may not (it would reveal which side holds).
+  assert(accepts(base + "def f(a: Sort(0), b: Sort(0), h: And(a, b)) -> Nat = And.rec[1](a, b, (x: And(a, b)) => Nat, (l: a, r: b) => Nat.zero, h)"))
+  assert(rejects_with(base + "def f(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Nat = Or.rec[1](a, b, (x: Or(a, b)) => Nat, (l: a) => Nat.zero, (r: b) => Nat.zero, h)", "universe levels"))
+}

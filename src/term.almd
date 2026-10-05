@@ -1,8 +1,147 @@
-// Core terms of the Arlk kernel: the λΠ-calculus with de Bruijn indices.
+// Core terms of the Arlk kernel: dependent types with a hierarchy of
+// universes, rewrite rules on top, de Bruijn indices.
 //
-// Var(0) is the innermost binder. Sort(0) is `Type`, Sort(1) is `Kind`.
+// Var(0) is the innermost binder. `Sort(u)` is the universe at level u:
+// Sort(0) is Prop (proof-irrelevant, impredicative), Sort(1) is `Type`,
+// Sort(u + 1) is `Type(u)`. A constant carries the universe levels it is
+// used at (`List.map[u, v]`); most constants have none.
 // Binder names are kept only for printing; the kernel never looks at them.
-type Term = | Sort(Int) | Var(Int) | Const(String) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term)
+type Term = | Sort(Level) | Var(Int) | Const(String, List[Level]) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term)
+
+// ── Universe levels ─────────────────────────────────────────────────
+
+// Levels as in Lean's kernel: imax(u, v) is 0 when v is 0 and max(u, v)
+// otherwise, which is the level of a function type from Sort(u) to Sort(v).
+type Level = | LZero | LSucc(Level) | LMax(Level, Level) | LIMax(Level, Level) | LParam(String)
+
+fn level_of_nat(n: Int) -> Level = if n <= 0 then LZero else LSucc(level_of_nat(n - 1))
+
+fn level_subst(l: Level, names: List[String], vals: List[Level]) -> Level = match l {
+  LZero => LZero,
+  LSucc(a) => LSucc(level_subst(a, names, vals)),
+  LMax(a, b) => LMax(level_subst(a, names, vals), level_subst(b, names, vals)),
+  LIMax(a, b) => LIMax(level_subst(a, names, vals), level_subst(b, names, vals)),
+  LParam(p) => match list.index_of(names, p) {
+    some(i) => list.get(vals, i) ?? l,
+    none => l,
+  },
+}
+
+fn level_params(l: Level) -> List[String] = match l {
+  LZero => [],
+  LSucc(a) => level_params(a),
+  LMax(a, b) => level_params(a) + level_params(b),
+  LIMax(a, b) => level_params(a) + level_params(b),
+  LParam(p) => [p],
+}
+
+// Parameters in the second argument of an imax: the deciding procedure
+// splits on each being 0 or not.
+local fn imax_params(l: Level) -> List[String] = match l {
+  LZero => [],
+  LSucc(a) => imax_params(a),
+  LMax(a, b) => imax_params(a) + imax_params(b),
+  LIMax(a, b) => imax_params(a) + level_params(b) + imax_params(b),
+  LParam(_) => [],
+}
+
+// A level without imax, as `max` of terms `p + k` (p = "" for a constant k).
+local fn terms(l: Level) -> List[(String, Int)] = match l {
+  LZero => [("", 0)],
+  LSucc(a) => terms(a) |> list.map(((p, k)) => (p, k + 1)),
+  LMax(a, b) => terms(a) + terms(b),
+  LIMax(a, b) => terms(a) + terms(b),
+  LParam(p) => [(p, 0)],
+}
+
+local fn is_zero(l: Level) -> Bool = list.all(terms(l), ((p, k)) => p == "" and k == 0)
+
+// Once every parameter under an imax's second argument is known to be 0
+// (substituted) or a successor (substituted by succ), imax is decided.
+local fn drop_imax(l: Level) -> Level = match l {
+  LZero => LZero,
+  LSucc(a) => LSucc(drop_imax(a)),
+  LMax(a, b) => LMax(drop_imax(a), drop_imax(b)),
+  LIMax(a, b) => {
+    let b2 = drop_imax(b)
+    if is_zero(b2) then LZero else LMax(drop_imax(a), b2)
+  },
+  LParam(p) => l,
+}
+
+// a ≤ b for every value of the parameters, without imax: each term of a
+// is bounded by some term of b.
+local fn leq_plain(a: Level, b: Level) -> Bool = {
+  let tb = terms(b)
+  list.all(terms(a), ((p, k)) =>
+    if p == "" then list.any(tb, ((_, kb)) => kb >= k)
+    else list.any(tb, ((q, kb)) => q == p and kb >= k))
+}
+
+// a ≤ b for every value of the parameters. Complete: imax is removed by
+// splitting each parameter it depends on into 0 and a successor.
+fn level_leq(a: Level, b: Level) -> Bool = {
+  let ps = list.unique(imax_params(a) + imax_params(b))
+  leq_cases(a, b, ps)
+}
+
+local fn leq_cases(a: Level, b: Level, ps: List[String]) -> Bool = match list.first(ps) {
+  none => leq_plain(drop_imax(a), drop_imax(b)),
+  some(p) => {
+    let rest = list.drop(ps, 1)
+    let zero = leq_cases(level_subst(a, [p], [LZero]), level_subst(b, [p], [LZero]), rest)
+    zero and leq_cases(level_subst(a, [p], [LSucc(LParam(p))]), level_subst(b, [p], [LSucc(LParam(p))]), rest)
+  },
+}
+
+fn level_eq(a: Level, b: Level) -> Bool = a == b or (level_leq(a, b) and level_leq(b, a))
+
+fn levels_eq(xs: List[Level], ys: List[Level]) -> Bool =
+  list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => level_eq(x, y))
+
+// A shorter equal level: closed parts are computed, imax with a successor
+// on the right is max, max with 0 or with itself disappears.
+fn level_simp(l: Level) -> Level = match l {
+  LSucc(a) => LSucc(level_simp(a)),
+  LMax(a, b) => {
+    let x = level_simp(a)
+    let y = level_simp(b)
+    if is_zero(x) then y
+    else if is_zero(y) then x
+    else if level_leq(x, y) then y
+    else if level_leq(y, x) then x
+    else LMax(x, y)
+  },
+  LIMax(a, b) => {
+    let y = level_simp(b)
+    if is_zero(y) then LZero
+    else if never_zero(y) then level_simp(LMax(a, y))
+    else {
+      let x = level_simp(a)
+      if level_leq(x, y) then y else LIMax(x, y)
+    }
+  },
+  other => other,
+}
+
+local fn never_zero(l: Level) -> Bool = list.any(terms(drop_imax(l)), ((_, k)) => k >= 1)
+
+// Substitute universe parameters throughout a term.
+fn inst_levels(t: Term, names: List[String], vals: List[Level]) -> Term =
+  if list.is_empty(names) then t
+  else match t {
+    Sort(l) => Sort(level_subst(l, names, vals)),
+    Const(c, ls) => Const(c, ls |> list.map((l) => level_subst(l, names, vals))),
+    App(f, a) => App(inst_levels(f, names, vals), inst_levels(a, names, vals)),
+    Lam(x, ty, b) => Lam(x, inst_levels(ty, names, vals), inst_levels(b, names, vals)),
+    Pi(x, ty, b) => Pi(x, inst_levels(ty, names, vals), inst_levels(b, names, vals)),
+    other => other,
+  }
+
+// `Type`: Sort(1).
+fn type0() -> Term = Sort(LSucc(LZero))
+
+// ── Terms ───────────────────────────────────────────────────────────
 
 // Add `d` to every free index at or above `cutoff`.
 fn shift(t: Term, d: Int, cutoff: Int) -> Term = match t {
@@ -52,7 +191,7 @@ fn occurs(t: Term, i: Int) -> Bool = match t {
 
 // Every constant name mentioned in t (with repeats).
 fn consts(t: Term) -> List[String] = match t {
-  Const(c) => [c],
+  Const(c, _) => [c],
   App(f, a) => consts(f) + consts(a),
   Lam(_, ty, b) => consts(ty) + consts(b),
   Pi(_, ty, b) => consts(ty) + consts(b),
@@ -61,18 +200,36 @@ fn consts(t: Term) -> List[String] = match t {
 
 test "subst replaces the bound variable and lowers the rest" {
   // (λ. Var1 Var0)[0 := c]  →  Var0 c
-  assert_eq(subst(App(Var(1), Var(0)), Const("c")), App(Var(0), Const("c")))
+  assert_eq(subst(App(Var(1), Var(0)), Const("c", [])), App(Var(0), Const("c", [])))
 }
 
 test "subst shifts the value under binders" {
   // Π_. Var1  with Var0 := Var5  →  Π_. Var6
-  assert_eq(subst(Pi("_", Sort(0), Var(1)), Var(5)), Pi("_", Sort(0), Var(6)))
+  assert_eq(subst(Pi("_", type0(), Var(1)), Var(5)), Pi("_", type0(), Var(6)))
 }
 
 test "spine and apply are inverse" {
-  let t = App(App(Const("f"), Var(0)), Const("a"))
+  let t = App(App(Const("f", []), Var(0)), Const("a", []))
   let (h, args) = spine(t)
-  assert_eq(h, Const("f"))
+  assert_eq(h, Const("f", []))
   assert_eq(list.len(args), 2)
   assert_eq(apply(h, args), t)
+}
+
+test "levels: max, succ and imax are decided for every parameter value" {
+  let u = LParam("u")
+  let v = LParam("v")
+  assert(level_eq(LMax(u, v), LMax(v, u)))
+  assert(level_leq(u, LSucc(u)))
+  assert(not level_leq(LSucc(u), u))
+  assert(level_eq(LIMax(u, LZero), LZero))
+  assert(level_eq(LIMax(u, LSucc(v)), LMax(u, LSucc(v))))
+  assert(level_leq(LIMax(u, v), LMax(u, v)))
+  assert(not level_leq(LMax(u, v), LIMax(u, v)))
+  assert(level_eq(LIMax(u, u), u))
+  assert(level_eq(LMax(LSucc(LZero), LSucc(u)), LSucc(u)))
+  assert(not level_leq(u, v))
+  assert_eq(level_simp(LIMax(level_of_nat(2), level_of_nat(1))), level_of_nat(2))
+  assert_eq(level_simp(LIMax(u, LZero)), LZero)
+  assert_eq(level_simp(LMax(u, LZero)), u)
 }

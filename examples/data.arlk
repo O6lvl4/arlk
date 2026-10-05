@@ -1,0 +1,43 @@
+room data
+
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+
+def add(m: Nat, n: Nat) -> Nat =
+  Nat.rec[1]((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+
+eval add(Nat.succ(Nat.zero), Nat.succ(Nat.succ(Nat.zero)))
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq[u](A, a, a)
+
+def two: Nat = Nat.succ(Nat.succ(Nat.zero))
+theorem one_plus_one: Eq[1](Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), two) = Eq.refl[1](Nat, two)
+
+type List[u](A: Type(u)): Type(u) =
+  | nil
+  | cons(head: A, tail: List[u](A))
+
+def length[u](A: Type(u), xs: List[u](A)) -> Nat =
+  List.rec[1, u](A, (l: List[u](A)) => Nat, Nat.zero, (h: A, t: List[u](A), r: Nat) => Nat.succ(r), xs)
+
+eval length[0](Nat, List.cons[0](Nat, Nat.zero, List.cons[0](Nat, Nat.zero, List.nil[0](Nat))))
+
+type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
+  | vnil: Vec[u](A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec[u](A, n)): Vec[u](A, Nat.succ(n))
+
+type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+  | inl(h: a)
+  | inr(h: b)
+
+type False: Sort(0) =
+
+type And(a: Sort(0), b: Sort(0)): Sort(0) =
+  | intro(left: a, right: b)
+
+type Exists[u](A: Sort(u), p: A -> Sort(0)): Sort(0) =
+  | intro(w: A, h: p(w))
+
+axioms one_plus_one

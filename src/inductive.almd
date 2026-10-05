@@ -1,0 +1,249 @@
+// Inductive types: the declarations a `type` stands for.
+//
+//   type Nat: Type =
+//     | zero
+//     | succ(n: Nat)
+//
+// becomes the type former `Nat`, the constructors `Nat.zero` and
+// `Nat.succ`, the recursor `Nat.rec` (Lean's, which is also Rocq's and
+// Agda's eliminator), and one computation rule per constructor:
+//
+//   symbol Nat.rec[v](motive: (t: Nat) -> Sort(v), zero: motive(Nat.zero),
+//                     succ: (n: Nat, ih_n: motive(n)) -> motive(Nat.succ(n)),
+//                     t: Nat) -> motive(t)
+//   rule Nat.rec[v](motive, zero, succ, Nat.zero) = zero  where ...
+//   rule Nat.rec[v](motive, zero, succ, Nat.succ(n)) = succ(n, Nat.rec[v](motive, zero, succ, n))  where ...
+//
+// Everything here is ordinary Arlk syntax, and the kernel checks each
+// generated declaration like any other: a rule that does not preserve
+// types is rejected. What the kernel cannot see from the declarations is
+// whether the type itself is admissible (strict positivity, universe
+// levels, which universes it may eliminate into); kernel.almd checks that
+// before anything is added, and passes the outcome in as a `Plan`.
+
+import self.syntax.{Raw, Decl, Inductive, Constructor}
+
+// `large`: the motive may land in any universe (else only in Prop).
+// `k`: a proposition with one constructor and no arguments (like Eq):
+// any proof of the right instance computes like the constructor.
+type Plan = { large: Bool, k: Bool }
+
+// ── Raw helpers ─────────────────────────────────────────────────────
+
+fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
+
+local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+local fn lams(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
+
+fn raw_spine(r: Raw) -> (Raw, List[Raw]) = spine_acc(r, [])
+
+local fn spine_acc(r: Raw, args: List[Raw]) -> (Raw, List[Raw]) = match r {
+  RApp(f, a) => spine_acc(f, [a] + args),
+  other => (other, args),
+}
+
+local fn names(bs: List[(String, Raw)]) -> List[Raw] = bs |> list.map(((x, _)) => RName(x))
+
+// The name with primes until it is not taken.
+fn fresh(x: String, taken: List[String]) -> String =
+  if list.contains(taken, x) then fresh(x + "'", taken) else x
+
+// A constant of the declaration at its own universe parameters.
+local fn at_levels(ind: Inductive, name: String) -> Raw =
+  if list.is_empty(ind.levels) then RName(name) else RInst(name, ind.levels |> list.map((l) => RName(l)))
+
+fn ctor_name(ind: Inductive, c: Constructor) -> String = ind.name + "." + c.name
+
+fn rec_name(ind: Inductive) -> String = ind.name + ".rec"
+
+// Is the head of r the type being declared?
+fn is_self(ind: Inductive, r: Raw) -> Bool = {
+  let (h, _) = raw_spine(r)
+  match h {
+    RName(x) => x == ind.name,
+    RInst(x, _) => x == ind.name,
+    _ => false,
+  }
+}
+
+// The indices of a type: the binders of its arity before the sort.
+// Unnamed ones get names.
+fn indices(arity: Raw) -> List[(String, Raw)] = idx_acc(arity, [])
+
+local fn idx_acc(r: Raw, acc: List[(String, Raw)]) -> List[(String, Raw)] = match r {
+  RPi(x, ty, b) => idx_acc(b, acc + [(if x == "_" then "i" + int.to_string(list.len(acc) + 1) else x, ty)]),
+  _ => acc,
+}
+
+// A constructor's result: the type at the parameters and some indices.
+fn result_of(ind: Inductive, c: Constructor) -> Raw = match c.result {
+  some(r) => r,
+  none => raw_apply(at_levels(ind, ind.name), names(ind.params)),
+}
+
+// The index arguments of an instance of the type (after its parameters).
+fn index_args(ind: Inductive, r: Raw) -> List[Raw] = {
+  let (_, args) = raw_spine(r)
+  list.drop(args, list.len(ind.params))
+}
+
+// A recursive argument `(y: B) -> T(params, idx)`: its binders and indices.
+fn recursive(ind: Inductive, ty: Raw) -> (List[(String, Raw)], List[Raw])? = rec_acc(ind, ty, [])
+
+local fn rec_acc(ind: Inductive, ty: Raw, ys: List[(String, Raw)]) -> (List[(String, Raw)], List[Raw])? = match ty {
+  RPi(y, b, rest) => rec_acc(ind, rest, ys + [(if y == "_" then "y" + int.to_string(list.len(ys) + 1) else y, b)]),
+  other => if is_self(ind, other) then some((ys, index_args(ind, other))) else none,
+}
+
+// ── The generated declarations ──────────────────────────────────────
+
+// Every name the user wrote, which generated binders must avoid.
+local fn user_names(ind: Inductive) -> List[String] =
+  [ind.name] + (ind.params |> list.map(((x, _)) => x))
+    + (indices(ind.arity) |> list.map(((x, _)) => x))
+    + (ind.ctors |> list.flat_map((c) => c.args |> list.map(((x, _)) => x)))
+    + ind.levels
+
+type Names = { motive: String, level: String, minors: List[String], major: String, idx: List[String] }
+
+local fn generated_names(ind: Inductive) -> Names = {
+  let taken = user_names(ind)
+  let motive = fresh("motive", taken)
+  let level = fresh("v", taken)
+  var minors: List[String] = []
+  for c in ind.ctors {
+    list.push(minors, fresh(c.name, taken + [motive] + minors))
+  }
+  let major = fresh("t", taken + [motive] + minors)
+  var idx: List[String] = []
+  for (x, _) in indices(ind.arity) {
+    list.push(idx, fresh(x, taken + [motive, major] + minors + idx))
+  }
+  Names { motive: motive, level: level, minors: minors, major: major, idx: idx }
+}
+
+local fn rec_levels(ind: Inductive, n: Names, plan: Plan) -> List[String] =
+  if plan.large then [n.level] + ind.levels else ind.levels
+
+local fn rec_head(ind: Inductive, n: Names, plan: Plan) -> Raw = {
+  let ls = rec_levels(ind, n, plan)
+  if list.is_empty(ls) then RName(rec_name(ind)) else RInst(rec_name(ind), ls |> list.map((l) => RName(l)))
+}
+
+// motive: (indices, t: T(params, indices)) -> Sort(v), or Sort(0).
+local fn motive_type(ind: Inductive, n: Names, plan: Plan) -> Raw = {
+  let idx = indices(ind.arity)
+  let target = raw_apply(at_levels(ind, ind.name), names(ind.params) + names(idx))
+  let sort = RApp(RSort, RName(if plan.large then n.level else "0"))
+  pis(idx + [(fresh(n.major, idx |> list.map(((x, _)) => x)), target)], sort)
+}
+
+// The minor premise for constructor c: its arguments, an induction
+// hypothesis per recursive argument, and the motive at the constructor.
+local fn minor_type(ind: Inductive, n: Names, c: Constructor) -> Raw = {
+  let taken = user_names(ind) + [n.motive] + n.minors
+  var ihs: List[(String, Raw)] = []
+  for (a, ty) in c.args {
+    match recursive(ind, ty) {
+      some((ys, idx)) => {
+        let ih = fresh("ih_" + a, taken + (ihs |> list.map(((x, _)) => x)))
+        list.push(ihs, (ih, pis(ys, raw_apply(RName(n.motive), idx + [raw_apply(RName(a), names(ys))]))))
+      },
+      none => (),
+    }
+  }
+  let built = raw_apply(at_levels(ind, ctor_name(ind, c)), names(ind.params) + names(c.args))
+  pis(c.args + ihs, raw_apply(RName(n.motive), index_args(ind, result_of(ind, c)) + [built]))
+}
+
+local fn rec_type(ind: Inductive, n: Names, plan: Plan) -> Raw = {
+  let idx = list.zip(n.idx, indices(ind.arity) |> list.map(((_, ty)) => ty))
+  // Index types may mention earlier indices by their written names.
+  let idx2 = rename_telescope(idx, indices(ind.arity) |> list.map(((x, _)) => x), n.idx)
+  let minors = list.zip(n.minors, ind.ctors |> list.map((c) => minor_type(ind, n, c)))
+  let target = raw_apply(at_levels(ind, ind.name), names(ind.params) + names(idx2))
+  pis(ind.params + [(n.motive, motive_type(ind, n, plan))] + minors + idx2 + [(n.major, target)],
+    raw_apply(RName(n.motive), names(idx2) + [RName(n.major)]))
+}
+
+// The rule that computes the recursor on constructor c.
+local fn iota(ind: Inductive, n: Names, plan: Plan, c: Constructor, minor: String) -> Decl = {
+  let head = rec_head(ind, n, plan)
+  let fixed = names(ind.params) + [RName(n.motive)] + (n.minors |> list.map((m) => RName(m)))
+  let vars = ind.params + [(n.motive, motive_type(ind, n, plan))]
+    + list.zip(n.minors, ind.ctors |> list.map((d) => minor_type(ind, n, d))) + c.args
+  let res_idx = index_args(ind, result_of(ind, c))
+  let built = raw_apply(at_levels(ind, ctor_name(ind, c)), (ind.params |> list.map(((x, _)) => RBracket(RName(x)))) + names(c.args))
+  let lhs = raw_apply(head, fixed + (res_idx |> list.map((i) => RBracket(i))) + [built])
+  var ihs: List[Raw] = []
+  for (a, ty) in c.args {
+    match recursive(ind, ty) {
+      some((ys, idx)) => list.push(ihs, lams(ys, raw_apply(head, fixed + idx + [raw_apply(RName(a), names(ys))]))),
+      none => (),
+    }
+  }
+  DRule(vars, lhs, raw_apply(RName(minor), names(c.args) + ihs))
+}
+
+// K: for a proposition with a single constructor without arguments, any
+// proof at the constructor's indices computes like the constructor (the
+// proofs are equal anyway; this makes the recursor see it).
+local fn k_rule(ind: Inductive, n: Names, plan: Plan, c: Constructor, minor: String) -> Decl = {
+  let head = rec_head(ind, n, plan)
+  let res_idx = index_args(ind, result_of(ind, c))
+  let h = fresh("h", user_names(ind) + [n.motive] + n.minors)
+  let vars = ind.params + [(n.motive, motive_type(ind, n, plan)), (minor, minor_type(ind, n, c)), (h, result_of(ind, c))]
+  let lhs = raw_apply(head, names(ind.params) + [RName(n.motive), RName(minor)] + (res_idx |> list.map((i) => RBracket(i))) + [RName(h)])
+  DRule(vars, lhs, RName(minor))
+}
+
+// The type former alone: declared first, so that the constructors can be
+// checked against it.
+fn type_former(ind: Inductive) -> Decl = DSymbol(ind.name, ind.levels, pis(ind.params, ind.arity))
+
+// The constructors, checked against the type former.
+fn constructors(ind: Inductive) -> List[Decl] =
+  ind.ctors |> list.map((c) => DSymbol(ctor_name(ind, c), ind.levels, pis(ind.params + c.args, result_of(ind, c))))
+
+// The recursor and its rules, once the type is known to be admissible.
+fn eliminator(ind: Inductive, plan: Plan) -> List[Decl] = {
+  let n = generated_names(ind)
+  var out: List[Decl] = []
+  list.push(out, DSymbol(rec_name(ind), rec_levels(ind, n, plan), rec_type(ind, n, plan)))
+  for (c, minor) in list.zip(ind.ctors, n.minors) {
+    list.push(out, if plan.k then k_rule(ind, n, plan, c, minor) else iota(ind, n, plan, c, minor))
+  }
+  out
+}
+
+// ── Renaming ────────────────────────────────────────────────────────
+
+// Rename free occurrences of `from[i]` to `to[i]` in a telescope's types.
+local fn rename_telescope(bs: List[(String, Raw)], from: List[String], to: List[String]) -> List[(String, Raw)] =
+  bs |> list.map(((x, ty)) => (x, rename(ty, from, to)))
+
+fn rename(r: Raw, from: List[String], to: List[String]) -> Raw = match r {
+  RName(x) => match list.index_of(from, x) {
+    some(i) => RName(list.get(to, i) ?? x),
+    none => r,
+  },
+  RApp(f, a) => RApp(rename(f, from, to), rename(a, from, to)),
+  RLam(x, ty, b) => RLam(x, rename(ty, from, to), rename(b, without(from, to, x), without_to(from, to, x))),
+  RPi(x, ty, b) => RPi(x, rename(ty, from, to), rename(b, without(from, to, x), without_to(from, to, x))),
+  RBracket(b) => RBracket(rename(b, from, to)),
+  other => other,
+}
+
+// A binder named x stops the renaming of x below it.
+local fn without(from: List[String], to: List[String], x: String) -> List[String] =
+  list.zip(from, to) |> list.filter(((f, _)) => f != x) |> list.map(((f, _)) => f)
+
+local fn without_to(from: List[String], to: List[String], x: String) -> List[String] =
+  list.zip(from, to) |> list.filter(((f, _)) => f != x) |> list.map(((_, t)) => t)
+
+test "names avoid what the user wrote" {
+  assert_eq(fresh("motive", ["motive", "motive'"]), "motive''")
+}
