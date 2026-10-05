@@ -65,6 +65,12 @@ never a false theorem; a term with unresolved holes is rejected (by `elab.comple
 the kernel). Structural recursion is enforced by construction: a `match` only produces recursor
 applications, and a recursive call that is not on a constructor argument has no translation.
 
+## 4a. Proof search — not trusted
+
+`search` ([src/search.almd](../src/search.almd)) only proposes a term; the declaration is then
+checked by part 1 like a written proof (`check` in `checker.examine`). It uses only hypotheses
+in scope and the lemmas listed, and adds no declarations.
+
 ## 4b. Views and translation — not trusted
 
 `view` and `translate` ([src/checker.almd](../src/checker.almd): `add_view`, `carry`,

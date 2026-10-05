@@ -8,6 +8,7 @@ import self.kernel.{IndInfo, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MStat
 import self.inductive
 import self.elab
 import self.patterns
+import self.search
 
 // Named surface terms → de Bruijn terms. `scope` is innermost first; `lv`
 // holds the universe parameters in scope. A bracket is transparent here;
@@ -769,6 +770,21 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   },
   DInductive(_) => err("a type declaration is processed by `process`"),
   DView(_, _, _) => err("a view is processed by `process`"),
+  DSearch(sig, kind, names, depth) => {
+    no_brackets([sig.ty])!
+    let ty = surface_type(env, sig.levels, sig.ty)!
+    var bu = budget()
+    expect_sort(env, [], ty, bu)!
+    var using: List[(String, List[String], Term)] = []
+    for n in names {
+      let q = resolve_const(env, n)!
+      list.push(using, (q, map.get(env.lparams, q) ?? [], map.get(env.types, q) ?? type0()))
+    }
+    let t = search.find(env, ty, using, depth)!
+    check(env, [], t, ty, bu)!
+    let c = declare(env, sig, kind, ty, some(t))!
+    ok((c, ["✓ found by search: ${sig.name} = ${show(env, [], t)}", "✓ ${kind} ${env.room}.${sig.name}: ${show(env, [], ty)}"]))
+  },
   DTranslate(_, _) => err("a translation is processed by `process`"),
 }
 

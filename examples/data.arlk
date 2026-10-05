@@ -136,3 +136,8 @@ theorem or_swap(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Or(b, a) =
 def explode[u](A: Sort(u), h: False) -> A = False.rec((x: False) => A, h)
 
 axioms zero_add
+
+// Proof search: a bounded search proposes an ordinary proof term, printed
+// and then checked like a written one; it uses only the lemmas listed.
+theorem compose(P: Sort(0), Q: Sort(0), R: Sort(0), f: P -> Q, g: Q -> R, h: P) -> R = search
+theorem eq_back(n: Nat, m: Nat, h: Eq(Nat, n, m)) -> Eq(Nat, m, n) = search(symm)

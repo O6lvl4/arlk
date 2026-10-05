@@ -58,6 +58,9 @@ type Decl =
   // `translate V name`: a declaration of a room built on V's source, with
   // everything it uses, carried along V into this room and checked again.
   | DTranslate(String, String)
+  // `theorem t(...) -> T = search(lemma, ..., depth: n)`: a proof found by
+  // bounded search (src/search.almd), then checked like a written one.
+  | DSearch(Sig, String, List[String], Int)
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -105,6 +108,7 @@ let KEYWORDS = [
   "view",
   "translate",
   "let",
+  "search",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
@@ -496,6 +500,42 @@ local fn field_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[
   }
 
 // `x: a, y: b }`: a record value's fields.
+// `search`, or `search(lemma, ..., depth: n)`.
+local fn search_spec(ts: List[Token], p: Int) -> (List[String], Int, Int)! = {
+  var names: List[String] = []
+  var depth = 6
+  var q = p
+  if is_sym(ts, q, "(") then {
+    q = q + 1
+    var going = not is_sym(ts, q, ")")
+    if not going then {
+      q = q + 1
+    } else ()
+    while going {
+      let (x, q1) = ident(ts, q)!
+      if x == "depth" and is_sym(ts, q1, ":") then {
+        let (n, q2) = ident(ts, q1 + 1)!
+        depth = match int.parse(n) {
+          ok(v) => v,
+          err(_) => -1,
+        }
+        guard depth >= 0 else err(fail_at(ts, q1 + 1, "depth: expects a number"))
+        q = q2
+      } else {
+        list.push(names, x)
+        q = q1
+      }
+      if is_sym(ts, q, ",") then {
+        q = q + 1
+      } else {
+        q = expect(ts, q, ")")!
+        going = false
+      }
+    }
+  } else ()
+  ok((names, depth, q))
+}
+
 // `{ let h: A = e  ...  result }`: Almide's block, for the steps of a
 // proof. Each `let` names a fact for what follows, opaquely, like Isar's
 // `have`: the block is `((h: A) => result)(e)`. The type may be left out.
@@ -624,6 +664,10 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
     "def" | "theorem" => {
       let (sg, p1) = signature(ts, p + 1)!
       let p2 = expect(ts, p1, "=")!
+      guard not is_kw(ts, p2, "search") else {
+        let (names, depth, p3) = search_spec(ts, p2 + 1)!
+        ok((DSearch(sg.sig, t.text, names, depth), p3))
+      }
       let (body, p3) = term(ts, p2)!
       let value = wrap_lams(sg.params, body)
       if t.text == "def" then ok((DDef(sg.sig, value), p3)) else ok((DTheorem(sg.sig, value), p3))

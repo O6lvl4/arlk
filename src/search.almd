@@ -1,0 +1,316 @@
+// Proof search: a bounded, deterministic, goal-directed search for an
+// ordinary proof term.
+//
+//   theorem compose(P: Sort(0), Q: Sort(0), R: Sort(0), f: P -> Q, g: Q -> R, h: P) -> R = search
+//   theorem back[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) = search(symm)
+//
+// A goal that is a function type is introduced; otherwise a hypothesis in
+// scope, or a lemma the user listed, is applied: its conclusion is matched
+// against the goal (first-order, with holes for its arguments), the holes
+// matching fixes are filled, and the others become subgoals, searched in
+// turn. Only proofs are searched for: a hole for a value (or one whose type
+// still mentions an unfilled hole) is a side goal the search does not
+// guess, and it is reported. Hypotheses come before
+// lemmas, the most recent first, so the result is the same on every run.
+//
+// Nothing here is trusted: what it finds is an ordinary term, checked by
+// the kernel like a written proof and printed so it can be pasted in its
+// place. It never adds a symbol, rule or lemma the user did not list. A
+// failure is "not found within the budget", never a proof that none exists.
+
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, inst_levels, has_meta, level_has_meta, level_eq}
+import self.kernel.{Env, Ctx, Budget, budget, whnf, conv, show, infer}
+
+// The budget: nodes visited, and the goals on the current path (a goal
+// met again on its own path is a cycle, not progress).
+type Search = {
+  nodes: Int,
+  max_nodes: Int,
+  next: Int,
+  path: List[String],
+  side: List[String],
+  exhausted: Bool,
+}
+
+// What unification has learnt: term holes and universe-level holes.
+type Sol = { terms: Map[Int, Term], levels: Map[Int, Level] }
+
+let MAX_NODES = 20000
+
+// The proof of `goal` (closed) from the lemmas `using` (full names, with
+// their universe parameters), or why there is none within `depth`.
+fn find(env: Env, goal: Term, using: List[(String, List[String], Term)], depth: Int) -> Term! = {
+  var s = Search { nodes: 0, max_nodes: MAX_NODES, next: 0, path: [], side: [], exhausted: false }
+  match prove(env, [], goal, using, depth, s) {
+    some(t) => ok(t),
+    none => {
+      let why = if s.exhausted then "the search ran out of its budget (${int.to_string(MAX_NODES)} steps)"
+        else "no proof within depth ${int.to_string(depth)}"
+      let side = if list.is_empty(s.side) then "" else "\n  side goals the search does not guess: " + list.join(list.unique(s.side), "; ")
+      err("search: ${why}; this is inconclusive, not a proof that none exists${side}")
+    },
+  }
+}
+
+local fn prove(env: Env, ctx: Ctx, goal: Term, using: List[(String, List[String], Term)], depth: Int, mut s: Search) -> Term? = {
+  if s.nodes >= s.max_nodes then {
+    s.exhausted = true
+    none
+  } else {
+    s.nodes = s.nodes + 1
+    var bu = budget()
+    let g = whnf(env, ctx, goal, bu)
+    match g {
+      Pi(x, a, b) => match prove(env, [(x, a)] + ctx, b, using, depth, s) {
+        some(body) => some(Lam(x, a, body)),
+        none => none,
+      },
+      _ => if depth <= 0 then none else {
+        let key = show(env, ctx, g)
+        if list.contains(s.path, key) then none
+        else {
+          list.push(s.path, key)
+          let found = candidates(env, ctx, g, using, depth, s)
+          let _ = list.pop(s.path)
+          found
+        }
+      },
+    }
+  }
+}
+
+// Hypotheses, the most recent first, then the listed lemmas in order.
+local fn candidates(env: Env, ctx: Ctx, g: Term, using: List[(String, List[String], Term)], depth: Int, mut s: Search) -> Term? = {
+  var found: Term? = none
+  var i = 0
+  while found == none and i < list.len(ctx) {
+    let ty = match list.get(ctx, i) {
+      some((_, t)) => shift(t, i + 1, 0),
+      none => Sort(LZero),
+    }
+    found = try_apply(env, ctx, Var(i), [], ty, g, using, depth, s)
+    i = i + 1
+  }
+  for (c, lps, cty) in using {
+    if found == none then {
+      var ls: List[Level] = []
+      for _ in lps {
+        list.push(ls, LMeta(s.next))
+        s.next = s.next + 1
+      }
+      found = try_apply(env, ctx, Const(c, ls), ls, inst_levels(cty, lps, ls), g, using, depth, s)
+    } else ()
+  }
+  found
+}
+
+// Apply `head` (of type `ty`) to holes, match its conclusion with the goal,
+// then fill the holes matching did not fix by searching.
+local fn try_apply(env: Env, ctx: Ctx, head: Term, lholes: List[Level], ty: Term, g: Term, using: List[(String, List[String], Term)], depth: Int, mut s: Search) -> Term? = {
+  var holes: List[(Int, String, Term)] = []
+  var t = ty
+  var going = true
+  var bu = budget()
+  while going {
+    match whnf(env, ctx, t, bu) {
+      Pi(x, a, b) => {
+        let m = s.next
+        s.next = s.next + 1
+        list.push(holes, (m, x, a))
+        t = subst(b, Meta(m))
+      },
+      other => {
+        t = other
+        going = false
+      },
+    }
+  }
+  var sol = Sol { terms: [:], levels: [:] }
+  if not unify(env, ctx, t, g, 0, sol, 2) then none
+  else {
+    var args: List[Term] = []
+    var ok_so_far = true
+    for (m, x, a) in holes {
+      if ok_so_far then {
+        match map.get(sol.terms, m) {
+          some(v) => list.push(args, zonk(sol, v)),
+          none => {
+            let need = zonk(sol, a)
+            // Only proofs are searched for: a value (a number, a type, a
+            // middle point) that matching did not fix is a side goal for
+            // the user, never a guess.
+            if has_meta(need) or not is_prop(env, ctx, need) then {
+              list.push(s.side, "${x}: ${show(env, ctx, need)} for ${show(env, ctx, head)}")
+              ok_so_far = false
+            } else match prove(env, ctx, need, using, depth - 1, s) {
+              some(p) => {
+                map.insert(sol.terms, m, p)
+                list.push(args, p)
+              },
+              none => {
+                ok_so_far = false
+              },
+            }
+          },
+        }
+      } else ()
+    }
+    let levels_known = list.all(lholes, (l) => not level_has_meta(zonk_level(sol, l)))
+    if not ok_so_far or not levels_known then none
+    else {
+      let h = match head {
+        Const(c, ls) => Const(c, ls |> list.map((l) => zonk_level(sol, l))),
+        other => other,
+      }
+      let result = apply(h, args |> list.map((a) => zonk(sol, a)))
+      if has_meta(result) then none else some(result)
+    }
+  }
+}
+
+local fn is_prop(env: Env, ctx: Ctx, t: Term) -> Bool = {
+  var bu = budget()
+  match infer(env, ctx, t, bu) {
+    ok(s) => match whnf(env, ctx, s, bu) {
+      Sort(l) => level_eq(l, LZero),
+      _ => false,
+    },
+    err(_) => false,
+  }
+}
+
+local fn zonk(sol: Sol, t: Term) -> Term = match t {
+  Meta(m) => match map.get(sol.terms, m) {
+    some(v) => zonk(sol, v),
+    none => t,
+  },
+  App(f, a) => App(zonk(sol, f), zonk(sol, a)),
+  Lam(x, a, b) => Lam(x, zonk(sol, a), zonk(sol, b)),
+  Pi(x, a, b) => Pi(x, zonk(sol, a), zonk(sol, b)),
+  Const(c, ls) => Const(c, ls |> list.map((l) => zonk_level(sol, l))),
+  Sort(l) => Sort(zonk_level(sol, l)),
+  other => other,
+}
+
+local fn zonk_level(sol: Sol, l: Level) -> Level = match l {
+  LMeta(m) => match map.get(sol.levels, m) {
+    some(v) => zonk_level(sol, v),
+    none => l,
+  },
+  LSucc(a) => LSucc(zonk_level(sol, a)),
+  LMax(a, b) => LMax(zonk_level(sol, a), zonk_level(sol, b)),
+  LIMax(a, b) => LIMax(zonk_level(sol, a), zonk_level(sol, b)),
+  other => other,
+}
+
+local fn unify_level(a: Level, b: Level, mut sol: Sol) -> Bool = match zonk_level(sol, a) {
+  LMeta(m) => {
+    map.insert(sol.levels, m, b)
+    true
+  },
+  za => if level_has_meta(za) then match za {
+    LSucc(x) => match b {
+      LSucc(y) => unify_level(x, y, sol),
+      _ => false,
+    },
+    _ => false,
+  } else level_eq(za, b),
+}
+
+// First-order matching of `a` (with holes) against `b` (without), `depth`
+// binders below where the holes were made; `fuel` unfoldings left.
+local fn unify(env: Env, ctx: Ctx, a: Term, b: Term, depth: Int, mut sol: Sol, fuel: Int) -> Bool = {
+  let za = zonk(sol, a)
+  match za {
+    Meta(m) => {
+      // A hole stands for a term of the outer context: b may not mention
+      // the binders it is under.
+      var free = true
+      var k = 0
+      while k < depth {
+        if occurs(b, k) then free = false else ()
+        k = k + 1
+      }
+      if free then {
+        map.insert(sol.terms, m, shift(b, 0 - depth, 0))
+        true
+      } else false
+    },
+    _ => if not has_meta(za) and not term_level_meta(za) then {
+      var bu = budget()
+      conv(env, ctx, za, b, bu)
+    } else {
+      let structural = same_shape(env, ctx, za, b, depth, sol, fuel)
+      if structural then true
+      else if fuel > 0 then {
+        var bu = budget()
+        let wa = whnf(env, ctx, za, bu)
+        let wb = whnf(env, ctx, b, bu)
+        if wa == za and wb == b then false else unify(env, ctx, wa, wb, depth, sol, fuel - 1)
+      } else false
+    },
+  }
+}
+
+local fn term_level_meta(t: Term) -> Bool = match t {
+  Const(_, ls) => list.any(ls, (l) => level_has_meta(l)),
+  Sort(l) => level_has_meta(l),
+  App(f, a) => term_level_meta(f) or term_level_meta(a),
+  Lam(_, a, b) => term_level_meta(a) or term_level_meta(b),
+  Pi(_, a, b) => term_level_meta(a) or term_level_meta(b),
+  _ => false,
+}
+
+local fn same_shape(env: Env, ctx: Ctx, a: Term, b: Term, depth: Int, mut sol: Sol, fuel: Int) -> Bool = {
+  // Try on a copy: a failed attempt must not leave half a solution.
+  var trial = sol
+  let ok_shape = match a {
+    App(_, _) => {
+      let (ha, xs) = spine(a)
+      let (hb, ys) = spine(b)
+      if list.len(xs) != list.len(ys) then false
+      else {
+        var good = unify(env, ctx, ha, hb, depth, trial, fuel)
+        for (x, y) in list.zip(xs, ys) {
+          if good then {
+            good = unify(env, ctx, x, y, depth, trial, fuel)
+          } else ()
+        }
+        good
+      }
+    },
+    Const(c, ls) => match b {
+      Const(d, ms) => {
+        if c != d or list.len(ls) != list.len(ms) then false
+        else {
+          var good = true
+          for (l, m) in list.zip(ls, ms) {
+            if good then {
+              good = unify_level(l, m, trial)
+            } else ()
+          }
+          good
+        }
+      },
+      _ => false,
+    },
+    Sort(l) => match b {
+      Sort(m) => unify_level(l, m, trial),
+      _ => false,
+    },
+    Pi(_, x, y) => match b {
+      Pi(_, x2, y2) => unify(env, ctx, x, x2, depth, trial, fuel) and unify(env, [("_", x2)] + ctx, y, y2, depth + 1, trial, fuel),
+      _ => false,
+    },
+    Lam(_, x, y) => match b {
+      Lam(_, x2, y2) => unify(env, ctx, x, x2, depth, trial, fuel) and unify(env, [("_", x2)] + ctx, y, y2, depth + 1, trial, fuel),
+      _ => false,
+    },
+    _ => false,
+  }
+  if ok_shape then {
+    sol.terms = trial.terms
+    sol.levels = trial.levels
+    true
+  } else false
+}

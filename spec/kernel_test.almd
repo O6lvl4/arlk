@@ -792,3 +792,53 @@ def vhead[u, A: Type(u)](n: Nat, xs: Vec(A, Nat.succ(n))) -> A = match xs {
 """
   assert(rejects_with(src, "indices must be distinct parameters"))
 }
+
+// ── Proof search (#14) ──────────────────────────────────────────────
+
+test "search composes hypotheses into an ordinary term" {
+  let src = """
+room s
+theorem compose(P: Sort(0), Q: Sort(0), R: Sort(0), f: P -> Q, g: Q -> R, h: P) -> R = search
+"""
+  assert_eq(run(src), none)
+}
+
+test "search instantiates a listed polymorphic lemma" {
+  let src = EQ + """
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+theorem back(n: Nat, m: Nat, h: Eq(Nat, Nat.succ(n), m)) -> Eq(Nat, m, Nat.succ(n)) = search(symm)
+"""
+  assert_eq(run(src), none)
+}
+
+test "search does not guess side goals, and says so" {
+  let src = EQ + """
+theorem trans[u, A: Sort(u)](a: A, b: A, c: A, h1: Eq(A, a, b), h2: Eq(A, b, c)) -> Eq(A, a, c) =
+  Eq.rec((z: A, e: Eq(A, b, z)) => Eq(A, a, z), h1, c, h2)
+theorem t[u, A: Sort(u)](a: A, c: A) -> Eq(A, a, c) = search(trans)
+"""
+  assert(rejects_with(src, "side goals the search does not guess"))
+}
+
+test "an impossible goal gets no proof, and a forged one is rejected" {
+  let base = """
+room s
+symbol P: Sort(0)
+symbol Q: Sort(0)
+symbol f: P -> Q
+"""
+  assert(rejects_with(base + "\ntheorem no: P = search(f)\n", "inconclusive"))
+  assert(rejects_with(base + "\ntheorem forged: P = f\n", "mismatch"))
+}
+
+test "a lemma that loops stops at the budget" {
+  let src = """
+room s
+symbol P: Sort(0)
+symbol again: P -> P
+theorem no: P = search(again, depth: 50)
+"""
+  assert(rejects_with(src, "inconclusive"))
+}

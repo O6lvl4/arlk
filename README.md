@@ -86,6 +86,7 @@ irrelevant T  where x: A               values of T are all equal (definitional p
 type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
 view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
 translate V name                       carry name (from a room built on S) here along V, checked again
+theorem t(...) -> T = search(l, ...)   find a proof (bounded search), print it, check it like a written one
 
 check t                                print the type of t
 eval t                                 print the normal form of t
@@ -183,6 +184,15 @@ unification of indices; that is refused with a message for now.
 projection per field, defined by a match; a field's type may mention earlier fields
 (`type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }`).
 As in Almide, `p.x` reads a field and `Point { x: a, y: b }` builds a value.
+
+**Proof search.** `theorem t(...) -> T = search` or `search(lemma, ..., depth: n)` looks for an
+ordinary proof term (src/search.almd): it introduces function types, and applies hypotheses (most
+recent first) and the listed lemmas, matching their conclusions with the goal and searching for the
+proofs they need. It only searches for proofs: a value that matching does not fix (a middle point,
+a number) is reported as a side goal, never guessed. It never uses a lemma that was not listed and
+never adds anything. The result is printed (`✓ found by search: compose = ... => g(f(h))`), so it
+can replace the `search`, and it is checked by the kernel like a written proof. A failure is
+reported as inconclusive within the budget, not as a proof that no proof exists.
 
 **Inference.** The elaborator (src/elab.almd) fills in implicit arguments, universe levels and `_`
 holes by unification (higher-order patterns with pruning, first-order approximation, postponed
