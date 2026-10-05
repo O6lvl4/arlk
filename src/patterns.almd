@@ -177,7 +177,12 @@ fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> 
     let rows2 = specialise(rows, 0, ci, fields, scrut, t)!
     guard not list.is_empty(rows2) else err("the match on ${scrut} has no arm for ${ci.name}")
     let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads) }
-    let body = matrix(cx2, fields, rows2, look, d.ret)!
+    // The arm's type is the definition's at this constructor; an inner
+    // match takes its motive from it (#19). For an indexed family the
+    // constructor's indices are not written here, so its type stays as
+    // declared.
+    let ret = if t.indices == 0 then replace(d.ret, scrut, raw_apply(RName(ci.name), fields |> list.map((f) => RName(f)))) else d.ret
+    let body = matrix(cx2, fields, rows2, look, ret)!
     list.push(minors, lams(fields + (ihs |> list.map(((_, n)) => n)) + other_names, body))
   }
   let call = raw_apply(RName(t.rec), [motive] + minors + (index_params |> list.map((x) => RName(x))) + [RName(scrut)])

@@ -938,3 +938,124 @@ theorem swapped(p: Point) -> Eq(Point, p, Point { x: p.y, y: p.x }) = Eq.refl
 """
   assert(rejects_with(src, "mismatch"))
 }
+
+// ── Nested matches refine the outer constructor (#19) ──────────────
+
+let NESTED_BASE = """
+room nested
+type Nat: Type = | zero | succ(pred: Nat)
+type Unit: Type = | unit
+type Empty: Type =
+type Sum(A: Type, B: Type): Type = | left(value: A) | right(value: B)
+type Flag: Type = | ff | tt
+type Eq(A: Type, a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+def LE(a: Nat, b: Nat) -> Type = match a {
+  zero => Unit,
+  succ(a1) => match b {
+    zero => Empty,
+    succ(b1) => LE(a1, b1),
+  },
+}
+"""
+
+test "an inner match sees the outer constructor in its motive" {
+  let src = NESTED_BASE + """
+def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => match h {
+    zero => Sum.left(Unit.unit),
+    succ(b) => Sum.left(Unit.unit),
+  },
+  succ(a) => match h {
+    zero => Sum.right(Unit.unit),
+    succ(b) => le_case(a, b),
+  },
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "the explicit-recursor form still checks" {
+  let src = NESTED_BASE + """
+def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => Sum.left(Unit.unit),
+  succ(a) => Nat.rec((b: Nat) => Sum(LE(Nat.succ(a), b), LE(b, Nat.succ(a))),
+    Sum.right(Unit.unit),
+    (b: Nat, ih: _) => le_case(a, b), h),
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "two nested levels, and references under binders" {
+  let src = NESTED_BASE + """
+def bump(b: Flag, n: Nat) -> Nat = match b {
+  tt => Nat.succ(n),
+  ff => n,
+}
+theorem bump_swap(a: Flag, b: Flag, n: Nat) -> Eq(Nat, bump(a, bump(b, n)), bump(b, bump(a, n))) = match a {
+  tt => match b {
+    tt => Eq.refl,
+    ff => Eq.refl,
+  },
+  ff => match b {
+    tt => Eq.refl,
+    ff => Eq.refl,
+  },
+}
+def three(x: Flag, y: Flag, z: Flag) -> (k: Nat) -> Eq(Nat, bump(x, bump(y, bump(z, k))), bump(z, bump(y, bump(x, k)))) = match x {
+  tt => match y {
+    tt => match z {
+      tt => (k: Nat) => Eq.refl,
+      ff => (k: Nat) => Eq.refl,
+    },
+    ff => match z {
+      tt => (k: Nat) => Eq.refl,
+      ff => (k: Nat) => Eq.refl,
+    },
+  },
+  ff => match y {
+    tt => match z {
+      tt => (k: Nat) => Eq.refl,
+      ff => (k: Nat) => Eq.refl,
+    },
+    ff => match z {
+      tt => (k: Nat) => Eq.refl,
+      ff => (k: Nat) => Eq.refl,
+    },
+  },
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "a wrong branch of a nested match is still rejected" {
+  let src = NESTED_BASE + """
+def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => match h {
+    zero => Sum.left(Unit.unit),
+    succ(b) => Sum.right(Unit.unit),
+  },
+  succ(a) => match h {
+    zero => Sum.right(Unit.unit),
+    succ(b) => le_case(a, b),
+  },
+}
+"""
+  assert(rejects_with(src, "mismatch"))
+}
+
+test "a nested match still allows only structural recursion" {
+  let src = NESTED_BASE + """
+def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => match h {
+    zero => Sum.left(Unit.unit),
+    succ(b) => Sum.left(Unit.unit),
+  },
+  succ(a) => match h {
+    zero => Sum.right(Unit.unit),
+    succ(b) => le_case(Nat.succ(a), b),
+  },
+}
+"""
+  assert(rejects_with(src, "structural recursion"))
+}
