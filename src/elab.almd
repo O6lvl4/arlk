@@ -30,9 +30,11 @@ type ElabState = {
   // Equations between types that could not be decided yet (both sides
   // waiting on holes); retried as holes get solved.
   postponed: List[(Ctx, Term, Term, String)],
+  // `?`: goals left open on purpose, reported with their types
+  goals: List[(Ctx, Term, Term)],
 }
 
-fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [], postponed: [] }
+fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [], postponed: [], goals: [] }
 
 // ── Holes ───────────────────────────────────────────────────────────
 
@@ -454,6 +456,12 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
     let ty = new_meta(st, ctx)
     ok((new_meta(st, ctx), ty))
   },
+  RName("?") => {
+    let ty = new_meta(st, ctx)
+    let m = new_meta(st, ctx)
+    list.push(st.goals, (ctx, m, ty))
+    ok((m, ty))
+  },
   RName(x) => match index_in(names(ctx), x, 0) {
     some(i) => match list.get(ctx, i) {
       some((_, ty)) => ok((Var(i), shift(ty, i + 1, 0))),
@@ -608,6 +616,12 @@ fn check(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term
     list.push(st.typed, (ctx, m, expected))
     ok(m)
   },
+  RName("?") => {
+    let m = new_meta(st, ctx)
+    list.push(st.typed, (ctx, m, expected))
+    list.push(st.goals, (ctx, m, expected))
+    ok(m)
+  },
   RLam(x, ty, b) => match reduce_type(sc, st, ctx, expected) {
     Pi(_, dom, cod) => {
       let (tty, _) = sort_of(sc, st, ctx, ty)!
@@ -683,9 +697,35 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
 
 local fn complete(sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {
   settle(sc, st)!
+  guard list.is_empty(st.goals) else err(goal_report(sc, st))
   let z = zonk(st, t)
   guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(sc.env, [], z)} (write the missing arguments, or the universe levels in [...])")
   ok(z)
+}
+
+// Each open goal: what it must prove, what is at hand, and what
+// unification already knows it to be.
+local fn goal_report(sc: Scope, st: ElabState) -> String = {
+  var out: List[String] = []
+  let n = list.len(st.goals)
+  list.push(out, "${int.to_string(n)} open goal${if n == 1 then "" else "s"} (?)")
+  for (ctx, m, ty) in st.goals {
+    list.push(out, "  goal: ${show(sc.env, ctx, zonk(st, ty))}")
+    var i = list.len(ctx) - 1
+    while i >= 0 {
+      match list.get(ctx, i) {
+        some((x, xty)) => {
+          let outer = list.drop(ctx, i + 1)
+          list.push(out, "    ${x}: ${show(sc.env, outer, zonk(st, xty))}")
+        },
+        none => (),
+      }
+      i = i - 1
+    }
+    let zm = zonk(st, m)
+    if not has_meta(zm) then list.push(out, "    (unification found: ${show(sc.env, ctx, zm)})") else ()
+  }
+  list.join(out, "\n")
 }
 
 // A closed type, as written with holes and implicit arguments.

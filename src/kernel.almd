@@ -70,9 +70,18 @@ type Env = {
   implicits: Map[String, Int],
   // inductive types: their number of parameters, indices and constructors
   inductives: Map[String, IndInfo],
+  // views (`view V from S`), by their full name
+  views: Map[String, View],
   room: String,
   order: List[String],
 }
+
+// A view of room `source` in the room it was declared in: the term each of
+// the source's symbols stands for (`images`), the name each declaration
+// carried along it got there (`renamed`), and images given for symbols of
+// rooms built on the source, used when a translation reaches them
+// (`pending`, still to be checked against their translated types).
+type View = { source: String, images: Map[String, Term], renamed: Map[String, String], pending: Map[String, Raw] }
 
 type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String] }
 
@@ -91,6 +100,7 @@ fn empty() -> Env = Env {
   lparams: [:],
   implicits: [:],
   inductives: [:],
+  views: [:],
   room: "main",
   order: [],
 }

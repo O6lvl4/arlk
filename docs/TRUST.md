@@ -65,6 +65,14 @@ never a false theorem; a term with unresolved holes is rejected (by `elab.comple
 the kernel). Structural recursion is enforced by construction: a `match` only produces recursor
 applications, and a recursive call that is not on a constructor argument has no translation.
 
+## 4b. Views and translation — not trusted
+
+`view` and `translate` ([src/checker.almd](../src/checker.almd): `add_view`, `carry`,
+`carry_decl`, `translate`) check each image against its symbol's translated type and each source
+rule by conversion, and every carried definition and theorem is checked again by part 1 before
+it is added. A wrong view or a wrong translation is a type error; the result of `translate`
+rests on the target room's assumptions (which `axioms` lists), not on the source's.
+
 ## 5. Assumptions a result is relative to — not established by Arlk
 
 * **Hand-declared `symbol`s and `rule`s**, including user rewrite rules (no confluence,

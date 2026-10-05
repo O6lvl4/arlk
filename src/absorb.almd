@@ -32,7 +32,7 @@ local fn cname(o: Out, raw: String) -> String = mangle(string.strip_prefix(raw, 
 
 // ── Names ───────────────────────────────────────────────────────────
 
-let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Sort", "type"]
+let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Sort", "type", "match", "view", "translate", "let"]
 
 local fn plain_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'"
 

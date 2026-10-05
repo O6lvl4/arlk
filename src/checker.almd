@@ -4,7 +4,7 @@
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
-import self.kernel.{IndInfo, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
+import self.kernel.{IndInfo, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
 import self.patterns
@@ -304,6 +304,30 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
       },
     }
   },
+  // All or nothing, like a type: a view or translation that fails leaves
+  // no declarations behind.
+  DView(name, src, entries) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match add_view(env, name, src, entries) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
+  DTranslate(v, name) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match translate(env, v, name) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
   _ => {
     let (change, lines) = examine(env, d)!
     commit(env, change)
@@ -355,6 +379,213 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
   }
   let elim = if plan.large then "into any universe" else "into Prop only"
   ok(["✓ type ${q}: ${int.to_string(list.len(ind.ctors))} constructors, recursor ${q}.rec ${elim}"])
+}
+
+// ── Views ───────────────────────────────────────────────────────────
+//
+// `view V from S { sym = term, ... }` interprets room S in the current
+// room: each symbol of S stands for a term here, checked against the
+// symbol's type as the view translates it, and every rule of S must still
+// hold here (by conversion). Symbols left out are carried as assumptions,
+// definitions and theorems of S are carried and checked again.
+//
+// `translate V name` carries a declaration of a room built on S, with
+// everything it uses, into this room. Nothing is taken on trust: every
+// carried definition and theorem is checked again here, so a wrong view
+// can only make a translation fail.
+
+local fn sees(env: Env, room: String, src: String) -> Bool =
+  room == src or list.contains(map.get(env.rooms, room) ?? [], src)
+
+// A term of a room built on the view's source, as a term of this room.
+fn carry(v: View, t: Term) -> Term = match t {
+  Const(c, ls) => match map.get(v.images, c) {
+    some(u) => u,
+    none => match map.get(v.renamed, c) {
+      some(n) => Const(n, ls),
+      none => t,
+    },
+  },
+  App(f, a) => App(carry(v, f), carry(v, a)),
+  Lam(x, ty, b) => Lam(x, carry(v, ty), carry(v, b)),
+  Pi(x, ty, b) => Pi(x, carry(v, ty), carry(v, b)),
+  other => other,
+}
+
+local fn add_view(mut env: Env, name: String, src: String, entries: List[(String, Raw)]) -> List[String]! = {
+  guard map.contains(env.rooms, src) else err("view ${name}: unknown room ${src}")
+  guard src != env.room else err("view ${name}: a room cannot view itself")
+  let vq = env.room + "." + name
+  guard not map.contains(env.views, vq) else err("view ${vq} already exists")
+  var given: Map[String, Raw] = [:]
+  var pending: Map[String, Raw] = [:]
+  for (x, r) in entries {
+    let own = src + "." + x
+    let q = if map.contains(env.entries, own) and room_of(env, own) == src then own else x
+    guard map.contains(env.entries, q) else err("view ${name}: ${x} is not a declaration of ${src} or of a room built on it")
+    guard is_symbol(env, q) else err("view ${name}: ${x} is a definition or theorem; those are carried along, only symbols are mapped")
+    let home = room_of(env, q)
+    guard sees(env, home, src) else err("view ${name}: ${x} is in room ${home}, which does not use ${src}")
+    guard not map.contains(given, q) and not map.contains(pending, q) else err("view ${name}: ${x} is mapped twice")
+    if home == src then map.insert(given, q, r) else map.insert(pending, q, r)
+  }
+  var v = View { source: src, images: [:], renamed: [:], pending: pending }
+  var order: List[String] = []
+  for q in env.order {
+    if room_of(env, q) == src then list.push(order, q) else ()
+  }
+  var mapped = 0
+  var carried: List[String] = []
+  for q in order {
+    match map.get(given, q) {
+      some(r) => {
+        image(env, v, q, r)!
+        mapped = mapped + 1
+      },
+      none => {
+        let _ = carry_decl(env, v, name, q)!
+        if is_symbol(env, q) then list.push(carried, q) else ()
+      },
+    }
+  }
+  let rules = env.rules
+  for r in rules {
+    if r.room == src then keeps_rule(env, v, name, r)! else ()
+  }
+  for r in env.irrelevants {
+    guard r.room != src else err("view ${name}: ${src} declares irrelevant types, which views do not carry yet")
+  }
+  map.insert(env.views, vq, v)
+  let note = if list.is_empty(carried) then "" else "; carried as assumptions: ${list.join(carried, ", ")}"
+  ok(["✓ view ${vq}: ${src} in ${env.room}, ${int.to_string(mapped)} symbols mapped${note}"])
+}
+
+// The image of a symbol: a term of this room with the symbol's translated type.
+local fn image(mut env: Env, mut v: View, q: String, r: Raw) -> Unit! = {
+  guard not map.contains(env.lparams, q) else err("${q} has universe parameters; a view maps only symbols without them")
+  let ty = carry(v, map.get(env.types, q) ?? type0())
+  var bu = budget()
+  expect_sort(env, [], ty, bu)!
+  let t = surface_term(env, [], no_brackets_ok(r)!, ty)!
+  check(env, [], t, ty, bu)!
+  map.insert(v.images, q, t)
+  ok(())
+}
+
+local fn no_brackets_ok(r: Raw) -> Raw! = {
+  no_brackets([r])!
+  ok(r)
+}
+
+// A declaration carried along a view: declared here under the view's name,
+// its type (and body) translated and checked again.
+local fn carry_decl(mut env: Env, mut v: View, prefix: String, q: String) -> String! = {
+  let e = match map.get(env.entries, q) {
+    some(x) => ok(x),
+    none => err("unknown name ${q}"),
+  }!
+  guard not (e.kind == "symbol" and map.contains(env.rws, q)) else err("${q} has rewrite rules; give it an image in the view")
+  let n = env.room + "." + prefix + "." + q
+  guard not map.contains(env.entries, n) else err("${n} is already declared")
+  let lv = map.get(env.lparams, q) ?? []
+  let imps = map.get(env.implicits, q) ?? 0
+  let ty = carry(v, map.get(env.types, q) ?? type0())
+  var bu = budget()
+  expect_sort(env, [], ty, bu)!
+  let body = match map.get(env.bodies, q) {
+    some(b) => some(carry(v, b)),
+    none => none,
+  }
+  match body {
+    some(b) => check(env, [], b, ty, bu)!,
+    none => (),
+  }
+  commit(env, Declare(n, lv, imps, Entry { room: env.room, kind: e.kind, height: list.len(env.order) }, ty, body))
+  map.insert(v.renamed, q, n)
+  ok(n)
+}
+
+local fn pat_term(p: Pat) -> Term = match p {
+  PVar(k) => Var(k),
+  PSym(c, ps) => apply(Const(c, []), ps |> list.map((x) => pat_term(x))),
+  PBracket(t) => t,
+}
+
+// A rule of the source still holds here: both sides, translated, convert.
+local fn keeps_rule(mut env: Env, v: View, name: String, r: Rule) -> Unit! = {
+  guard list.is_empty(r.lparams) else err("view ${name}: the rule ${r.text} has universe parameters, which views do not carry yet")
+  let lhs = carry(v, apply(Const(r.head, []), r.lhs_args |> list.map((p) => pat_term(p))))
+  let rhs = carry(v, r.rhs)
+  var ctx: Ctx = []
+  var i = 0
+  for ty in r.var_tys {
+    list.push(ctx, ("x" + int.to_string(i), carry(v, ty)))
+    i = i + 1
+  }
+  var bu = budget()
+  let same = conv(env, ctx, lhs, rhs, bu)
+  guard not bu.exhausted else err(exhausted_error())
+  guard same else err("view ${name} does not keep the rule ${r.text}\n    left:  ${show(env, ctx, lhs)}\n    right: ${show(env, ctx, rhs)}")
+  ok(())
+}
+
+local fn translate(mut env: Env, vname: String, name: String) -> List[String]! = {
+  let vq = env.room + "." + vname
+  var v = match map.get(env.views, vq) {
+    some(x) => ok(x),
+    none => err("unknown view ${vname} (a view is used in the room that declares it)"),
+  }!
+  // The source theory need not be visible here: that is the point.
+  let q = if map.contains(env.entries, name) then name else resolve_const(env, name)!
+  let src = v.source
+  guard sees(env, room_of(env, q), src) else err("${q} is not built on ${src}, which ${vname} views")
+  // Everything q uses that is built on the source, oldest first.
+  var need: List[(Int, String)] = []
+  var seen: Map[String, Bool] = [:]
+  var stack: List[String] = [q]
+  var going = true
+  while going {
+    match list.pop(stack) {
+      none => {
+        going = false
+      },
+      some(c) => {
+        let skip = map.contains(seen, c) or map.contains(v.images, c) or map.contains(v.renamed, c) or not sees(env, room_of(env, c), src)
+        if skip then ()
+        else {
+          map.insert(seen, c, true)
+          let h = match map.get(env.entries, c) {
+            some(e) => e.height,
+            none => 0,
+          }
+          list.push(need, (h, c))
+          for d in consts(map.get(env.types, c) ?? type0()) {
+            list.push(stack, d)
+          }
+          match map.get(env.bodies, c) {
+            some(b) => for d in consts(b) {
+              list.push(stack, d)
+            },
+            none => (),
+          }
+        }
+      },
+    }
+  }
+  let ordered = list.sort_by(need, ((h, _)) => h)
+  for (_, c) in ordered {
+    match map.get(v.pending, c) {
+      some(r) => image(env, v, c, r)!,
+      none => {
+        let _ = carry_decl(env, v, vname, c)!
+      },
+    }
+  }
+  map.insert(env.views, vq, v)
+  match map.get(v.renamed, q) {
+    some(n) => ok(["✓ translated ${n}: ${show(env, [], map.get(env.types, n) ?? type0())} (${int.to_string(list.len(ordered))} declarations carried)"]),
+    none => ok(["✓ translated ${q}: given by the view"]),
+  }
 }
 
 // Peel `n` binders off a type (reducing to expose them), extending ctx.
@@ -537,6 +768,8 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     ok((NoChange, report_axioms(env, q)))
   },
   DInductive(_) => err("a type declaration is processed by `process`"),
+  DView(_, _, _) => err("a view is processed by `process`"),
+  DTranslate(_, _) => err("a translation is processed by `process`"),
 }
 
 // Surface syntax that uses implicit arguments, inferred universe levels or
@@ -547,7 +780,7 @@ local fn needs_elab(env: Env, r: Raw) -> Bool =
   else uses_inference(env, r)
 
 local fn has_hole(r: Raw) -> Bool = match r {
-  RName(x) => x == "_",
+  RName(x) => x == "_" or x == "?",
   RApp(f, a) => has_hole(f) or has_hole(a),
   RLam(_, ty, b) => has_hole(ty) or has_hole(b),
   RPi(_, ty, b) => has_hole(ty) or has_hole(b),
@@ -555,7 +788,7 @@ local fn has_hole(r: Raw) -> Bool = match r {
 }
 
 local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
-  RName(x) => x == "_" or match resolve_const(env, x) {
+  RName(x) => x == "_" or x == "?" or match resolve_const(env, x) {
     ok(c) => map.contains(env.implicits, c) or map.contains(env.lparams, c),
     // `p.x` (a field of a local p) is the elaborator's to read.
     err(_) => string.contains(x, "."),

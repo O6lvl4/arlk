@@ -37,7 +37,7 @@ let SCOPE_OPEN = "$" + "{"
 let PROVABLE = "|-"
 let STATEMENT = "wff"
 
-let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Sort", "type", "Prf"]
+let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Sort", "type", "match", "view", "translate", "let", "Prf"]
 
 // ── Names ───────────────────────────────────────────────────────────
 

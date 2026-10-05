@@ -1,0 +1,23 @@
+// expect: type mismatch
+// A view must give each symbol an image of the symbol's translated type:
+// mapping a proof rule to a term that proves something else is rejected.
+room logic
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol top: Prop
+symbol bot: Prop
+symbol triv: Prf(top)
+
+// bot has no proof in the model; claiming one through the view must fail.
+room bad
+type Unit: Sort(0) =
+  | star
+type Empty: Sort(0) =
+
+view m from logic {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  top = Empty,
+  bot = Empty,
+  triv = Unit.star,
+}

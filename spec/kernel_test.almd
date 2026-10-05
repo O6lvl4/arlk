@@ -556,3 +556,146 @@ test "a cycle through rule matching runs out of budget instead of the stack" {
   assert(rejects_with(src + "\neval f(g(z))", "out of budget"))
   assert(rejects_with(src + "\nsymbol P(x: A) -> Type\nsymbol p: P(z)\ntheorem t: P(f(g(z))) = p", "out of budget"))
 }
+
+// ── Views ───────────────────────────────────────────────────────────
+
+let VIEW_LOGIC = """
+room implog
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol imp(a: Prop, b: Prop) -> Prop
+rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
+theorem k(a: Prop, b: Prop) -> Prf(imp(a, imp(b, a))) = (x: Prf(a), y: Prf(b)) => x
+
+room implog2 uses implog
+theorem k2(a: Prop) -> Prf(imp(a, imp(a, a))) = k(a, a)
+"""
+
+test "a view maps symbols, keeps rules, and carries theorems along, checked again" {
+  let src = VIEW_LOGIC + """
+room native
+view v from implog {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  imp = (a: Sort(0), b: Sort(0)) => a -> b,
+}
+translate v implog2.k2
+theorem use_it(p: Sort(0), x: p) -> p = v.implog2.k2(p, x, x)
+"""
+  assert_eq(run(src), none)
+}
+
+test "a view must keep the source's rules" {
+  let src = """
+room implog
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol imp(a: Prop, b: Prop) -> Prop
+rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
+
+room native
+view v from implog {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  imp = (a: Sort(0), b: Sort(0)) => b,
+}
+"""
+  assert(rejects_with(src, "does not keep the rule"))
+}
+
+test "a translation is checked again in the target" {
+  // Theorems of a room built on the source come along, checked again.
+  let src = """
+room weak
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol top: Prop
+symbol bot: Prop
+symbol triv: Prf(top)
+theorem t: Prf(top) = triv
+
+room uses_weak uses weak
+theorem t2: Prf(top) = t
+
+room native
+type Unit: Sort(0) =
+  | star
+type Empty: Sort(0) =
+view v from weak {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  top = Unit,
+  bot = Empty,
+  triv = Unit.star,
+}
+translate v uses_weak.t2
+theorem from_view: Unit = v.uses_weak.t2
+"""
+  assert_eq(run(src), none)
+  // A theorem about bot cannot be produced: bot's image has no proof, and
+  // the view refuses a wrong image for triv.
+  let bad = """
+room weak
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol bot: Prop
+symbol triv: Prf(bot)
+
+room native
+type Unit: Sort(0) =
+  | star
+type Empty: Sort(0) =
+view v from weak {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  bot = Empty,
+  triv = Unit.star,
+}
+"""
+  assert(rejects_with(bad, "type mismatch"))
+}
+
+// ── Blocks and goals ────────────────────────────────────────────────
+
+let EQ = """
+room eqs
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+theorem symm[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(A, y', x), Eq.refl, y, h)
+"""
+
+test "a block names the steps of a proof" {
+  let src = EQ + """
+theorem trans3[u, A: Sort(u)](a: A, b: A, c: A, d: A, h1: Eq(A, a, b), h2: Eq(A, c, b), h3: Eq(A, c, d)) -> Eq(A, a, d) = {
+  let h2': Eq(A, b, c) = symm(c, b, h2)
+  let ac = Eq.rec((z: A, e: Eq(A, b, z)) => Eq(A, a, z), h1, c, h2')
+  Eq.rec((z: A, e: Eq(A, c, z)) => Eq(A, a, z), ac, d, h3)
+}
+"""
+  assert_eq(run(src), none)
+}
+
+test "a step of a block must prove what it claims" {
+  let src = EQ + """
+theorem wrong[u, A: Sort(u)](a: A, b: A, h: Eq(A, a, b)) -> Eq(A, a, b) = {
+  let back: Eq(A, a, b) = symm(a, b, h)
+  back
+}
+"""
+  assert(rejects_with(src, "mismatch"))
+}
+
+test "an open goal is reported with its type and what is at hand" {
+  let src = EQ + """
+theorem later[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) = ?
+"""
+  match run(src) {
+    some(e) => {
+      assert(string.contains(e, "1 open goal"))
+      assert(string.contains(e, "goal: Eq[u](A, y, x)"))
+      assert(string.contains(e, "h: Eq[u](A, x, y)"))
+    },
+    none => assert(false),
+  }
+}

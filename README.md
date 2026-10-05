@@ -23,6 +23,9 @@ was found.
   (`base-1.221`: 95 articles, 2.7 million proof commands, from Booleans through lists, natural
   numbers and the reals) is run by Arlk's own article reader and checked by the same kernel, with
   1340 theorems proved and only HOL's three axioms assumed.
+- One logic can be read in another by a checked *view*. HOL read in Arlk's own type theory carries
+  HOL's proof of excluded middle into a native theorem, `em(p: Sort(0)) -> Or(p, Not(p))`, that
+  rests on exactly Lean's classical axioms (function and propositional extensionality, choice).
 - Lean and Rocq sit on one shared foundation, [lib/core.arlk](lib/core.arlk). That foundation has Rocq's
   cumulative universes *and* Lean's proof irrelevance, so a single proof can use both libraries.
   [examples/bridge.arlk](examples/bridge.arlk) turns Lean's theorem `Nat.add_comm` into a statement
@@ -80,6 +83,9 @@ theorem f(x: A) -> T = proof           a checked proof (opaque afterwards)
 rule lhs = rhs  where x: A, y: B       a rewrite rule on a symbol of this room
                                        ({t} in lhs: must be convertible to t, not matched)
 irrelevant T  where x: A               values of T are all equal (definitional proof irrelevance)
+type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
+view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
+translate V name                       carry name (from a room built on S) here along V, checked again
 
 check t                                print the type of t
 eval t                                 print the normal form of t
@@ -94,6 +100,10 @@ Type                                   the sort of types
 A -> B    (A, B) -> C                  non-dependent function types
 (x: A, y: B) => t                      function
 f(a, b)   f(a)(b)                      call (the same thing)
+match x { c(a) => t, _ => u }        pattern matching (structural recursion), see below
+{ let h: A = e  let k = e'  t }      a block: named steps of a proof (like Isar's `have`)
+_                                      a hole the elaborator fills
+?                                      an open goal: checking stops and shows its type and context
 logic.Prf                              a qualified name (another room's symbol)
 Nat.add   Eq@1                         names may contain dots and @ (absorbed names use both)
 // comment
@@ -290,7 +300,7 @@ keeps definitions apart by identity, not by name.
 $ tools/opentheory/fetch.sh base-1.221 otlib > order.txt
 $ ./arlk absorb-hol $(cat order.txt) -o base.arlk
 $ ./arlk check lib/hol.arlk base.arlk
-✓ theorem opentheory.bool_class.thm87: hol.Prf(Data.Bool.forall(hol.bool, (t_7: hol.Tm(hol.bool)) => Data.Bool.or(t_7, Data.Bool.not(t_7))))
+✓ theorem opentheory.bool_class.thm1: hol.Prf(Data.Bool.forall(hol.bool, (t_7: hol.Tm(hol.bool)) => Data.Bool.or(t_7, Data.Bool.not(t_7))))
 ...
 ok: lib/hol.arlk base.arlk (91319 declarations)
 ```
@@ -373,6 +383,53 @@ ok: ... (928 declarations)
 
 `tools/check-absorbed.sh` checks every absorbed library and the bridge.
 
+## Views: one logic read in another
+
+A *view* interprets one room in another: each symbol of the source gets a term of the current room,
+and Arlk checks every image against the symbol's type (as the view translates it) and every rule of
+the source by conversion. `translate` then carries a declaration of any room built on the source,
+with everything it uses, into the current room, where it is **checked again**. A view is never
+trusted: a wrong one makes a translation fail, it cannot make a false theorem.
+
+[examples/hol_types.arlk](examples/hol_types.arlk) reads HOL (room `hol`, which absorbed OpenTheory
+libraries are checked against) in Arlk's native type theory:
+
+```
+type HType: Sort(2) = { carrier: Type, point: carrier }      // HOL's types are inhabited
+
+view hol_types from hol {
+  Ty = HType,
+  bool = hbool,                     // HType { carrier: Sort(0), point: True }
+  Tm = (a: HType) => a.carrier,     // so HOL's rule Tm(arr(a, b)) = Tm(a) -> Tm(b) holds by computation
+  eq = heq,                         // Eq
+  Prf = (p: Sort(0)) => p,
+  eq_mp = cast, mk_comb = congr,    // theorems here
+  abs = habs, deduct_antisym = hdeduct, select = hselect,   // funext, propext, choice
+  ...
+  opentheory.axiom_extensionality.axiom1 = eta_ax,          // HOL's own axioms, proved here
+  opentheory.axiom_choice.axiom1 = choice_ax,
+}
+
+translate hol_types opentheory.bool_class.thm1   // ∀t. t ∨ ¬t, proved in HOL from choice
+
+theorem em(p: Sort(0)) -> Or(p, Not(p)) = ...   // read with Arlk's Or, Not and False
+```
+
+```
+$ ./arlk check lib/hol.arlk bool.arlk examples/hol_types.arlk
+✓ view holtypes.hol_types: hol in holtypes, 12 symbols mapped
+✓ translated holtypes.hol_types.opentheory.bool_class.thm1: ... (197 declarations carried)
+✓ theorem holtypes.em: (p: Sort(0)) -> Or(p, Not(p))
+axioms holtypes.em
+  rooms:   holtypes
+  symbols: holtypes.funext, holtypes.propext, holtypes.epsilon, holtypes.epsilon_spec
+```
+
+Excluded middle in Arlk's own logic, proved by HOL's library and resting on exactly the axioms Lean
+assumes. CI rejects a degenerate view that reads every HOL statement as true, and
+[spec/fixtures/reject](spec/fixtures/reject) has views with a wrongly typed image, a broken rule,
+and an attempt to replace a theorem.
+
 ### Lean's theorems about Rocq's numbers
 
 [examples/transport.arlk](examples/transport.arlk) goes further: a checked correspondence between
@@ -454,9 +511,11 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 
 1. **Kernel hardening.** Confluence and termination checks for rules, and checking subject
    reduction properly instead of trusting the declared variable types.
-2. **Bridges between rooms** (started: [examples/bridge.arlk](examples/bridge.arlk)). Next, declare
-   a translation from room A to room B as a first-class object, check that it preserves typing,
-   and transport whole theories along it. This draws on institution theory and MMT.
+2. **Bridges between rooms.** Done: hand-built bridges ([examples/bridge.arlk](examples/bridge.arlk),
+   [examples/transport.arlk](examples/transport.arlk)) and checked views that carry theories
+   along (`view`/`translate`, [examples/hol_types.arlk](examples/hol_types.arlk)), in the spirit of
+   MMT's views and institution theory. Next: views between absorbed libraries (HOL's numbers as
+   Lean's), universe-polymorphic views, and carrying rewrite rules along a view.
 3. **Absorbing Lean 4 and Rocq** (started: Lean's `Init.Data.Nat.Basic` and Rocq's
    `Corelib.Init` check). The goal is not to interoperate with Lean but to take it over. Lean's
    type theory (universes, inductive types and their recursors, proof-irrelevant `Prop`,

@@ -1,0 +1,21 @@
+// expect: only symbols are mapped
+// Theorems of the source are carried along a view and checked again; a view
+// cannot replace one by an image of its choosing.
+room logic
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol top: Prop
+symbol triv: Prf(top)
+theorem triv2: Prf(top) = triv
+
+room model
+type Unit: Sort(0) =
+  | star
+
+view m from logic {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  top = Unit,
+  triv = Unit.star,
+  triv2 = Unit.star,
+}

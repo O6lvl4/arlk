@@ -16,9 +16,13 @@
 // definitions are made by `arlk absorb-hol` as checked `def`s where they can
 // be (constants) and as reported symbols where they cannot (new types).
 
+// Universes: HOL's types form a large type (Sort(2)), so that they can be
+// read as inhabited types of Sort(1) (see examples/hol_types.arlk), and
+// Prf(p) is a proposition (Sort(0)): HOL's proofs are irrelevant.
+
 room hol
 
-symbol Ty: Type
+symbol Ty: Sort(2)
 symbol bool: Ty
 symbol arr(a: Ty, b: Ty) -> Ty
 
@@ -29,7 +33,7 @@ rule Tm(arr(a, b)) = Tm(a) -> Tm(b)  where a: Ty, b: Ty
 symbol eq(a: Ty) -> Tm(arr(a, arr(a, bool)))
 symbol select(a: Ty) -> Tm(arr(arr(a, bool), a))
 
-symbol Prf(p: Tm(bool)) -> Type
+symbol Prf(p: Tm(bool)) -> Sort(0)
 
 // ── The inference rules ────────────────────────────────────────────
 

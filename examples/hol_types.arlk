@@ -1,0 +1,184 @@
+// HOL, read in Arlk's own type theory.
+//
+// lib/hol.arlk writes HOL down as symbols (Ty, Tm, Prf and the inference
+// rules), and absorbed OpenTheory libraries are checked against them. This
+// room gives each of those symbols a meaning in Arlk's native type theory
+// and carries HOL's theorems over:
+//
+//   - a HOL type is an inhabited type (HOL's types are never empty),
+//   - bool is Prop, a proof of p is a proof of p, and = is Eq,
+//   - the inference rules are theorems here, apart from three that are
+//     assumed: function extensionality (abs), propositional
+//     extensionality (deduct_antisym) and choice (select) — the axioms
+//     Lean assumes too.
+//
+// The view is checked: every image against its symbol's translated type,
+// and HOL's rule Tm(arr(a, b)) = Tm(a) -> Tm(b) by conversion. Every theorem
+// it carries is checked again here, so nothing about the view is trusted.
+//
+//   arlk absorb-hol bool-def.art ... -o bool.arlk
+//   arlk check lib/hol.arlk bool.arlk examples/hol_types.arlk
+
+room holtypes
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+type True: Sort(0) =
+  | intro
+
+// ── HOL's types and terms ──────────────────────────────────────────
+
+type HType: Sort(2) = { carrier: Type, point: carrier }
+
+def harr(a: HType, b: HType) -> HType = HType { carrier: a.carrier -> b.carrier, point: (x: a.carrier) => b.point }
+def hbool: HType = HType { carrier: Sort(0), point: True }
+def heq(a: HType, x: a.carrier, y: a.carrier) -> Sort(0) = Eq(a.carrier, x, y)
+
+// ── What is assumed ────────────────────────────────────────────────
+
+symbol funext(A: Type, B: Type, f: A -> B, g: A -> B, h: (x: A) -> Eq(B, f(x), g(x))) -> Eq(A -> B, f, g)
+symbol propext(p: Sort(0), q: Sort(0), hpq: p -> q, hqp: q -> p) -> Eq(Sort(0), p, q)
+symbol epsilon(A: Type, a: A, p: A -> Sort(0)) -> A
+symbol epsilon_spec(A: Type, a: A, p: A -> Sort(0), x: A, h: p(x)) -> p(epsilon(A, a, p))
+
+def hselect(a: HType, p: a.carrier -> Sort(0)) -> a.carrier = epsilon(a.carrier, a.point, p)
+
+// ── HOL's inference rules, as theorems ─────────────────────────────
+
+theorem hrefl(a: HType, t: a.carrier) -> Eq(a.carrier, t, t) = Eq.refl
+
+theorem cast(p: Sort(0), q: Sort(0), h: Eq(Sort(0), p, q), hp: p) -> q =
+  Eq.rec((b: Sort(0), e: Eq(Sort(0), p, b)) => b, hp, q, h)
+
+theorem congr(a: HType, b: HType, f: a.carrier -> b.carrier, g: a.carrier -> b.carrier, x: a.carrier, y: a.carrier,
+              hf: Eq(a.carrier -> b.carrier, f, g), hx: Eq(a.carrier, x, y)) -> Eq(b.carrier, f(x), g(y)) =
+  Eq.rec((g': a.carrier -> b.carrier, e: Eq(a.carrier -> b.carrier, f, g')) => Eq(b.carrier, f(x), g'(y)),
+    Eq.rec((y': a.carrier, e: Eq(a.carrier, x, y')) => Eq(b.carrier, f(x), f(y')), Eq.refl, y, hx),
+    g, hf)
+
+theorem habs(a: HType, b: HType, f: a.carrier -> b.carrier, g: a.carrier -> b.carrier,
+             h: (v: a.carrier) -> Eq(b.carrier, f(v), g(v))) -> Eq(a.carrier -> b.carrier, f, g) =
+  funext(a.carrier, b.carrier, f, g, h)
+
+theorem hdeduct(p: Sort(0), q: Sort(0), hq: q -> p, hp: p -> q) -> Eq(Sort(0), p, q) = propext(p, q, hp, hq)
+
+// ── HOL's axioms, proved ───────────────────────────────────────────
+//
+// OpenTheory's axiom articles state η and the choice axiom with HOL's
+// connectives spelled out (∀P is P = λx. T, and so on); here they are
+// theorems, from the assumptions above.
+
+def htrue: Sort(0) = Eq(Sort(0) -> Sort(0), (p: Sort(0)) => p, (p: Sort(0)) => p)
+def hall(A: Type, P: A -> Sort(0)) -> Sort(0) = Eq(A -> Sort(0), P, (x: A) => htrue)
+def hand(a: Sort(0), b: Sort(0)) -> Sort(0) =
+  Eq((Sort(0) -> Sort(0) -> Sort(0)) -> Sort(0), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(a, b), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(htrue, htrue))
+def himp(a: Sort(0), b: Sort(0)) -> Sort(0) = Eq(Sort(0), hand(a, b), a)
+
+theorem truth: htrue = Eq.refl
+
+theorem esym(A: Type, x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(A, y', x), Eq.refl, y, h)
+
+theorem is_true(p: Sort(0), h: p) -> Eq(Sort(0), p, htrue) = propext(p, htrue, (x: p) => truth, (x: htrue) => h)
+
+theorem from_true(p: Sort(0), h: Eq(Sort(0), p, htrue)) -> p = cast(htrue, p, esym(Sort(0), p, htrue, h), truth)
+
+theorem apply_eq(A: Type, B: Type, f: A -> B, g: A -> B, h: Eq(A -> B, f, g), x: A) -> Eq(B, f(x), g(x)) =
+  Eq.rec((g': A -> B, e: Eq(A -> B, f, g')) => Eq(B, f(x), g'(x)), Eq.refl, g, h)
+
+theorem both_eq(f: Sort(0) -> Sort(0) -> Sort(0), a: Sort(0), a': Sort(0), b: Sort(0), b': Sort(0),
+                ha: Eq(Sort(0), a, a'), hb: Eq(Sort(0), b, b')) -> Eq(Sort(0), f(a, b), f(a', b')) =
+  Eq.rec((b'': Sort(0), e: Eq(Sort(0), b, b'')) => Eq(Sort(0), f(a, b), f(a', b'')),
+    Eq.rec((a'': Sort(0), e: Eq(Sort(0), a, a'')) => Eq(Sort(0), f(a, b), f(a'', b)), Eq.refl, a', ha),
+    b', hb)
+
+theorem hand_intro(a: Sort(0), b: Sort(0), ha: a, hb: b) -> hand(a, b) =
+  funext(Sort(0) -> Sort(0) -> Sort(0), Sort(0), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(a, b), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(htrue, htrue),
+    (f: Sort(0) -> Sort(0) -> Sort(0)) => both_eq(f, a, htrue, b, htrue, is_true(a, ha), is_true(b, hb)))
+
+theorem hand_left(a: Sort(0), b: Sort(0), h: hand(a, b)) -> a =
+  from_true(a, apply_eq(Sort(0) -> Sort(0) -> Sort(0), Sort(0), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(a, b), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(htrue, htrue),
+    h, (x: Sort(0), y: Sort(0)) => x))
+
+theorem hall_intro(A: Type, P: A -> Sort(0), h: (x: A) -> P(x)) -> hall(A, P) =
+  funext(A, Sort(0), P, (x: A) => htrue, (x: A) => is_true(P(x), h(x)))
+
+// ∀t. (λx. t x) = t: η is conversion here.
+theorem eta_ax(A: HType, B: HType) -> hall(A.carrier -> B.carrier, (t: A.carrier -> B.carrier) => Eq(A.carrier -> B.carrier, (x: A.carrier) => t(x), t)) =
+  hall_intro(A.carrier -> B.carrier, (t: A.carrier -> B.carrier) => Eq(A.carrier -> B.carrier, (x: A.carrier) => t(x), t),
+    (t: A.carrier -> B.carrier) => Eq.refl)
+
+// ∀P x. P x ⇒ P (select P): the choice axiom, from epsilon_spec.
+theorem choice_ax(A: HType) -> hall(A.carrier -> Sort(0), (P: A.carrier -> Sort(0)) => hall(A.carrier, (x: A.carrier) => himp(P(x), P(hselect(A, P))))) =
+  hall_intro(A.carrier -> Sort(0), (P: A.carrier -> Sort(0)) => hall(A.carrier, (x: A.carrier) => himp(P(x), P(hselect(A, P)))),
+    (P: A.carrier -> Sort(0)) => hall_intro(A.carrier, (x: A.carrier) => himp(P(x), P(hselect(A, P))),
+      (x: A.carrier) => propext(hand(P(x), P(hselect(A, P))), P(x),
+        (h: hand(P(x), P(hselect(A, P)))) => hand_left(P(x), P(hselect(A, P)), h),
+        (h: P(x)) => hand_intro(P(x), P(hselect(A, P)), h, epsilon_spec(A.carrier, A.point, P, x, h)))))
+
+// ── The view ───────────────────────────────────────────────────────
+
+view hol_types from hol {
+  Ty = HType,
+  bool = hbool,
+  arr = harr,
+  Tm = (a: HType) => a.carrier,
+  eq = heq,
+  select = hselect,
+  Prf = (p: Sort(0)) => p,
+  refl = hrefl,
+  eq_mp = cast,
+  mk_comb = congr,
+  abs = habs,
+  deduct_antisym = hdeduct,
+  // HOL's own axioms, as OpenTheory's axiom articles state them
+  opentheory.axiom_extensionality.axiom1 = eta_ax,
+  opentheory.axiom_choice.axiom1 = choice_ax,
+}
+
+// HOL's truth, and its excluded middle (proved in HOL from choice, in
+// OpenTheory's bool-class), carried over.
+translate hol_types opentheory.bool_def.thm3
+translate hol_types opentheory.bool_class.thm1
+
+// ── Excluded middle, in Arlk's own logic ───────────────────────────
+//
+// The carried theorem speaks of HOL's connectives (t ∨ ¬t, spelled with
+// ∀, ⇒ and F). Read with Arlk's Or, Not and False, it is excluded middle.
+
+type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+  | inl(h: a)
+  | inr(h: b)
+
+type False: Sort(0) =
+
+def Not(p: Sort(0)) -> Sort(0) = p -> False
+
+theorem hall_elim(A: Type, P: A -> Sort(0), h: hall(A, P), x: A) -> P(x) =
+  from_true(P(x), apply_eq(A, Sort(0), P, (y: A) => htrue, h, x))
+
+theorem hand_right(a: Sort(0), b: Sort(0), h: hand(a, b)) -> b =
+  from_true(b, apply_eq(Sort(0) -> Sort(0) -> Sort(0), Sort(0), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(a, b), (f: Sort(0) -> Sort(0) -> Sort(0)) => f(htrue, htrue),
+    h, (x: Sort(0), y: Sort(0)) => y))
+
+theorem himp_elim(a: Sort(0), b: Sort(0), h: himp(a, b), ha: a) -> b =
+  hand_right(a, b, cast(a, hand(a, b), esym(Sort(0), hand(a, b), a, h), ha))
+
+theorem himp_intro(a: Sort(0), b: Sort(0), f: a -> b) -> himp(a, b) =
+  propext(hand(a, b), a, (h: hand(a, b)) => hand_left(a, b, h), (ha: a) => hand_intro(a, b, ha, f(ha)))
+
+def hnot(p: Sort(0)) -> Sort(0) = himp(p, hall(Sort(0), (q: Sort(0)) => q))
+def hor(p: Sort(0), q: Sort(0)) -> Sort(0) = hall(Sort(0), (r: Sort(0)) => himp(himp(p, r), himp(himp(q, r), r)))
+
+theorem em(p: Sort(0)) -> Or(p, Not(p)) =
+  himp_elim(himp(hnot(p), Or(p, Not(p))), Or(p, Not(p)),
+    himp_elim(himp(p, Or(p, Not(p))), himp(himp(hnot(p), Or(p, Not(p))), Or(p, Not(p))),
+      hall_elim(Sort(0), (r: Sort(0)) => himp(himp(p, r), himp(himp(hnot(p), r), r)),
+        hall_elim(Sort(0), (t: Sort(0)) => hor(t, hnot(t)), hol_types.opentheory.bool_class.thm1, p),
+        Or(p, Not(p))),
+      himp_intro(p, Or(p, Not(p)), (hp: p) => Or.inl(hp))),
+    himp_intro(hnot(p), Or(p, Not(p)), (hn: hnot(p)) =>
+      Or.inr((hp: p) => hall_elim(Sort(0), (q: Sort(0)) => q, himp_elim(p, hall(Sort(0), (q: Sort(0)) => q), hn, hp), False))))
+
+axioms em

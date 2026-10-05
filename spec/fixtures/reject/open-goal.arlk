@@ -1,0 +1,9 @@
+// expect: open goal
+// `?` marks a part of a proof still to do: checking stops there and shows
+// what it must prove and what is at hand.
+room g
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+theorem later[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) = ?

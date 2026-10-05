@@ -1,0 +1,18 @@
+// expect: does not keep the rule
+// A view must keep the source's rewrite rules: here imp(a, b) computes to a
+// function type in the source, but the image of imp is not one.
+room logic
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol imp(a: Prop, b: Prop) -> Prop
+rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
+
+room model
+type Pair(A: Sort(0), B: Sort(0)): Sort(0) =
+  | mk(a: A, b: B)
+
+view m from logic {
+  Prop = Sort(0),
+  Prf = (p: Sort(0)) => p,
+  imp = (a: Sort(0), b: Sort(0)) => Pair(a, b),
+}

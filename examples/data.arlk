@@ -31,6 +31,16 @@ def cong[u, v, A: Sort(u), B: Sort(v)](f: A -> B, x: A, y: A, h: Eq(A, x, y)) ->
 
 // 0 + n = n does not compute (add recurses on its second argument): it
 // needs induction on n.
+def symm[u, A: Sort(u)](x: A, y: A, h: Eq(A, x, y)) -> Eq(A, y, x) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(A, y', x), Eq.refl, y, h)
+
+// A block names the steps of a proof, Almide-style (like Isar's `have`).
+theorem trans3[u, A: Sort(u)](a: A, b: A, c: A, d: A, h1: Eq(A, a, b), h2: Eq(A, c, b), h3: Eq(A, c, d)) -> Eq(A, a, d) = {
+  let h2': Eq(A, b, c) = symm(c, b, h2)
+  let ac = Eq.rec((z: A, e: Eq(A, b, z)) => Eq(A, a, z), h1, c, h2')
+  Eq.rec((z: A, e: Eq(A, c, z)) => Eq(A, a, z), ac, d, h3)
+}
+
 theorem zero_add(n: Nat) -> Eq(Nat, add(Nat.zero, n), n) = match n {
   zero => Eq.refl,
   succ(k) => cong(Nat.succ, add(Nat.zero, k), k, zero_add(k)),

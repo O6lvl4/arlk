@@ -128,7 +128,17 @@ if limit 900 tools/opentheory/fetch.sh base-1.221 "$OT" >"$LOGS/opentheory.artic
     fi
   }
   ot_tampered false-definition 's/^theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.F, /theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.T, /'
-  ot_tampered contradiction 's/^theorem bool_class.thm87: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.or(t_7, /theorem bool_class.thm87: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.and(t_7, /'
+  ot_tampered contradiction 's/^theorem bool_class.thm1: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.or(t_7, /theorem bool_class.thm1: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.and(t_7, /'
+  # HOL read in Arlk's own type theory (a checked view): excluded middle,
+  # proved by HOL, as a native theorem. A view that reads every HOL
+  # statement as true must be rejected.
+  must_pass "HOL in types: excluded middle" 300 ./arlk check lib/hol.arlk "$LOGS/opentheory-bool.arlk" examples/hol_types.arlk
+  sed 's/^  Prf = (p: Sort(0)) => p,$/  Prf = (p: Sort(0)) => True,/' examples/hol_types.arlk >"$LOGS/hol_types-trivial.arlk"
+  if cmp -s examples/hol_types.arlk "$LOGS/hol_types-trivial.arlk"; then
+    record "HOL in types tampered: trivial view" FAIL "the edit did not apply"
+  else
+    must_reject "HOL in types tampered: trivial view" 300 "type mismatch" ./arlk check lib/hol.arlk "$LOGS/opentheory-bool.arlk" "$LOGS/hol_types-trivial.arlk"
+  fi
 else
   record "OpenTheory base-1.221 (fetched, pinned)" FAIL "see $LOGS/opentheory-fetch.log and opentheory-sha.log"
 fi

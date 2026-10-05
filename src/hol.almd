@@ -76,7 +76,8 @@ type St = {
   out: List[String],
   assumed: List[String],
   article: String,
-  count: Int,
+  // per kind (thm, l, t, axiom): `thm3` is the article's third theorem
+  counts: Map[String, Int],
   last: String,
 }
 
@@ -85,7 +86,7 @@ let ROOM = "opentheory"
 fn state() -> St = St {
   vars: [], var_ids: [:], hyps: [], hyp_ids: [:], tyops: [:], consts: [:],
   taken: set.from_list(["Ty", "bool", "arr", "Tm", "eq", "select", "Prf", "refl", "eq_mp", "mk_comb", "abs", "deduct_antisym", "trans", "sym"]),
-  exports: [:], texts: [:], gens: [:], out: [], assumed: [], article: "", count: 0, last: "",
+  exports: [:], texts: [:], gens: [:], out: [], assumed: [], article: "", counts: [:], last: "",
 }
 
 // ── Types and terms ─────────────────────────────────────────────────
@@ -588,8 +589,12 @@ local fn global_name(mut st: St, raw: String) -> String = {
 }
 
 local fn fresh_name(mut st: St, kind: String) -> String = {
-  st.count = st.count + 1
-  global_name(st, st.article + "." + kind + int.to_string(st.count))
+  let k = (match map.get(st.counts, kind) {
+    some(n) => n,
+    none => 0,
+  }) + 1
+  map.insert(st.counts, kind, k)
+  global_name(st, st.article + "." + kind + int.to_string(k))
 }
 
 local fn emit(mut st: St, decl: String) -> Unit = list.push(st.out, decl)
@@ -1337,7 +1342,8 @@ local fn command(mut st: St, mut stack: List[Obj], mut dict: Map[Int, Obj], cmd:
 // One article: its commands in order, then its theorems are exported.
 fn read_article(mut st: St, name: String, text: String) -> Unit! = {
   st.article = component(string.replace(name, "-", "_"))
-  st.count = 0
+  let fresh: Map[String, Int] = [:]
+  st.counts = fresh
   var stack: List[Obj] = []
   var dict: Map[Int, Obj] = [:]
   var line = 0

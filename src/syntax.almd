@@ -53,6 +53,11 @@ type Decl =
   | DEval(Raw)
   | DAxioms(String)
   | DInductive(Inductive)
+  // `view V from S { sym = term, ... }`: S's symbols as terms of this room.
+  | DView(String, String, List[(String, Raw)])
+  // `translate V name`: a declaration of a room built on V's source, with
+  // everything it uses, carried along V into this room and checked again.
+  | DTranslate(String, String)
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -90,6 +95,9 @@ let KEYWORDS = [
   "Sort",
   "type",
   "match",
+  "view",
+  "translate",
+  "let",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
@@ -108,7 +116,7 @@ local fn punct(cs: List[String], i: Int) -> (String, Int)? = {
     "->" => some(("->", 2)),
     "=>" => some(("=>", 2)),
     _ => match c {
-      "(" | ")" | "{" | "}" | "[" | "]" | ":" | "," | "=" | "|" | "+" | "." => some((c, 1)),
+      "(" | ")" | "{" | "}" | "[" | "]" | ":" | "," | "=" | "|" | "+" | "." | "?" => some((c, 1)),
       "→" => some(("->", 1)),
       "⇒" => some(("=>", 1)),
       _ => none,
@@ -356,6 +364,8 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
       ok((RInst(t.text, ls), p1))
     } else ok((RName(t.text), p + 1))
   }
+  else if is_sym(ts, p, "?") then ok((RName("?"), p + 1))
+  else if is_sym(ts, p, "{") and is_kw(ts, p + 1, "let") then block(ts, p + 1)
   else if is_kw(ts, p, "Type") then ok((RType, p + 1))
   else if is_kw(ts, p, "Sort") then ok((RSort, p + 1))
   else if is_sym(ts, p, "{") then {
@@ -444,7 +454,7 @@ local fn signature(ts: List[Token], p: Int) -> (Signature, Int)! = {
   }
 }
 
-let DECL_HINT = "expected a declaration (room, type, symbol, def, theorem, rule, irrelevant, check, eval, axioms)"
+let DECL_HINT = "expected a declaration (room, type, symbol, def, theorem, rule, irrelevant, view, translate, check, eval, axioms)"
 
 // `x: A, y: B }` (after the brace).
 local fn field_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! =
@@ -462,6 +472,62 @@ local fn field_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[
   }
 
 // `x: a, y: b }`: a record value's fields.
+// `{ let h: A = e  ...  result }`: Almide's block, for the steps of a
+// proof. Each `let` names a fact for what follows, opaquely, like Isar's
+// `have`: the block is `((h: A) => result)(e)`. The type may be left out.
+local fn block(ts: List[Token], p: Int) -> (Raw, Int)! = {
+  var binds: List[(String, Raw, Raw)] = []
+  var q = p
+  while is_kw(ts, q, "let") {
+    let (x, q1) = ident(ts, q + 1)!
+    let (ty, q2) = (if is_sym(ts, q1, ":") then term(ts, q1 + 1) else ok((RName("_"), q1)))!
+    let q3 = expect(ts, q2, "=")!
+    let (e, q4) = term(ts, q3)!
+    list.push(binds, (x, ty, e))
+    q = q4
+  }
+  let (body, q5) = term(ts, q)!
+  let q6 = expect(ts, q5, "}")!
+  ok((list.fold(list.reverse(binds), body, (acc, (x, ty, e)) => RApp(RLam(x, ty, acc), e)), q6))
+}
+
+// `sym = term, ...` up to `}` (a trailing comma is fine).
+local fn view_entries(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! = {
+  var out: List[(String, Raw)] = []
+  var q = p
+  var failure = ""
+  var going = true
+  while going and failure == "" {
+    if is_sym(ts, q, "}") then {
+      q = q + 1
+      going = false
+    } else match ident(ts, q) {
+      err(e) => {
+        failure = e
+      },
+      ok((x, q1)) => match expect(ts, q1, "=") {
+        err(e) => {
+          failure = e
+        },
+        ok(q2) => match term(ts, q2) {
+          err(e) => {
+            failure = e
+          },
+          ok((v, q3)) => {
+            list.push(out, (x, v))
+            q = if is_sym(ts, q3, ",") then q3 + 1 else q3
+            if not is_sym(ts, q, "}") and not is_sym(ts, q3, ",") then {
+              failure = fail_at(ts, q, "expected `,` or `}` after a view entry")
+            } else ()
+          },
+        },
+      },
+    }
+  }
+  guard failure == "" else err(failure)
+  ok((out, q))
+}
+
 local fn field_values(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! =
   if is_sym(ts, p, "}") then ok((acc, p + 1))
   else {
@@ -561,6 +627,19 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
     "axioms" => {
       let (name, p1) = ident(ts, p + 1)!
       ok((DAxioms(name), p1))
+    },
+    "view" => {
+      let (name, p1) = ident(ts, p + 1)!
+      guard tok(ts, p1).text == "from" else err(fail_at(ts, p1, "expected `from` and the room the view reads: view V from S { ... }"))
+      let (src, p2) = ident(ts, p1 + 1)!
+      let p3 = expect(ts, p2, "{")!
+      let (entries, p4) = view_entries(ts, p3)!
+      ok((DView(name, src, entries), p4))
+    },
+    "translate" => {
+      let (v, p1) = ident(ts, p + 1)!
+      let (name, p2) = ident(ts, p1)!
+      ok((DTranslate(v, name), p2))
     },
     _ => err(fail_at(ts, p, DECL_HINT)),
   }
