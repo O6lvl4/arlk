@@ -1,0 +1,27 @@
+// The modeled Almide program (examples/almide/reverse.almd) and a native
+// proof share one List: the library's lemmas apply to the model directly,
+// and the model's reverse is checked to be the native rev.
+//
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk \
+//     examples/std/reverse.arlk examples/almide/reverse.arlk examples/std/almide_bridge.arlk
+//
+// No bridge function is needed: almide_reverse.reverse is defined over
+// almide.List, which is the List of lib/std/list.arlk.
+
+room almide_bridge uses eq, nat, almide, list, reverse, almide_reverse
+
+// The program's reverse is the native one, on every list.
+theorem same_reverse[A: Type](xs: List(A)) -> Eq(List(A), almide_reverse.reverse(xs), reverse.rev(xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong((ys: List(A)) => append(ys, List.cons(h, List.nil)), same_reverse(t)),
+}
+
+// So the native length proof is a proof about the program.
+theorem program_keeps_length[A: Type](xs: List(A)) -> Eq(Nat, length(almide_reverse.reverse(xs)), length(xs)) =
+  trans(cong(length, same_reverse(xs)), rev_length(xs))
+
+// And the library's lemma applies to the model with no conversion.
+theorem program_snoc[A: Type](xs: List(A), x: A) -> Eq(Nat, length(append(almide_reverse.reverse(xs), List.cons(x, List.nil))), Nat.succ(length(xs))) =
+  trans(length_snoc(almide_reverse.reverse(xs), x), cong_succ(program_keeps_length(xs)))
+
+axioms program_keeps_length

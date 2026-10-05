@@ -161,6 +161,9 @@ fi
 must_pass "views: route found and composed" 120 ./arlk check examples/views.arlk
 must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arlk "$LOGS/bundles"
 
+# The native standard library and its clients, with negative controls (#18).
+must_pass "native standard library and clients" 600 tools/std-check.sh ./arlk "$LOGS/std"
+
 # An Almide program verified through the subset's semantics (#16).
 must_pass "Almide program: reverse keeps length" 1200 tools/almide-check.sh ./arlk "$LOGS/almide"
 

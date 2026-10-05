@@ -1,0 +1,52 @@
+// Natural numbers (Peano) and addition, with the laws proofs about
+// programs keep needing.
+//
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk YOUR.arlk
+//
+// `add` recurses on its first argument, like a program written by
+// pattern matching: `add(zero, n)` and `add(succ(m), n)` compute, and the
+// other side needs the lemmas below. Every lemma is proved by induction
+// (structural recursion), from the inductive types alone.
+
+room nat uses eq
+
+type Nat: Type =
+  | zero
+  | succ(pred: Nat)
+
+def add(m: Nat, n: Nat) -> Nat = match m {
+  zero => n,
+  succ(k) => Nat.succ(add(k, n)),
+}
+
+def pred(n: Nat) -> Nat = match n {
+  zero => Nat.zero,
+  succ(k) => k,
+}
+
+theorem cong_succ[m: Nat, n: Nat](h: Eq(Nat, m, n)) -> Eq(Nat, Nat.succ(m), Nat.succ(n)) = cong(Nat.succ, h)
+
+theorem succ_inj[m: Nat, n: Nat](h: Eq(Nat, Nat.succ(m), Nat.succ(n))) -> Eq(Nat, m, n) = cong(pred, h)
+
+theorem zero_add(n: Nat) -> Eq(Nat, add(Nat.zero, n), n) = Eq.refl
+
+theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
+  zero => Eq.refl,
+  succ(k) => cong_succ(add_zero(k)),
+}
+
+theorem add_succ(m: Nat, n: Nat) -> Eq(Nat, add(m, Nat.succ(n)), Nat.succ(add(m, n))) = match m {
+  zero => Eq.refl,
+  succ(k) => cong_succ(add_succ(k, n)),
+}
+
+theorem add_comm(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = match m {
+  zero => symm(add_zero(n)),
+  succ(k) => trans(cong_succ(add_comm(k, n)), symm(add_succ(n, k))),
+}
+
+theorem add_assoc(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(a, add(b, c))) = match a {
+  zero => Eq.refl,
+  succ(k) => cong_succ(add_assoc(k, b, c)),
+}
+

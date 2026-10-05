@@ -517,6 +517,17 @@ almide test            # kernel and absorb tests (spec/): good proofs pass, bad 
 almide test src/       # unit tests of term, syntax, pretty, absorb
 ```
 
+## The native standard library
+
+[lib/std](lib/std) holds equality (`refl`, `symm`, `trans`, `cong`, `subst`), propositions and
+evidence types, naturals with addition's laws, and lists (the List of Almide's model, with length
+and append's laws), all proved from inductive types alone: no symbol, rule or axiom. A native client
+loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](docs/STDLIB.md).
+
+```
+arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
+```
+
 ## Almide programs, verified
 
 Arlk is written in Almide, and it can reason about Almide programs. `arlk absorb-almide` reads a

@@ -1059,3 +1059,32 @@ def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
 """
   assert(rejects_with(src, "structural recursion"))
 }
+
+// ── Unification leaves nothing behind when an attempt fails ────────
+
+test "a failed attempt at unification does not fix a universe level" {
+  // `length[?l](B, ..) =?= length[u](A, ..)` agrees on the head, so the
+  // spines are tried first: ?l := u, then B against A fails. Both sides
+  // then compute to zero; ?l must still be free, and become v.
+  let src = """
+room lv
+type Nat: Type = | zero | succ(pred: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+type List[u](A: Type(u)): Type(u) = | nil | cons(head: A, tail: List(A))
+def length[u, A: Type(u)](xs: List(A)) -> Nat = match xs {
+  nil => Nat.zero,
+  cons(h, t) => Nat.succ(length(t)),
+}
+def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) = match xs {
+  nil => List.nil,
+  cons(h, t) => List.cons(f(h), map(f, t)),
+}
+def cong_succ(m: Nat, n: Nat, h: Eq(Nat, m, n)) -> Eq(Nat, Nat.succ(m), Nat.succ(n)) =
+  Eq.rec((n': Nat, e: Eq(Nat, m, n')) => Eq(Nat, Nat.succ(m), Nat.succ(n')), Eq.refl, n, h)
+theorem length_map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> Eq(Nat, length(map(f, xs)), length(xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong_succ(length(map(f, t)), length(t), length_map(f, t)),
+}
+"""
+  assert_eq(run(src), none)
+}

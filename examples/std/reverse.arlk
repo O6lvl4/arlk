@@ -1,0 +1,45 @@
+// Two ways to reverse a list, and the proof that both keep its length,
+// on the shared native library (no local equality or list lemmas).
+//
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/reverse.arlk
+//
+// What is proved: for every finite list (of anything, so in particular of
+// Peano naturals), each reverse returns a list of the same length. This is
+// length preservation only; the identity function also has it.
+
+room reverse uses eq, nat, almide, list
+
+// PROGRAM
+def rev[u, A: Type(u)](xs: List(A)) -> List(A) = match xs {
+  nil => List.nil,
+  cons(h, t) => append(rev(t), List.cons(h, List.nil)),
+}
+
+def go[u, A: Type(u)](xs: List(A), acc: List(A)) -> List(A) = match xs {
+  nil => acc,
+  cons(h, t) => go(t, List.cons(h, acc)),
+}
+
+def rev_acc[u, A: Type(u)](xs: List(A)) -> List(A) = go(xs, List.nil)
+
+// PROOF
+theorem rev_length[u, A: Type(u)](xs: List(A)) -> Eq(Nat, length(rev(xs)), length(xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => trans(length_snoc(rev(t), h), cong_succ(rev_length(t))),
+}
+
+theorem go_length[u, A: Type(u)](xs: List(A), acc: List(A)) -> Eq(Nat, length(go(xs, acc)), add(length(xs), length(acc))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => trans(go_length(t, List.cons(h, acc)), add_succ(length(t), length(acc))),
+}
+
+theorem rev_acc_length[u, A: Type(u)](xs: List(A)) -> Eq(Nat, length(rev_acc(xs)), length(xs)) =
+  trans(go_length(xs, List.nil), add_zero(length(xs)))
+
+// The claims of #17, on lists of Peano naturals.
+theorem rev_length_nat(xs: List(Nat)) -> Eq(Nat, length(rev(xs)), length(xs)) = rev_length(xs)
+theorem rev_acc_length_nat(xs: List(Nat)) -> Eq(Nat, length(rev_acc(xs)), length(xs)) = rev_acc_length(xs)
+
+// AUDIT
+axioms rev_length_nat
+axioms rev_acc_length_nat

@@ -1,0 +1,45 @@
+// Lists: the List of lib/almide.arlk (the meaning of Almide's List[A]),
+// with length and the laws of append. There is one List: a proof about a
+// modeled Almide program and a native proof use the same type.
+//
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
+//
+// append (Almide's `xs + ys`) is defined in lib/almide.arlk; everything
+// here is proved by induction from the inductive types alone.
+
+room list uses eq, nat, almide
+
+def length[u, A: Type(u)](xs: List(A)) -> Nat = match xs {
+  nil => Nat.zero,
+  cons(h, t) => Nat.succ(length(t)),
+}
+
+def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) = match xs {
+  nil => List.nil,
+  cons(h, t) => List.cons(f(h), map(f, t)),
+}
+
+theorem append_nil[u, A: Type(u)](xs: List(A)) -> Eq(List(A), append(xs, List.nil), xs) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong(List.cons(h), append_nil(t)),
+}
+
+theorem append_assoc[u, A: Type(u)](xs: List(A), ys: List(A), zs: List(A)) -> Eq(List(A), append(append(xs, ys), zs), append(xs, append(ys, zs))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong(List.cons(h), append_assoc(t, ys, zs)),
+}
+
+theorem length_append[u, A: Type(u)](xs: List(A), ys: List(A)) -> Eq(Nat, length(append(xs, ys)), add(length(xs), length(ys))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong_succ(length_append(t, ys)),
+}
+
+// Appending one element adds one (`xs + [x]`).
+theorem length_snoc[u, A: Type(u)](xs: List(A), x: A) -> Eq(Nat, length(append(xs, List.cons(x, List.nil))), Nat.succ(length(xs))) =
+  trans(length_append(xs, List.cons(x, List.nil)), trans(add_succ(length(xs), Nat.zero), cong_succ(add_zero(length(xs)))))
+
+theorem length_map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> Eq(Nat, length(map(f, xs)), length(xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong_succ(length_map(f, t)),
+}
+

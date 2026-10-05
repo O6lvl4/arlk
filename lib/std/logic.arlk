@@ -1,0 +1,60 @@
+// Propositions and small data: truth, falsity, conjunction, disjunction,
+// negation, and their counterparts in Type (Unit, Empty, Prod, Sum) for
+// computations that carry evidence (`LE(a, b) -> Type`).
+//
+//   arlk check lib/std/logic.arlk YOUR.arlk
+//
+// All are inductive types with checked recursors; nothing is assumed.
+// Or and Exists eliminate only into Prop; And, False, and the Type-level
+// ones anywhere.
+
+room logic
+
+type True: Sort(0) =
+  | intro
+
+type False: Sort(0) =
+
+type And(a: Sort(0), b: Sort(0)): Sort(0) =
+  | intro(left: a, right: b)
+
+type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+  | inl(h: a)
+  | inr(h: b)
+
+def Not(a: Sort(0)) -> Sort(0) = a -> False
+
+type Iff(a: Sort(0), b: Sort(0)): Sort(0) =
+  | intro(mp: a -> b, mpr: b -> a)
+
+type Exists[u](A: Sort(u), P: A -> Sort(0)): Sort(0) =
+  | intro(w: A, h: P(w))
+
+// From falsity, anything.
+def absurd[u](A: Sort(u), h: False) -> A = False.rec((x: False) => A, h)
+
+theorem and_swap[a: Sort(0), b: Sort(0)](h: And(a, b)) -> And(b, a) = match h {
+  intro(l, r) => And.intro(r, l),
+}
+
+theorem or_swap[a: Sort(0), b: Sort(0)](h: Or(a, b)) -> Or(b, a) = match h {
+  inl(l) => Or.inr(l),
+  inr(r) => Or.inl(r),
+}
+
+// The same shapes in Type, for evidence that is computed with.
+
+type Unit: Type =
+  | unit
+
+type Empty: Type =
+
+type Prod[u, v](A: Type(u), B: Type(v)): Type(max(u, v)) =
+  | pair(fst: A, snd: B)
+
+type Sum[u, v](A: Type(u), B: Type(v)): Type(max(u, v)) =
+  | left(value: A)
+  | right(value: B)
+
+def elim_empty[u](A: Sort(u), h: Empty) -> A = Empty.rec((x: Empty) => A, h)
+

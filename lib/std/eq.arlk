@@ -1,0 +1,31 @@
+// Equality, natively: the identity type and its basic laws.
+//
+//   arlk check lib/std/eq.arlk YOUR.arlk
+//
+// Every fact here is proved from the inductive type `Eq` (its recursor is
+// generated and checked); nothing is a symbol, rule or axiom
+// (`axioms trans` after it lists no assumptions). The endpoints are implicit:
+// `trans(h, k)` for `h: Eq(A, x, y)` and `k: Eq(A, y, z)`.
+
+room eq
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+// Rewriting: a property of x holds of y when x = y.
+def subst[u, v, A: Sort(u), x: A, y: A](P: A -> Sort(v), h: Eq(A, x, y), px: P(x)) -> P(y) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => P(y'), px, y, h)
+
+theorem symm[u, A: Sort(u), x: A, y: A](h: Eq(A, x, y)) -> Eq(A, y, x) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(A, y', x), Eq.refl, y, h)
+
+theorem trans[u, A: Sort(u), x: A, y: A, z: A](h: Eq(A, x, y), k: Eq(A, y, z)) -> Eq(A, x, z) =
+  Eq.rec((z': A, e: Eq(A, y, z')) => Eq(A, x, z'), h, z, k)
+
+theorem cong[u, v, A: Sort(u), B: Sort(v), x: A, y: A](f: A -> B, h: Eq(A, x, y)) -> Eq(B, f(x), f(y)) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(B, f(x), f(y')), Eq.refl, y, h)
+
+// Two arguments at once.
+theorem cong2[u, v, w, A: Sort(u), B: Sort(v), C: Sort(w), a: A, a': A, b: B, b': B](f: A -> B -> C, h: Eq(A, a, a'), k: Eq(B, b, b')) -> Eq(C, f(a, b), f(a', b')) =
+  trans(cong((x: A) => f(x, b), h), cong((y: B) => f(a', y), k))
+

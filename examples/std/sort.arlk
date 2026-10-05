@@ -1,0 +1,121 @@
+// Insertion sort on lists of Peano naturals: the result is ordered, and
+// every number occurs in it as often as in the input. Equality, naturals,
+// lists, Bool and the evidence types come from the shared library.
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
+
+room sorting uses eq, logic, nat, almide, list
+
+// PROGRAM
+def LE(a: Nat, b: Nat) -> Type = match a {
+  zero => Unit,
+  succ(a1) => match b {
+    zero => Empty,
+    succ(b1) => LE(a1, b1),
+  },
+}
+
+def le_case(x: Nat, h: Nat) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => Sum.left(Unit.unit),
+  succ(a) => match h {
+    zero => Sum.right(Unit.unit),
+    succ(b) => le_case(a, b),
+  },
+}
+
+def dec(x: Nat, h: Nat, t: List(Nat), r: List(Nat), c: Sum(LE(x, h), LE(h, x))) -> List(Nat) = match c {
+  left(e) => List.cons(x, List.cons(h, t)),
+  right(e) => List.cons(h, r),
+}
+
+def insert(x: Nat, xs: List(Nat)) -> List(Nat) = match xs {
+  nil => List.cons(x, List.nil),
+  cons(h, t) => dec(x, h, t, insert(x, t), le_case(x, h)),
+}
+
+def sort(xs: List(Nat)) -> List(Nat) = match xs {
+  nil => List.nil,
+  cons(h, t) => insert(h, sort(t)),
+}
+
+// PROPERTY
+def SortedB(xs: List(Nat), lo: Nat) -> Type = match xs {
+  nil => Unit,
+  cons(h, t) => Prod(LE(lo, h), SortedB(t, h)),
+}
+
+def eq_nat(a: Nat, b: Nat) -> Bool = match a {
+  zero => match b {
+    zero => Bool.tt,
+    succ(bp) => Bool.ff,
+  },
+  succ(ap) => match b {
+    zero => Bool.ff,
+    succ(bp) => eq_nat(ap, bp),
+  },
+}
+
+def bump(b: Bool, n: Nat) -> Nat = match b {
+  tt => Nat.succ(n),
+  ff => n,
+}
+
+def count(x: Nat, xs: List(Nat)) -> Nat = match xs {
+  nil => Nat.zero,
+  cons(h, t) => bump(eq_nat(x, h), count(x, t)),
+}
+
+// PROOF
+// Ascending order, including its preserved lower bound.
+def sorted_ins_fin(lo: Nat, x: Nat, h: Nat, t: List(Nat),
+  sx: Prod(LE(lo, h), SortedB(t, h)), lx: LE(lo, x),
+  rec: SortedB(t, h) -> LE(h, x) -> SortedB(insert(x, t), h),
+  c: Sum(LE(x, h), LE(h, x))) -> SortedB(dec(x, h, t, insert(x, t), c), lo) = match sx {
+  pair(lh, st) => match c {
+    left(e) => Prod.pair(lx, Prod.pair(e, st)),
+    right(e) => Prod.pair(lh, rec(st, e)),
+  },
+}
+
+def sorted_ins(xs: List(Nat), lo: Nat, x: Nat) -> SortedB(xs, lo) -> LE(lo, x) -> SortedB(insert(x, xs), lo) = match xs {
+  nil => (sx: SortedB(List.nil, lo), lx: LE(lo, x)) => Prod.pair(lx, Unit.unit),
+  cons(h, t) => (sx: SortedB(List.cons(h, t), lo), lx: LE(lo, x)) =>
+    sorted_ins_fin(lo, x, h, t, sx, lx, sorted_ins(t, h, x), le_case(x, h)),
+}
+
+theorem sort_sorted(xs: List(Nat)) -> SortedB(sort(xs), Nat.zero) = match xs {
+  nil => Unit.unit,
+  cons(h, t) => sorted_ins(sort(t), Nat.zero, h, sort_sorted(t), Unit.unit),
+}
+
+// Multiplicities, for every queried natural number.
+theorem bump_swap(a: Bool, b: Bool, n: Nat) -> Eq(Nat, bump(a, bump(b, n)), bump(b, bump(a, n))) = match a {
+  tt => match b {
+    tt => Eq.refl,
+    ff => Eq.refl,
+  },
+  ff => Eq.refl,
+}
+
+def count_ins_fin(x: Nat, y: Nat, h: Nat, t: List(Nat),
+  rec: Eq(Nat, count(x, List.cons(y, t)), count(x, insert(y, t))),
+  c: Sum(LE(y, h), LE(h, y))) -> Eq(Nat, count(x, List.cons(y, List.cons(h, t))), count(x, dec(y, h, t, insert(y, t), c))) = match c {
+  left(e) => Eq.refl,
+  right(e) => trans(bump_swap(eq_nat(x, y), eq_nat(x, h), count(x, t)),
+    cong((n: Nat) => bump(eq_nat(x, h), n), rec)),
+}
+
+theorem count_ins(x: Nat, y: Nat, xs: List(Nat)) -> Eq(Nat, count(x, List.cons(y, xs)), count(x, insert(y, xs))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => count_ins_fin(x, y, h, t, count_ins(x, y, t), le_case(y, h)),
+}
+
+theorem sort_perm(x: Nat, xs: List(Nat)) -> Eq(Nat, count(x, sort(xs)), count(x, xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => trans(symm(count_ins(x, h, sort(t))),
+    cong((n: Nat) => bump(eq_nat(x, h), n), sort_perm(x, t))),
+}
+
+// AUDIT
+axioms sort_sorted
+axioms sort_perm

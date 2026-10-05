@@ -328,9 +328,39 @@ local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> 
     },
     _ => match y {
       Lam(n2, t2, b2) => unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2),
-      _ => unify_spines(env, st, ctx, x, y) or first_order(env, st, ctx, x, y) or first_order(env, st, ctx, y, x) or unify_delta(env, st, ctx, x, y) or unify_eta(env, st, ctx, x, y) or unify_eta(env, st, ctx, y, x),
+      _ => unify_alternatives(env, st, ctx, x, y),
     },
   }
+
+// The ways two neutral terms can be equal, tried in order. Each starts
+// from the holes as they were: a failed attempt (same head, but the
+// arguments differ) must not leave solutions behind, or `length[?l](B, ..)
+// =?= length[u](A, ..)` fixes ?l := u before both sides compute to the
+// same number.
+local fn unify_alternatives(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
+  let metas = st.metas
+  let lmetas = st.lmetas
+  var found = false
+  var i = 0
+  while not found and i < 6 {
+    if i > 0 then {
+      st.metas = metas
+      st.lmetas = lmetas
+    } else ()
+    found = if i == 0 then unify_spines(env, st, ctx, x, y)
+      else if i == 1 then first_order(env, st, ctx, x, y)
+      else if i == 2 then first_order(env, st, ctx, y, x)
+      else if i == 3 then unify_delta(env, st, ctx, x, y)
+      else if i == 4 then unify_eta(env, st, ctx, x, y)
+      else unify_eta(env, st, ctx, y, x)
+    i = i + 1
+  }
+  if not found then {
+    st.metas = metas
+    st.lmetas = lmetas
+  } else ()
+  found
+}
 
 // Record eta (see kernel.eta_pairs): `P.mk(a1, a2) =?= p` when
 // `a1 =?= p.x` and `a2 =?= p.y`.
