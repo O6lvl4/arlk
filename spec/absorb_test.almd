@@ -3,6 +3,7 @@
 import fs
 import self.syntax
 import self.kernel
+import self.checker
 import self.absorb
 
 let CORE = "lib/core.arlk"
@@ -14,7 +15,7 @@ let ROCQ_ABSORBED = "absorbed/rocq/init_peano.arlk"
 // Absorbed files sit on the shared foundation, so it is checked first.
 fn check_with(core: String, src: String) -> String? = match syntax.parse(core + "\n" + src) {
   err(e) => some("parse: " + e),
-  ok(ds) => kernel.check_all(kernel.empty(), ds).error,
+  ok(ds) => checker.check_all(kernel.empty(), ds).error,
 }
 
 test "the committed Lean file is exactly what absorb produces" {

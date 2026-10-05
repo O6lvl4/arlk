@@ -1,6 +1,7 @@
 // The kernel must accept good proofs and, more importantly, reject bad ones.
 import self.syntax
 import self.kernel
+import self.checker
 
 let PRELUDE = """
   room logic
@@ -13,7 +14,7 @@ let PRELUDE = """
 // none = accepted; some(msg) = rejected with msg.
 fn run(src: String) -> String? = match syntax.parse(PRELUDE + "\n" + src) {
   err(e) => some("parse: " + e),
-  ok(ds) => kernel.check_all(kernel.empty(), ds).error,
+  ok(ds) => checker.check_all(kernel.empty(), ds).error,
 }
 
 fn accepts(src: String) -> Bool = run(src) == none
@@ -182,11 +183,11 @@ test "axioms reports only what a theorem actually uses" {
     """
   match syntax.parse(src) {
     ok(ds) => {
-      let out = kernel.check_all(kernel.empty(), ds)
+      let out = checker.check_all(kernel.empty(), ds)
       assert_eq(out.error, none)
-      let plain = kernel.deps(out.env, "classical.plain")
+      let plain = checker.deps(out.env, "classical.plain")
       assert(not list.contains(plain.symbols, "classical.em"))
-      let used = kernel.deps(out.env, "classical.uses_em")
+      let used = checker.deps(out.env, "classical.uses_em")
       assert(list.contains(used.symbols, "classical.em"))
     },
     err(e) => assert_eq(e, ""),
@@ -379,7 +380,7 @@ test "a type in a negative position is rejected, and leaves nothing behind" {
     ok(ds) => {
       var env = kernel.empty()
       for d in ds {
-        match kernel.process(env, d) {
+        match checker.process(env, d) {
           _ => (),
         }
       }

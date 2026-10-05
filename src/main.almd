@@ -9,6 +9,7 @@ import fs
 import process
 import self.syntax
 import self.kernel
+import self.checker
 import self.absorb
 import self.metamath
 
@@ -63,7 +64,7 @@ effect fn run_check(paths: List[String], timing: Bool, keep_going: Bool) -> Unit
           for d in ds {
             if failure == none then {
               let started = env.millis()
-              let result = kernel.process(kenv, d)
+              let result = checker.process(kenv, d)
               times = times + [(env.millis() - started, d.line)]
               match result {
                 ok(lines) => {

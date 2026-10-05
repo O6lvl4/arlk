@@ -3,6 +3,7 @@
 import fs
 import self.syntax
 import self.kernel
+import self.checker
 import self.metamath
 
 let DB = "absorbed/metamath/set_prop.mm"
@@ -10,7 +11,7 @@ let ABSORBED = "absorbed/metamath/set_prop.arlk"
 
 fn check(src: String) -> String? = match syntax.parse(src) {
   err(e) => some("parse: " + e),
-  ok(ds) => kernel.check_all(kernel.empty(), ds).error,
+  ok(ds) => checker.check_all(kernel.empty(), ds).error,
 }
 
 test "the committed file is exactly what absorb-mm produces" {
