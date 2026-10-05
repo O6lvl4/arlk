@@ -1,0 +1,92 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Arith (Arith.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Arith
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type eq(A: Type, x: A): A -> Type =
+  | refl: eq(A, x, x)
+
+def sym[A: Type, x: A, y: A](x4: eq(_, x, y)) -> eq(_, y, x) = match x4 {
+  refl => eq.refl,
+}
+
+def trans[A: Type, x: A, y: A, z: A](x5: eq(_, x, y), q: eq(_, y, z)) -> eq(_, x, z) = match x5 {
+  refl => q,
+}
+
+def cong[A: Type, B: Type, x: A, y: A](f: A -> B, x6: eq(_, x, y)) -> eq(_, f(x), f(y)) = match x6 {
+  refl => eq.refl,
+}
+
+def plus(x1: ℕ, n: ℕ) -> ℕ = match x1 {
+  zero => n,
+  suc(m) => ℕ.suc(plus(m, n)),
+}
+
+def times(x1: ℕ, n: ℕ) -> ℕ = match x1 {
+  zero => ℕ.zero,
+  suc(m) => plus(n, times(m, n)),
+}
+
+def plus_zero(n: ℕ) -> eq(_, plus(n, ℕ.zero), n) = match n {
+  zero => eq.refl,
+  suc(n') => cong(ℕ.suc, plus_zero(n')),
+}
+
+def plus_suc(m: ℕ, n: ℕ) -> eq(_, plus(m, ℕ.suc(n)), ℕ.suc(plus(m, n))) = match m {
+  zero => eq.refl,
+  suc(m') => cong(ℕ.suc, plus_suc(m', n)),
+}
+
+def plus_comm(m: ℕ, n: ℕ) -> eq(_, plus(m, n), plus(n, m)) = match m {
+  zero => sym(plus_zero(n)),
+  suc(m') => trans(cong(ℕ.suc, plus_comm(m', n)), sym(plus_suc(n, m'))),
+}
+
+def plus_assoc(a: ℕ, b: ℕ, c: ℕ) -> eq(_, plus(plus(a, b), c), plus(a, plus(b, c))) = match a {
+  zero => eq.refl,
+  suc(a') => cong(ℕ.suc, plus_assoc(a', b, c)),
+}
+
+def times_zero(n: ℕ) -> eq(_, times(n, ℕ.zero), ℕ.zero) = match n {
+  zero => eq.refl,
+  suc(n') => times_zero(n'),
+}
+
+type List(A: Type): Type =
+  | xx: List(A)
+  | cons(x1: A, x2: List(A)): List(A)
+
+def plusplus[A: Type](x2: List(A), ys: List(A)) -> List(A) = match x2 {
+  xx => ys,
+  cons(x, xs) => List.cons(x, plusplus(xs, ys)),
+}
+
+def length[A: Type](x2: List(A)) -> ℕ = match x2 {
+  xx => ℕ.zero,
+  cons(x, xs) => ℕ.suc(length(xs)),
+}
+
+def map[A: Type, B: Type](f: A -> B, x4: List(A)) -> List(B) = match x4 {
+  xx => List.xx,
+  cons(x, xs) => List.cons(f(x), map(f, xs)),
+}
+
+def plusplus_length[A: Type](xs: List(A), ys: List(A)) -> eq(_, length(plusplus(xs, ys)), plus(length(xs), length(ys))) = match xs {
+  xx => eq.refl,
+  cons(x, xs') => cong(ℕ.suc, plusplus_length(xs', ys)),
+}
+
+def map_length[A: Type, B: Type](f: A -> B, xs: List(A)) -> eq(_, length(map(f, xs)), length(xs)) = match xs {
+  xx => eq.refl,
+  cons(x, xs') => cong(ℕ.suc, map_length(f, xs')),
+}
+
+def plusplus_assoc[A: Type](xs: List(A), ys: List(A), zs: List(A)) -> eq(_, plusplus(plusplus(xs, ys), zs), plusplus(xs, plusplus(ys, zs))) = match xs {
+  xx => eq.refl,
+  cons(x, xs') => cong((l: _) => List.cons(x, l), plusplus_assoc(xs', ys, zs)),
+}

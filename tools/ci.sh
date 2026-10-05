@@ -79,6 +79,7 @@ must_pass "Rocq Init.Peano" 300 ./arlk check lib/core.arlk absorbed/rocq/init_pe
 must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
 must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set_prop.arlk
 must_pass "HOL foundation" 60 ./arlk check lib/hol.arlk
+must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 
 # Rocq's Corelib.Init is not fully supported: exactly the four known
 # declarations fail (sig/sigT at Prop, see the README). Anything else is a

@@ -3,6 +3,7 @@
 //   arlk check FILE.arlk                 check every declaration
 //   arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export into Arlk source
 //   arlk absorb-mm DB.mm [--upto LABEL]  turn a Metamath database into Arlk source
+//   arlk absorb-agda FILE.agda            turn an Agda module (a subset) into Arlk source
 //   arlk absorb-hol ART.art...           turn OpenTheory articles into Arlk source
 
 import env
@@ -14,6 +15,7 @@ import self.kernel
 import self.checker
 import self.absorb
 import self.metamath
+import self.agda
 import self.hol
 import self.bundle
 import self.almide_src
@@ -28,6 +30,7 @@ let USAGE = """
                                           --keep-going: report every failure, not just the first)
     arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export (tools/) into Arlk source
     arlk absorb-mm DB.mm [--upto LABEL] [-o OUT]
+  arlk absorb-agda FILE.agda [-o OUT]
                                          turn a Metamath database (up to LABEL) into Arlk source
     arlk bundle CLAIM FILE.arlk... [-o DIR]
                                          check, then write CLAIM with its sources, hashes and
@@ -66,6 +69,7 @@ effect fn main() -> Unit = {
     some("replay") if not list.is_empty(files) => run_replay(list.first(files) ?? "", flag(args, "--expect"), list.contains(args, "--revalidate"))!,
     some("absorb-almide") if not list.is_empty(files) => run_absorb_almide(list.first(files) ?? "", flag(args, "-o"), flag(args, "--verify"))!,
     some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
+    some("absorb-agda") if not list.is_empty(files) => run_absorb_agda(list.first(files) ?? "", flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     some("package") if list.len(files) == 2 => run_package(list.first(files) ?? "", list.get(files, 1) ?? "")!,
     some("project") if list.len(files) == 1 => run_project(list.first(files) ?? "", flag(args, "--bundle"))!,
@@ -214,6 +218,23 @@ effect fn expand_includes(dir: String, text: String, mut seen: List[String]) -> 
       }
     }
     list.join(out, "")
+  }
+}
+
+effect fn run_absorb_agda(path: String, out: String?) -> Unit = {
+  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match agda.absorb(src, path) {
+    err(e) => {
+      println("✗ ${path}: ${e}")
+      process.exit(1)
+    },
+    ok(text) => match out {
+      some(o) => {
+        fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+        println("wrote ${o}")
+      },
+      none => println(text),
+    },
   }
 }
 

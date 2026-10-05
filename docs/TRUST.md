@@ -117,8 +117,11 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   next to a checked proof that the defining predicate is inhabited). A check of an absorbed library is relative to these; that the
   emitted declarations faithfully encode the source logic, and that an emitted statement means
   what the source statement means, are separate obligations (issue #5). The exporters
-  (tools/lean-export, tools/rocq-export) and `arlk absorb`/`absorb-mm`/`absorb-hol` only produce
-  text. In particular the OpenTheory reader ([src/hol.almd](../src/hol.almd)) is not trusted: it
+  (tools/lean-export, tools/rocq-export) and `arlk absorb`/`absorb-mm`/`absorb-hol`/`absorb-agda` only
+  produce text. `absorb-agda` ([src/agda.almd](../src/agda.almd)) reads Agda source, not Agda's
+  checked terms: its output is ordinary types and definitions, so it rests on no assumption at
+  all, and whether it means what the Agda module means is the translation's obligation (Agda
+  accepting the source, tools/agda-export/check.sh, is evidence, not proof). In particular the OpenTheory reader ([src/hol.almd](../src/hol.almd)) is not trusted: it
   runs the article and writes proofs, lemmas, term abbreviations (checked `def`s) and constant
   definitions (checked `def`s); a mistake there is a type error, not a theorem. The statement of an
   exported HOL theorem is written from the article's own `thm` command, and its HOL meaning rests

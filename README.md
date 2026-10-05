@@ -413,6 +413,25 @@ What the base library rests on (`axioms` on any of its theorems): room `hol`, HO
 `axiom_*.axiom*` symbols), and the type definitions (the new types with their `abs_rep`/`rep_abs`
 axioms, each next to its checked `nonempty` theorem).
 
+### Agda
+
+Agda's checked terms are not exported (that needs a Haskell backend); instead `arlk absorb-agda`
+([src/agda.almd](src/agda.almd)) reads an Agda module's source, in a subset (`data` with
+parameters and indices, `infix` declarations, signatures with implicit arguments, clauses by
+pattern matching, binary mixfix operators, `λ`, `Set`), and writes the same development as Arlk
+types and definitions: clauses become a case tree of `match`es, `_+_` becomes `plus`, implicit
+arguments are inferred at uses. The result rests on no assumption; a mistranslation is a type
+error. [tools/agda-export/check.sh](tools/agda-export/check.sh) runs Agda on the source when it is
+installed, regenerates the translation and checks it, and checks that a wrong proof in the source
+is rejected. [examples/agda_transport.arlk](examples/agda_transport.arlk) uses Agda's `+-comm` to
+prove Arlk's own `nat.add_comm` again, through the isomorphism of the two naturals.
+
+```
+$ ./arlk absorb-agda absorbed/agda/Arith.agda -o absorbed/agda/arith.arlk
+$ ./arlk check absorbed/agda/arith.arlk
+ok: absorbed/agda/arith.arlk (27 declarations)
+```
+
 ### Results
 
 | Library | Declarations checked | Time |
@@ -422,6 +441,7 @@ axioms, each next to its checked `nonempty` theorem).
 | Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~12 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
+| Agda `Arith` (naturals, lists, equality and their laws; from source) | 27, all of them | < 0.1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 | Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
@@ -774,3 +794,6 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 | [almide#3421](https://github.com/almide/almide/issues/3421) a variant pattern nested in `some(...)` leaves payloads boxed | fetch, then match (`patterns.sub_at`) |
 | [almide#3431](https://github.com/almide/almide/issues/3431) a closure passing a captured `var` to a `mut` parameter emits `.get()` on `&mut` | explicit loop (`session.first_changed`) |
 | [almide#3434](https://github.com/almide/almide/issues/3434) an argument used again after a call is deep-copied at the call | describe terms before checking them (`kernel.brief`), substitute only dependent arguments |
+| [almide#3437](https://github.com/almide/almide/issues/3437) comparing a match-arm binding of a recursive variant with `==` emits `&T == T` | compare the scrutinee itself (`checker.shape`) |
+| [almide#3439](https://github.com/almide/almide/issues/3439) same-named types in two modules still clash (as #3401) | `agda.almd`'s types are prefixed (`AExpr`, `ACx`, ...) |
+| [almide#3440](https://github.com/almide/almide/issues/3440) a list from a tuple binding is moved by `|> list.map` in a loop | map once before the loop (`agda.absorb`) |

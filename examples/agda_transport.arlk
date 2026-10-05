@@ -1,0 +1,47 @@
+// Transport from Agda: a theorem absorbed from an Agda module, used to
+// prove the same fact about Arlk's own naturals.
+//
+//   arlk check absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk
+//
+// absorbed/agda/arith.arlk is `arlk absorb-agda absorbed/agda/Arith.agda`:
+// Agda's ℕ, _+_ and +-comm, as checked Arlk declarations. Agda's ℕ and
+// nat.Nat are isomorphic, the isomorphism carries Agda's _+_ to nat.add,
+// and Agda's equality (a type in Set) gives the native one, so Agda's
+// proof of +-comm proves nat.add_comm again, with no Agda and no axiom.
+
+room agda_transport uses agda.Arith, eq, nat
+
+def to(n: ℕ) -> Nat = match n {
+  zero => Nat.zero,
+  suc(k) => Nat.succ(to(k)),
+}
+
+def from(n: Nat) -> ℕ = match n {
+  zero => ℕ.zero,
+  succ(k) => ℕ.suc(from(k)),
+}
+
+theorem to_from(n: Nat) -> Eq(Nat, to(from(n)), n) = match n {
+  zero => Eq.refl,
+  succ(k) => nat.cong_succ(to_from(k)),
+}
+
+// The isomorphism carries Agda's addition to the native one.
+theorem to_plus(a: ℕ, b: ℕ) -> Eq(Nat, to(plus(a, b)), add(to(a), to(b))) = match a {
+  zero => Eq.refl,
+  suc(k) => nat.cong_succ(to_plus(k, b)),
+}
+
+// Agda's equality is a type in Set (Arlk's Type); it gives the native one.
+theorem from_agda[A: Type, x: A, y: A](h: agda.Arith.eq(A, x, y)) -> Eq(A, x, y) =
+  agda.Arith.eq.rec((y': A, e: agda.Arith.eq(A, x, y')) => Eq(A, x, y'), Eq.refl, y, h)
+
+theorem add_comm_from_agda(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = {
+  let back: Eq(Nat, add(to(from(m)), to(from(n))), add(m, n)) = eq.cong2(add, to_from(m), to_from(n))
+  let swapped: Eq(Nat, to(plus(from(m), from(n))), to(plus(from(n), from(m)))) = eq.cong(to, from_agda(plus_comm(from(m), from(n))))
+  let forth: Eq(Nat, add(to(from(n)), to(from(m))), add(n, m)) = eq.cong2(add, to_from(n), to_from(m))
+  eq.trans(eq.symm(back), eq.trans(eq.symm(to_plus(from(m), from(n))), eq.trans(swapped, eq.trans(to_plus(from(n), from(m)), forth))))
+}
+
+// Nothing assumed: Agda's proof, Arlk's naturals, inductive types only.
+axioms add_comm_from_agda

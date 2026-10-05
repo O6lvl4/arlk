@@ -1,0 +1,832 @@
+// Agda, absorbed from its source: `arlk absorb-agda FILE.agda` reads a
+// module written in a subset of Agda and writes the same development as
+// Arlk declarations, which the kernel then checks like any other.
+//
+//   data ℕ : Set where              type ℕ: Type =
+//     zero : ℕ                        | zero
+//     suc  : ℕ → ℕ                    | suc(x1: ℕ)
+//
+//   _+_ : ℕ → ℕ → ℕ                 def plus(x1: ℕ, n: ℕ) -> ℕ = match x1 {
+//   zero  + n = n                     zero => n,
+//   suc m + n = suc (m + n)           suc(m) => ℕ.suc(plus(m, n)),
+//                                   }
+//
+// Nothing here is trusted: a wrong translation is a type error. Agda is
+// not needed to check the result (tools/agda-export runs it on the source,
+// to confirm that Agda accepts what was absorbed).
+//
+// The subset: `module M where`, `data` (parameters, indices, constructors),
+// `infix`/`infixl`/`infixr`, type signatures and clauses by pattern
+// matching (constructor, variable, `_` and dot patterns, operators in
+// patterns), application, binary mixfix operators `_op_`, `→`, `(x : A) →`,
+// `{x : A} →`, `λ x →`, `Set`. Implicit arguments are inferred at uses, as
+// in Agda; implicit parameters of a definition move to the front (Arlk's
+// `[...]`), so they may depend only on earlier implicit ones. Clauses are
+// compiled to a case tree; recursion must be structural on the argument
+// the first split takes apart.
+
+// The types are prefixed: a same-named type in another module would
+// shadow them (almide/almide#3439).
+type ATok = { text: String, line: Int, col: Int }
+
+type AExpr =
+  | EVar(String)
+  | EApp(AExpr, List[AExpr])
+  | EPi(List[(String, AExpr)], Bool, AExpr)
+  | EArrow(AExpr, AExpr)
+  | ELam(List[String], AExpr)
+  | ESet(Int)
+  | EHole
+
+type APat =
+  | PV(String)
+  | PC(String, List[APat])
+  | PW
+
+// A data type: its parameters (name, type, implicit), its arity, its
+// constructors (name, arguments with implicit flags, result).
+type AData = { name: String, params: List[(String, AExpr, Bool)], arity: AExpr, ctors: List[ACtor] }
+type ACtor = { name: String, args: List[(String, AExpr, Bool)], result: AExpr }
+
+type AFix = { op: String, level: Int, assoc: String }
+
+// What a term mentions: data types, constructors (by type), functions
+// (with their implicit parameters' positions), fixities.
+type AScope = { datas: List[AData], funs: List[(String, List[Bool])], fixes: List[AFix], own: String }
+
+// ── Lexing ──────────────────────────────────────────────────────────
+
+local fn is_space(c: String) -> Bool = c == " " or c == "\t" or c == "\r"
+
+fn lex(src: String) -> List[ATok] = {
+  let lines = string.split(src, "\n")
+  var out: List[ATok] = []
+  var in_block = 0
+  for (li, line) in list.enumerate(lines) {
+    let cs = string.chars(line)
+    let n = list.len(cs)
+    var i = 0
+    var cur = ""
+    var start = 0
+    var stop = false
+    while i < n and not stop {
+      let c = list.get(cs, i) ?? ""
+      let c2 = c + (list.get(cs, i + 1) ?? "")
+      if in_block > 0 then {
+        if c2 == "-}" then {
+          in_block = in_block - 1
+          i = i + 2
+        } else if c2 == "{-" then {
+          in_block = in_block + 1
+          i = i + 2
+        } else {
+          i = i + 1
+        }
+      } else if c2 == "{-" then {
+        if cur != "" then {
+          list.push(out, ATok { text: cur, line: li + 1, col: start + 1 })
+          cur = ""
+        } else ()
+        in_block = in_block + 1
+        i = i + 2
+      } else if cur == "" and c2 == "--" then {
+        stop = true
+      } else if is_space(c) then {
+        if cur != "" then {
+          list.push(out, ATok { text: cur, line: li + 1, col: start + 1 })
+          cur = ""
+        } else ()
+        i = i + 1
+      } else if c == "(" or c == ")" or c == "{" or c == "}" or c == ";" then {
+        if cur != "" then {
+          list.push(out, ATok { text: cur, line: li + 1, col: start + 1 })
+          cur = ""
+        } else ()
+        list.push(out, ATok { text: c, line: li + 1, col: i + 1 })
+        i = i + 1
+      } else {
+        if cur == "" then {
+          start = i
+        } else ()
+        cur = cur + c
+        i = i + 1
+      }
+    }
+    if cur != "" then list.push(out, ATok { text: cur, line: li + 1, col: start + 1 }) else ()
+  }
+  out
+}
+
+// Declarations by layout: a block starts at the module's indentation and
+// takes the more indented lines after it.
+local fn blocks(ts: List[ATok], base: Int) -> List[List[ATok]] = {
+  var out: List[List[ATok]] = []
+  var cur: List[ATok] = []
+  var line = 0
+  for t in ts {
+    if t.line != line and t.col <= base and not list.is_empty(cur) then {
+      list.push(out, cur)
+      cur = []
+    } else ()
+    list.push(cur, t)
+    line = t.line
+  }
+  if not list.is_empty(cur) then list.push(out, cur) else ()
+  out
+}
+
+// ── Names ───────────────────────────────────────────────────────────
+
+let ARLK_KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "structure", "check", "eval", "axioms", "Type", "Sort", "type", "match", "view", "translate", "let", "search", "views", "routes", "max", "imax"]
+
+local fn char_name(c: String) -> String = match c {
+  "+" => "plus",
+  "*" => "times",
+  "≡" => "eq",
+  "≤" => "le",
+  "<" => "lt",
+  ">" => "gt",
+  "≥" => "ge",
+  "∸" => "monus",
+  "∷" => "cons",
+  "∘" => "comp",
+  "×" => "prod",
+  "⊎" => "sum",
+  "¬" => "not",
+  "∧" => "and",
+  "∨" => "or",
+  "^" => "pow",
+  "′" => "'",
+  "₀" => "0",
+  "₁" => "1",
+  "₂" => "2",
+  "₃" => "3",
+  "₄" => "4",
+  "₅" => "5",
+  "₆" => "6",
+  "₇" => "7",
+  "₈" => "8",
+  "₉" => "9",
+  "-" => "_",
+  _ => if string.is_alphanumeric(c) or c == "_" or c == "'" then c else "x",
+}
+
+// An Agda name as an Arlk identifier: `_+_` → `plus`, `+-comm` → `plus_comm`.
+fn mangle(name: String) -> String = {
+  let core = if string.len(name) > 2 and string.starts_with(name, "_") and string.ends_with(name, "_") then string.slice(name, 1, string.len(name) - 1) else name
+  let s = list.join(string.chars(core) |> list.map((c) => char_name(c)), "")
+  let s2 = if s == "" or s == "_" then "x" else if string.is_digit(string.take(s, 1)) or string.starts_with(s, "_") then "a" + s else s
+  if list.contains(ARLK_KEYWORDS, s2) then s2 + "'" else s2
+}
+
+// ── Expressions ─────────────────────────────────────────────────────
+
+local fn at(ts: List[String], i: Int) -> String = list.get(ts, i) ?? ""
+
+local fn is_arrow(t: String) -> Bool = t == "→" or t == "->"
+
+local fn closes(t: String) -> Bool = t == ")" or t == "}" or t == "=" or t == ":" or t == "" or is_arrow(t) or t == "where" or t == ";"
+
+local fn fix_of(sc: AScope, op: String) -> AFix? = list.find(sc.fixes, (f) => f.op == op)
+
+// An operator token: the middle of a declared `_op_` name.
+local fn is_op(sc: AScope, t: String) -> Bool =
+  t != "" and not closes(t) and t != "(" and t != "{" and (fix_of(sc, t) != none or list.any(sc.funs, ((f, _)) => f == "_" + t + "_") or list.any(sc.datas, (d) => d.name == "_" + t + "_" or list.any(d.ctors, (c) => c.name == "_" + t + "_")))
+
+// Where the group opened at i closes.
+local fn group_end(ts: List[String], i: Int) -> Int = {
+  var depth = 0
+  var j = i
+  var found = -1
+  while found < 0 and j < list.len(ts) {
+    let t = at(ts, j)
+    if t == "(" or t == "{" then {
+      depth = depth + 1
+    } else if t == ")" or t == "}" then {
+      depth = depth - 1
+      if depth == 0 then {
+        found = j
+      } else ()
+    } else ()
+    j = j + 1
+  }
+  found
+}
+
+// Does the group at i bind (`(x y : A)`)?
+local fn binds(ts: List[String], i: Int) -> Bool = {
+  let e = group_end(ts, i)
+  var j = i + 1
+  var good = e > i + 1
+  var seen = false
+  while good and not seen and j < e {
+    let t = at(ts, j)
+    if t == ":" then {
+      seen = true
+    } else if t == "(" or t == "{" or t == ")" or t == "}" then {
+      good = false
+    } else ()
+    j = j + 1
+  }
+  good and seen
+}
+
+fn parse_expr(sc: AScope, ts: List[String], i: Int) -> (AExpr, Int)! = {
+  let t = at(ts, i)
+  if t == "λ" or t == "\\" then {
+    var names: List[String] = []
+    var j = i + 1
+    while not is_arrow(at(ts, j)) and j < list.len(ts) {
+      list.push(names, at(ts, j))
+      j = j + 1
+    }
+    let (body, k) = parse_expr(sc, ts, j + 1)!
+    ok((ELam(names, body), k))
+  } else if t == "∀" then {
+    // `∀ {x y} → B`, `∀ (x : A) → B`, `∀ x → B`
+    var bs: List[(String, AExpr, Bool)] = []
+    var j = i + 1
+    while not is_arrow(at(ts, j)) and j < list.len(ts) {
+      let u = at(ts, j)
+      if u == "(" or u == "{" then {
+        let e = group_end(ts, j)
+        let inner = list.slice(ts, j + 1, e)
+        let colon = list.index_of(inner, ":") ?? -1
+        let names = if colon >= 0 then list.take(inner, colon) else inner
+        let ty = if colon >= 0 then {
+          let (x, _) = parse_expr(sc, list.drop(inner, colon + 1), 0)!
+          x
+        } else EHole
+        for n in names {
+          list.push(bs, (n, ty, u == "{"))
+        }
+        j = e + 1
+      } else {
+        list.push(bs, (u, EHole, false))
+        j = j + 1
+      }
+    }
+    let (body, k) = parse_expr(sc, ts, j + 1)!
+    ok((telescope_to_pi(bs, body), k))
+  } else if (t == "(" or t == "{") and binds(ts, i) then {
+    var bs: List[(String, AExpr, Bool)] = []
+    var j = i
+    while (at(ts, j) == "(" or at(ts, j) == "{") and binds(ts, j) {
+      let e = group_end(ts, j)
+      let inner = list.slice(ts, j + 1, e)
+      let colon = list.index_of(inner, ":") ?? 0
+      let (ty, _) = parse_expr(sc, list.drop(inner, colon + 1), 0)!
+      for n in list.take(inner, colon) {
+        list.push(bs, (n, ty, at(ts, j) == "{"))
+      }
+      j = e + 1
+    }
+    guard is_arrow(at(ts, j)) else err("expected → after binders, found '${at(ts, j)}'")
+    let (body, k) = parse_expr(sc, ts, j + 1)!
+    ok((telescope_to_pi(bs, body), k))
+  } else {
+    let (lhs, j) = parse_ops(sc, ts, i, 0)!
+    if is_arrow(at(ts, j)) then {
+      let (rhs, k) = parse_expr(sc, ts, j + 1)!
+      ok((EArrow(lhs, rhs), k))
+    } else ok((lhs, j))
+  }
+}
+
+local fn telescope_to_pi(bs: List[(String, AExpr, Bool)], body: AExpr) -> AExpr =
+  list.fold(list.reverse(bs), body, (acc, (n, ty, imp)) => EPi([(n, ty)], imp, acc))
+
+// Operators by precedence climbing; operands are applications.
+local fn parse_ops(sc: AScope, ts: List[String], i: Int, min: Int) -> (AExpr, Int)! = {
+  let (lhs0, j0) = parse_app(sc, ts, i)!
+  var lhs = lhs0
+  var j = j0
+  var going = true
+  while going {
+    let op = at(ts, j)
+    if is_op(sc, op) then {
+      let f = fix_of(sc, op) ?? AFix { op: op, level: 20, assoc: "none" }
+      if f.level < min then {
+        going = false
+      } else {
+        let next = if f.assoc == "right" then f.level else f.level + 1
+        let (rhs, k) = parse_ops(sc, ts, j + 1, next)!
+        lhs = EApp(EVar("_" + op + "_"), [lhs, rhs])
+        j = k
+      }
+    } else {
+      going = false
+    }
+  }
+  ok((lhs, j))
+}
+
+local fn parse_app(sc: AScope, ts: List[String], i: Int) -> (AExpr, Int)! = {
+  var atoms: List[AExpr] = []
+  var j = i
+  var going = true
+  while going {
+    let t = at(ts, j)
+    if closes(t) or is_op(sc, t) or t == "λ" or t == "\\" or t == "∀" then {
+      going = false
+    } else if t == "(" then {
+      let e = group_end(ts, j)
+      guard e > j else err("unclosed (")
+      let (x, _) = parse_expr(sc, list.slice(ts, j + 1, e), 0)!
+      list.push(atoms, x)
+      j = e + 1
+    } else if t == "{" then {
+      // Implicit arguments given explicitly are not supported; stop here,
+      // and the caller reports what follows.
+      going = false
+    } else {
+      list.push(atoms, atom(t))
+      j = j + 1
+    }
+  }
+  // A trailing λ is the last argument (`f λ x → e` is rare; `(λ x → e)` is usual).
+  if at(ts, j) == "λ" or at(ts, j) == "\\" then {
+    let (l, k) = parse_expr(sc, ts, j)!
+    list.push(atoms, l)
+    j = k
+  } else ()
+  guard not list.is_empty(atoms) else err("expected a term, found '${at(ts, j)}'")
+  let head = list.first(atoms) ?? EHole
+  ok((if list.len(atoms) == 1 then head else EApp(head, list.drop(atoms, 1)), j))
+}
+
+local fn atom(t: String) -> AExpr =
+  if t == "Set" then ESet(0)
+  else if t == "Set₁" then ESet(1)
+  else if t == "Set₂" then ESet(2)
+  else if t == "_" then EHole
+  else EVar(t)
+
+// ── Emitting Arlk ───────────────────────────────────────────────────
+
+// `ren` renames pattern variables to the case tree's variables.
+type ACx = { sc: AScope, ren: List[(String, String)], bound: List[String] }
+
+local fn data_of(sc: AScope, n: String) -> AData? = list.find(sc.datas, (d) => d.name == n)
+
+local fn ctor_of(sc: AScope, n: String) -> (AData, ACtor)? = {
+  var found: (AData, ACtor)? = none
+  for d in sc.datas {
+    for c in d.ctors {
+      if found == none and c.name == n then {
+        found = some((d, c))
+      } else ()
+    }
+  }
+  found
+}
+
+local fn var_name(cx: ACx, n: String) -> String = match list.find(cx.ren, ((a, _)) => a == n) {
+  some((_, b)) => b,
+  none => mangle(n),
+}
+
+fn emit(cx: ACx, e: AExpr) -> String = match e {
+  EVar(n) => emit_app(cx, n, []),
+  EApp(EVar(n), args) => emit_app(cx, n, args),
+  EApp(f, args) => "(" + emit(cx, f) + ")(" + list.join(args |> list.map((a) => emit(cx, a)), ", ") + ")",
+  EArrow(a, b) => paren_arrow(cx, a) + " -> " + emit(cx, b),
+  EPi(bs, _, body) => "(" + list.join(bs |> list.map(((n, ty)) => (if n == "_" then "_" else mangle(n)) + ": " + emit(cx, ty)), ", ") + ") -> " + emit({ ...cx, bound: cx.bound + (bs |> list.map(((n, _)) => n)) }, body),
+  ELam(ns, body) => "(" + list.join(ns |> list.map((n) => mangle(n) + ": _"), ", ") + ") => " + emit({ ...cx, bound: cx.bound + ns }, body),
+  ESet(k) => if k == 0 then "Type" else "Sort(${int.to_string(k + 1)})",
+  EHole => "_",
+}
+
+local fn paren_arrow(cx: ACx, a: AExpr) -> String = match a {
+  EArrow(_, _) => "(_: " + emit(cx, a) + ")",
+  EPi(_, _, _) => "(_: " + emit(cx, a) + ")",
+  _ => emit(cx, a),
+}
+
+// A name applied to explicit arguments: a local, a data type (its implicit
+// parameters as holes, or by name inside its own declaration), a
+// constructor (its implicit arguments as holes), or a function.
+local fn emit_app(cx: ACx, n: String, args: List[AExpr]) -> String = {
+  let out_args = args |> list.map((a) => emit(cx, a))
+  let call = (head: String, all: List[String]) => if list.is_empty(all) then head else head + "(" + list.join(all, ", ") + ")"
+  if list.contains(cx.bound, n) or list.any(cx.ren, ((a, _)) => a == n) then call(var_name(cx, n), out_args)
+  else match data_of(cx.sc, n) {
+    some(d) => call(mangle(d.name), fill(d.params |> list.map(((p, _, imp)) => if imp then some(if cx.sc.own == d.name then mangle(p) else "_") else none), out_args)),
+    none => match ctor_of(cx.sc, n) {
+      some((d, c)) => call(mangle(d.name) + "." + mangle(c.name), fill(c.args |> list.map(((_, _, imp)) => if imp then some("_") else none), out_args)),
+      none => call(mangle(n), out_args),
+    },
+  }
+}
+
+// Explicit arguments in order, holes (or names) at implicit positions; the
+// implicit ones come only before an explicit argument that is given.
+local fn fill(slots: List[String?], given: List[String]) -> List[String] = {
+  var out: List[String] = []
+  var g = given
+  for s in slots {
+    match s {
+      some(h) => if not list.is_empty(g) or list.all(slots, (x) => x != none) then list.push(out, h) else (),
+      none => match list.first(g) {
+        some(a) => {
+          list.push(out, a)
+          g = list.drop(g, 1)
+        },
+        none => (),
+      },
+    }
+  }
+  out + g
+}
+
+// ── Declarations ────────────────────────────────────────────────────
+
+// A telescope's binders, and what it ends in.
+local fn unpi(e: AExpr) -> (List[(String, AExpr, Bool)], AExpr) = match e {
+  EPi(bs, imp, body) => {
+    let (rest, r) = unpi(body)
+    ((bs |> list.map(((n, t)) => (n, t, imp))) + rest, r)
+  },
+  EArrow(a, b) => {
+    let (rest, r) = unpi(b)
+    ([("_", a, false)] + rest, r)
+  },
+  other => ([], other),
+}
+
+local fn free_vars(e: AExpr) -> List[String] = match e {
+  EVar(n) => [n],
+  EApp(f, args) => free_vars(f) + (args |> list.flat_map((a) => free_vars(a))),
+  EArrow(a, b) => free_vars(a) + free_vars(b),
+  EPi(bs, _, body) => (bs |> list.flat_map(((_, t)) => free_vars(t))) + (free_vars(body) |> list.filter((v) => not list.any(bs, ((n, _)) => n == v))),
+  ELam(ns, body) => free_vars(body) |> list.filter((v) => not list.contains(ns, v)),
+  _ => [],
+}
+
+fn emit_data(sc: AScope, d: AData) -> String = {
+  let cx = ACx { sc: { ...sc, own: d.name }, ren: [], bound: d.params |> list.map(((n, _, _)) => n) }
+  let no_names: List[String] = []
+  let params = if list.is_empty(d.params) then "" else "(" + list.join(d.params |> list.map(((n, t, _)) => mangle(n) + ": " + emit({ ...cx, bound: no_names }, t)), ", ") + ")"
+  var lines: List[String] = ["type ${mangle(d.name)}${params}: ${emit(cx, d.arity)} ="]
+  for c in d.ctors {
+    let named = c.args |> list.map(((n, t, _)) => (n, t))
+    var bound: List[String] = cx.bound
+    var shown: List[String] = []
+    for (i, nt) in list.enumerate(named) {
+      let (n, t) = nt
+      let nm = if n == "_" then "x" + int.to_string(i + 1) else n
+      list.push(shown, mangle(nm) + ": " + emit({ ...cx, bound: bound }, t))
+      bound = bound + [nm]
+    }
+    let args = if list.is_empty(shown) then "" else "(" + list.join(shown, ", ") + ")"
+    list.push(lines, "  | ${mangle(c.name)}${args}: ${emit({ ...cx, bound: bound }, c.result)}")
+  }
+  list.join(lines, "\n")
+}
+
+// A function: its signature and clauses, as one definition by `match`.
+fn emit_fun(sc: AScope, name: String, ty: AExpr, clauses: List[(List[APat], AExpr)]) -> String! = {
+  let (bs, ret) = unpi(ty)
+  let explicit_n = list.len(bs |> list.filter(((_, _, imp)) => not imp))
+  // Parameter names: the signature's, else the first clause's variables.
+  let first_pats = match list.first(clauses) {
+    some((ps, _)) => ps,
+    none => [],
+  }
+  var names: List[String] = []
+  var ei = 0
+  for (n, _, imp) in bs {
+    let candidate = if n != "_" then n
+      else if imp then "i" + int.to_string(list.len(names) + 1)
+      else match list.get(first_pats, ei) {
+        some(PV(v)) => v,
+        _ => "x" + int.to_string(list.len(names) + 1),
+      }
+    let unique = if list.contains(names, candidate) then candidate + "'" + int.to_string(list.len(names)) else candidate
+    list.push(names, unique)
+    if not imp then {
+      ei = ei + 1
+    } else ()
+  }
+  var named: List[(String, AExpr, Bool)] = []
+  for (n, b) in list.zip(names, bs) {
+    let (_, t, imp) = b
+    list.push(named, (n, t, imp))
+  }
+  // Implicit parameters first, in order; they may not mention an explicit one.
+  let explicit_names = named |> list.filter(((_, _, imp)) => not imp) |> list.map(((n, _, _)) => n)
+  for (n, t, imp) in named {
+    guard not imp or not list.any(free_vars(t), (v) => list.contains(explicit_names, v)) else err("${name}: the implicit argument ${n} depends on an explicit one")
+  }
+  let imps = named |> list.filter(((_, _, imp)) => imp)
+  let exps = named |> list.filter(((_, _, imp)) => not imp)
+  // Binder names written in the signature become the parameters' names.
+  var sig_ren: List[(String, String)] = []
+  for (b, m) in list.zip(bs, names) {
+    let (n, _, _) = b
+    if n != "_" and n != m then list.push(sig_ren, (n, m)) else ()
+  }
+  let cx = ACx { sc: sc, ren: [], bound: names }
+  let show_b = (bl: List[(String, AExpr, Bool)]) => bl |> list.map(((n, t, _)) => mangle(n) + ": " + emit({ ...cx, ren: sig_ren }, t))
+  let generics = if list.is_empty(imps) then "" else "[" + list.join(show_b(imps), ", ") + "]"
+  let params = if list.is_empty(exps) then "" else "(" + list.join(show_b(exps), ", ") + ")"
+  let ret_s = emit({ ...cx, ren: sig_ren }, ret)
+  let cols = exps |> list.map(((n, _, _)) => mangle(n))
+  // Each clause: its explicit patterns (Agda patterns name only explicit arguments).
+  for (ps, _) in clauses {
+    guard list.len(ps) == explicit_n else err("${name}: a clause has ${int.to_string(list.len(ps))} patterns for ${int.to_string(explicit_n)} explicit arguments")
+  }
+  guard not list.is_empty(clauses) else err("${name} has no clauses")
+  let body = case_tree(sc, cols, clauses |> list.map(((ps, rhs)) => (ps, rhs, [])), names, "  ")!
+  let arrow = if list.is_empty(exps) and list.is_empty(imps) then ": " else " -> "
+  ok("def ${mangle(name)}${generics}${params}${arrow}${ret_s} =${body}")
+}
+
+local fn pat_vars(p: APat) -> List[String] = match p {
+  PV(x) => [x],
+  PC(_, ps) => ps |> list.flat_map((q) => pat_vars(q)),
+  PW => [],
+}
+
+local fn fresh(x: String, taken: List[String]) -> String =
+  if list.contains(taken, x) then fresh(x + "'", taken) else x
+
+// Clauses to a case tree, first match first: split on the first column
+// where the first clause has a constructor; when it has none, its body.
+local fn case_tree(sc: AScope, cols: List[String], rows: List[(List[APat], AExpr, List[(String, String)])], taken: List[String], indent: String) -> String! = {
+  let (ps, rhs, ren) = match list.first(rows) {
+    some(r) => ok(r),
+    none => err("the clauses do not cover every case"),
+  }!
+  let split = list.index_of(ps |> list.map((p) => match p {
+    PC(_, _) => true,
+    _ => false,
+  }), true)
+  match split {
+    none => {
+      var ren2 = ren
+      for (p, c) in list.zip(ps, cols) {
+        match p {
+          PV(x) => {
+            ren2 = [(x, c)] + ren2
+          },
+          _ => (),
+        }
+      }
+      ok(" " + emit(ACx { sc: sc, ren: ren2, bound: [] }, rhs))
+    },
+    some(j) => {
+      let col = list.get(cols, j) ?? ""
+      let d = match list.get(ps, j) {
+        some(PC(c, _)) => match ctor_of(sc, c) {
+          some((d, _)) => ok(d),
+          none => err("${c} is not a constructor"),
+        },
+        _ => err("internal: no constructor"),
+      }!
+      var arms: List[String] = []
+      var taken2 = taken + cols
+      for c in d.ctors {
+        let n = list.len(c.args)
+        // Field names: a variable the first row gives, else fresh.
+        let given = list.find(rows, ((qs, _, _)) => match list.get(qs, j) {
+          some(PC(c2, _)) => c2 == c.name,
+          _ => false,
+        })
+        let given_subs = match given {
+          some((qs, _, _)) => match list.get(qs, j) {
+            some(PC(_, ss)) => expand_implicit(c, ss),
+            _ => [],
+          },
+          none => [],
+        }
+        var fields: List[String] = []
+        for k in 0..<n {
+          let base = match list.get(given_subs, k) {
+            some(PV(x)) => mangle(x),
+            _ => "x" + int.to_string(k + 1),
+          }
+          let f = fresh(base, taken2 + fields)
+          list.push(fields, f)
+        }
+        taken2 = taken2 + fields
+        var rows2: List[(List[APat], AExpr, List[(String, String)])] = []
+        for (qs, body, rn) in rows {
+          let before = list.take(qs, j)
+          let after = list.drop(qs, j + 1)
+          match list.get(qs, j) {
+            some(PC(c2, ss)) => if c2 == c.name then list.push(rows2, (before + expand_implicit(c, ss) + after, body, rn)) else (),
+            some(PV(x)) => list.push(rows2, (before + list.repeat(PW, n) + after, body, [(x, col)] + rn)),
+            _ => list.push(rows2, (before + list.repeat(PW, n) + after, body, rn)),
+          }
+        }
+        let cols2 = list.take(cols, j) + fields + list.drop(cols, j + 1)
+        guard not list.is_empty(rows2) else err("no clause for ${c.name} (absurd patterns are not supported)")
+        let inner = case_tree(sc, cols2, rows2, taken2, indent + "  ")!
+        let args = if n == 0 then "" else "(" + list.join(fields, ", ") + ")"
+        list.push(arms, "${indent}${mangle(c.name)}${args} =>${inner},")
+      }
+      ok(" match ${col} {\n" + list.join(arms, "\n") + "\n" + string.drop(indent, 2) + "}")
+    },
+  }
+}
+
+// Agda's patterns leave a constructor's implicit arguments out.
+local fn expand_implicit(c: ACtor, ss: List[APat]) -> List[APat] = {
+  var out: List[APat] = []
+  var rest = ss
+  for (_, _, imp) in c.args {
+    if imp then list.push(out, PW)
+    else {
+      list.push(out, list.first(rest) ?? PW)
+      rest = list.drop(rest, 1)
+    }
+  }
+  out
+}
+
+fn to_pat(sc: AScope, e: AExpr) -> APat! = match e {
+  EHole => ok(PW),
+  EVar(x) => if ctor_of(sc, x) != none then ok(PC(x, [])) else if string.starts_with(x, ".") then ok(PW) else ok(PV(x)),
+  EApp(EVar(c), args) => {
+    guard ctor_of(sc, c) != none else err("${c} in a pattern is not a constructor")
+    var ps: List[APat] = []
+    for a in args {
+      list.push(ps, to_pat(sc, a)!)
+    }
+    ok(PC(c, ps))
+  },
+  _ => err("unsupported pattern"),
+}
+
+// ── The module ──────────────────────────────────────────────────────
+
+fn absorb(src: String, file: String) -> String! = {
+  let ts = lex(src)
+  guard at(ts |> list.map((t) => t.text), 0) == "module" else err("${file}: expected `module M where`")
+  let modname = at(ts |> list.map((t) => t.text), 1)
+  let body = list.drop(ts, 3)
+  let base = match list.first(body) {
+    some(t) => t.col,
+    none => 1,
+  }
+  let bl = blocks(body, base)
+  // First pass: names, so that operators and constructors are known.
+  var sc = AScope { datas: [], funs: [], fixes: [], own: "" }
+  for b in bl {
+    let words = b |> list.map((t) => t.text)
+    let head = at(words, 0)
+    if head == "infix" or head == "infixl" or head == "infixr" then {
+      let level = match int.parse(at(words, 1)) {
+        ok(v) => v,
+        err(_) => 20,
+      }
+      let assoc = if head == "infixl" then "left" else if head == "infixr" then "right" else "none"
+      for op in list.drop(words, 2) {
+        sc = { ...sc, fixes: sc.fixes + [AFix { op: string.slice(op, 1, string.len(op) - 1), level: level, assoc: assoc }] }
+      }
+    } else if head == "data" then {
+      // Constructors' names first; their types later.
+      let ctors = data_ctor_names(b, base)
+      sc = { ...sc, datas: sc.datas + [AData { name: at(words, 1), params: [], arity: EHole, ctors: ctors |> list.map((c) => ACtor { name: c, args: [], result: EHole }) }] }
+    } else ()
+  }
+  // Second pass: everything, in order.
+  var out: List[String] = []
+  var pending: List[(String, AExpr)] = []
+  var clauses: Map[String, List[(List[APat], AExpr)]] = [:]
+  var order: List[String] = []
+  for b in bl {
+    let words = b |> list.map((t) => t.text)
+    let head = at(words, 0)
+    let line = match list.first(b) {
+      some(t) => t.line,
+      none => 0,
+    }
+    guard head != "open" and head != "import" else err("${file}:${int.to_string(line)}: imports are not supported; absorb a self-contained module")
+    if head == "infix" or head == "infixl" or head == "infixr" then ()
+    else if head == "data" then {
+      let d = parse_data(sc, b, base)!
+      sc = { ...sc, datas: (sc.datas |> list.filter((x) => x.name != d.name)) + [d] }
+      list.push(order, "data:" + d.name)
+    } else {
+      let colon = list.index_of(words, ":") ?? -1
+      let eq = list.index_of(words, "=") ?? -1
+      if colon >= 0 and (eq < 0 or colon < eq) then {
+        // A signature: `f : T` or `f g : T`.
+        let (ty, _) = parse_expr(sc, list.drop(words, colon + 1), 0)!
+        let (bs, _) = unpi(ty)
+        // Mapped once, before the loop: almide/almide#3440.
+        let imps = bs |> list.map(((_, _, imp)) => imp)
+        for f in list.take(words, colon) {
+          list.push(pending, (f, ty))
+          sc = { ...sc, funs: sc.funs + [(f, imps)] }
+          list.push(order, "fun:" + f)
+        }
+      } else {
+        guard eq >= 0 else err("${file}:${int.to_string(line)}: cannot read this declaration (${head} ...)")
+        let (lhs, _) = parse_expr(sc, list.take(words, eq), 0)!
+        let (rhs, _) = parse_expr(sc, list.drop(words, eq + 1), 0)!
+        let (f, args) = match lhs {
+          EApp(EVar(f), args) => (f, args),
+          EVar(f) => (f, []),
+          _ => ("", []),
+        }
+        guard f != "" else err("${file}:${int.to_string(line)}: cannot read this clause's left-hand side")
+        var ps: List[APat] = []
+        for a in args {
+          list.push(ps, to_pat(sc, a)!)
+        }
+        clauses = map.set(clauses, f, (map.get(clauses, f) ?? []) + [(ps, rhs)])
+      }
+    }
+  }
+  for item in order {
+    if string.starts_with(item, "data:") then {
+      match data_of(sc, string.drop(item, 5)) {
+        some(d) => list.push(out, emit_data(sc, d)),
+        none => (),
+      }
+    } else {
+      let f = string.drop(item, 4)
+      match list.find(pending, ((g, _)) => g == f) {
+        some((_, ty)) => list.push(out, emit_fun(sc, f, ty, map.get(clauses, f) ?? [])!),
+        none => (),
+      }
+    }
+  }
+  let header = """
+    // Absorbed from Agda by `arlk absorb-agda`: module ${modname} (${file}).
+    // Agda is not needed to check it: every declaration below is an
+    // ordinary Arlk type or definition, checked by the kernel.
+    """
+  ok(header + "\nroom agda." + mangle(modname) + "\n\n" + list.join(out, "\n\n") + "\n")
+}
+
+local fn data_ctor_names(b: List[ATok], base: Int) -> List[String] = {
+  let words = b |> list.map((t) => t.text)
+  let w = list.index_of(words, "where") ?? list.len(words)
+  var out: List[String] = []
+  for sub in blocks(list.drop(b, w + 1), ctor_col(b, w)) {
+    let ws = sub |> list.map((t) => t.text)
+    let colon = list.index_of(ws, ":") ?? 0
+    out = out + list.take(ws, colon)
+  }
+  out
+}
+
+local fn ctor_col(b: List[ATok], w: Int) -> Int = match list.get(b, w + 1) {
+  some(t) => t.col,
+  none => 1,
+}
+
+local fn parse_data(sc: AScope, b: List[ATok], base: Int) -> AData! = {
+  let words = b |> list.map((t) => t.text)
+  let name = at(words, 1)
+  let w = list.index_of(words, "where") ?? -1
+  guard w > 0 else err("data ${name}: expected `where`")
+  // Parameters: binder groups before the `:`.
+  var params: List[(String, AExpr, Bool)] = []
+  var j = 2
+  while at(words, j) == "(" or at(words, j) == "{" {
+    let e = group_end(words, j)
+    let inner = list.slice(words, j + 1, e)
+    let colon = list.index_of(inner, ":") ?? 0
+    let (ty, _) = parse_expr(sc, list.drop(inner, colon + 1), 0)!
+    for n in list.take(inner, colon) {
+      list.push(params, (n, ty, at(words, j) == "{"))
+    }
+    j = e + 1
+  }
+  guard at(words, j) == ":" else err("data ${name}: expected `:` after the parameters")
+  let (arity, _) = parse_expr(sc, list.slice(words, j + 1, w), 0)!
+  // Parameters are known (implicitly) to the constructors' types.
+  let sc2 = { ...sc, datas: sc.datas |> list.map((d) => if d.name == name then { ...d, params: params } else d) }
+  var ctors: List[ACtor] = []
+  for sub in blocks(list.drop(b, w + 1), ctor_col(b, w)) {
+    let ws = sub |> list.map((t) => t.text)
+    let colon = list.index_of(ws, ":") ?? 0
+    let (ty, _) = parse_expr(sc2, list.drop(ws, colon + 1), 0)!
+    let (args, result) = unpi(ty)
+    for c in list.take(ws, colon) {
+      list.push(ctors, ACtor { name: c, args: args, result: result })
+    }
+  }
+  ok(AData { name: name, params: params, arity: arity, ctors: ctors })
+}
+
+test "Agda names become Arlk identifiers" {
+  assert_eq(mangle("_+_"), "plus")
+  assert_eq(mangle("+-comm"), "plus_comm")
+  assert_eq(mangle("_≡_"), "eq")
+  assert_eq(mangle("x₁"), "x1")
+  assert_eq(mangle("match"), "match'")
+}
+
+test "clauses become a case tree on the first constructor column" {
+  let src = "module M where\n\ndata N : Set where\n  z : N\n  s : N → N\n\ndouble : N → N\ndouble z = z\ndouble (s n) = s (s (double n))\n"
+  match absorb(src, "M.agda") {
+    ok(text) => assert(string.contains(text, "def double(x1: N) -> N = match x1 {\n  z => N.z,\n  s(n) => N.s(N.s(double(n))),\n}")),
+    err(e) => assert_eq(e, ""),
+  }
+}
