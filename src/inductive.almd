@@ -271,6 +271,162 @@ fn eliminator(ind0: Inductive, plan: Plan) -> List[Decl] = {
   out
 }
 
+// ── Nested types ────────────────────────────────────────────────────
+//
+//   type Rose = | node(kids: List(Rose))
+//
+// Rose occurs inside another inductive type (List), as Lean allows. The
+// checker (`nested` in checker.almd) finds each such occurrence `J(args)`
+// and checks that the type stays strictly positive through J's
+// constructors at those arguments; here each occurrence gets a motive, its
+// constructors get minor premises, and the recursor gets a companion per
+// occurrence (Lean's `Rose.rec_1`):
+//
+//   Rose.rec[v](motive: (t: Rose) -> Sort(v), motive_1: (t: List(Rose)) -> Sort(v),
+//               node: (kids: List(Rose), ih_kids: motive_1(kids)) -> motive(Rose.node(kids)),
+//               nil: motive_1(List.nil),
+//               cons: (head: Rose, tail: List(Rose), ih_head: motive(head),
+//                      ih_tail: motive_1(tail)) -> motive_1(List.cons(head, tail)),
+//               t: Rose) -> motive(t)
+//   Rose.rec_1[v](...the same..., t: List(Rose)) -> motive_1(t)
+//
+// with one computation rule per constructor of Rose and of each occurrence.
+
+// An occurrence `J(args)`: the type, and J's constructors at those
+// arguments. `kinds` says, per argument, which motive its induction
+// hypothesis uses: -1 none, 0 the type's own, k the k-th occurrence's.
+type Aux = { ty: Raw, ctors: List[AuxCtor] }
+type AuxCtor = { name: String, head: Raw, params: List[Raw], args: List[(String, Raw)], kinds: List[Int] }
+// `args`: the type's own constructors' arguments, at explicit levels
+// (rules are not elaborated).
+type Nested = { auxes: List[Aux], kinds: List[List[Int]], args: List[List[(String, Raw)]] }
+
+// A constructor of the type or of an occurrence, for the recursor.
+type Row = { args: List[(String, Raw)], kinds: List[Int], built: Raw, pat: Raw, motive: Int }
+
+local fn peel(ty: Raw, ys: List[(String, Raw)]) -> List[(String, Raw)] = match ty {
+  RPi(y, b, rest) => peel(rest, ys + [(if y == "_" then "y" + int.to_string(list.len(ys) + 1) else y, b)]),
+  _ => ys,
+}
+
+fn nested_rec_name(ind: Inductive, k: Int) -> String = if k == 0 then rec_name(ind) else rec_name(ind) + "_" + int.to_string(k)
+
+fn nested_eliminator(ind0: Inductive, plan: Plan, nest: Nested) -> List[Decl] = {
+  let ind = own_levels(ind0)
+  let n = generated_names(ind)
+  let aux_args = nest.auxes |> list.flat_map((a) => a.ctors |> list.flat_map((c) => c.args |> list.map(((x, _)) => x)))
+  let taken0 = user_names(ind) + aux_args + n.minors + [n.motive, n.major, n.level]
+  var motives: List[String] = [n.motive]
+  for (k, _) in list.enumerate(nest.auxes) {
+    list.push(motives, fresh(n.motive + "_" + int.to_string(k + 1), taken0 + motives))
+  }
+  var minors: List[String] = n.minors
+  for a in nest.auxes {
+    for c in a.ctors {
+      let short = match list.last(string.split(c.name, ".")) {
+        some(x) => x,
+        none => c.name,
+      }
+      list.push(minors, fresh(short, taken0 + motives + minors))
+    }
+  }
+  let sort = RApp(RSort, RName(if plan.large then n.level else "0"))
+  let self_ty = raw_apply(at_levels(ind, ind.name), names(ind.params))
+  let tys = [self_ty] + (nest.auxes |> list.map((a) => a.ty))
+  let motive_tys = list.zip(motives, tys |> list.map((t) => RPi(n.major, t, sort)))
+  // Each constructor, of the type and of every occurrence: its arguments,
+  // their kinds, the value it builds (with and without bracketed
+  // parameters) and the motive it lands in.
+  var rows: List[Row] = []
+  for (i, c) in list.enumerate(ind.ctors) {
+    let h = at_levels(ind, ctor_name(ind, c))
+    let args = list.get(nest.args, i) ?? c.args
+    list.push(rows, Row { args: args, kinds: list.get(nest.kinds, i) ?? [], built: raw_apply(h, names(ind.params) + names(args)), pat: raw_apply(h, (ind.params |> list.map(((x, _)) => RBracket(RName(x)))) + names(args)), motive: 0 })
+  }
+  for (k, a) in list.enumerate(nest.auxes) {
+    for c in a.ctors {
+      list.push(rows, Row { args: c.args, kinds: c.kinds, built: raw_apply(c.head, c.params + names(c.args)), pat: raw_apply(c.head, (c.params |> list.map((p) => RBracket(p))) + names(c.args)), motive: k + 1 })
+    }
+  }
+  let mname = (k: Int) => list.get(motives, k) ?? n.motive
+  let taken1 = taken0 + motives + minors
+  var minor_tys: List[(String, Raw)] = []
+  var row_ihs: List[List[(String, Raw)]] = []
+  for (r, m) in list.zip(rows, minors) {
+    var ih_bs: List[(String, Raw)] = []
+    for (i, b) in list.enumerate(r.args) {
+      let (a, ty) = b
+      let kd = list.get(r.kinds, i) ?? -1
+      if kd >= 0 then {
+        let ys = peel(ty, [])
+        let ih = fresh("ih_" + a, taken1 + (r.args |> list.map(((x, _)) => x)) + (ih_bs |> list.map(((x, _)) => x)))
+        list.push(ih_bs, (ih, pis(ys, RApp(RName(mname(kd)), raw_apply(RName(a), names(ys))))))
+      } else ()
+    }
+    list.push(minor_tys, (m, pis(r.args + ih_bs, RApp(RName(mname(r.motive)), r.built))))
+    list.push(row_ihs, ih_bs)
+  }
+  let prefix = ind.params + motive_tys + minor_tys
+  let rec_levels_ = rec_levels(ind, n, plan)
+  let head_k = (k: Int) => RExplicit(nested_rec_name(ind, k), rec_levels_ |> list.map((l) => RName(l)))
+  let fixed = names(ind.params) + (motives |> list.map((m) => RName(m))) + (minors |> list.map((m) => RName(m)))
+  var out: List[Decl] = []
+  for (k, t) in list.enumerate(tys) {
+    list.push(out, DSymbol(Sig { name: nested_rec_name(ind, k), levels: rec_levels_, implicits: list.len(ind.params), ty: pis(prefix + [(n.major, t)], RApp(RName(mname(k)), RName(n.major))) }))
+  }
+  for (r, m) in list.zip(rows, minors) {
+    var ihs: List[Raw] = []
+    for (i, b) in list.enumerate(r.args) {
+      let (a, ty) = b
+      let kd = list.get(r.kinds, i) ?? -1
+      if kd >= 0 then {
+        let ys = peel(ty, [])
+        list.push(ihs, lams(ys, raw_apply(head_k(kd), fixed + [raw_apply(RName(a), names(ys))])))
+      } else ()
+    }
+    list.push(out, DRule(prefix + r.args, raw_apply(head_k(r.motive), fixed + [r.pat]), raw_apply(RName(m), names(r.args) + ihs)))
+  }
+  list.push(out, nested_cases(ind, n, plan, rows, row_ihs, minors, motives, prefix, head_k, tys))
+  out
+}
+
+// `T.cases`: a case split on the type alone (no induction hypotheses), for
+// a `match` that does not recurse. Defined by the recursor, the other
+// motives being `motive(t) -> motive(t)`, so it is checked like any def.
+local fn nested_cases(ind: Inductive, n: Names, plan: Plan, rows: List[Row], row_ihs: List[List[(String, Raw)]], minors: List[String], motives: List[String], prefix: List[(String, Raw)], head_k: (Int) -> Raw, tys: List[Raw]) -> Decl = {
+  let nown = list.len(ind.ctors)
+  let at_t = RApp(RName(n.motive), RName(n.major))
+  let id_ty = RPi("_", at_t, at_t)
+  let x = fresh("x", user_names(ind) + minors + motives + [n.major])
+  let own_minors = list.take(list.zip(minors, rows), nown) |> list.map(((m, r)) => (m, pis(r.args, RApp(RName(n.motive), r.built))))
+  let params = list.take(prefix, list.len(ind.params))
+  var fixed: List[Raw] = names(ind.params) + [RName(n.motive)]
+  for (k, t) in list.enumerate(tys) {
+    if k > 0 then list.push(fixed, RLam(fresh("t", [n.major]), t, id_ty)) else ()
+  }
+  for (i, r) in list.enumerate(rows) {
+    // An induction hypothesis's type, with the other motives filled in.
+    var ihs: List[(String, Raw)] = []
+    for (j, b) in list.enumerate(r.args) {
+      let (a, ty) = b
+      let kd = list.get(r.kinds, j) ?? -1
+      if kd >= 0 then {
+        let ys = peel(ty, [])
+        let nm = match list.get(list.get(row_ihs, i) ?? [], list.len(ihs)) {
+          some((nm, _)) => nm,
+          none => "ih",
+        }
+        list.push(ihs, (nm, pis(ys, if kd == 0 then RApp(RName(n.motive), raw_apply(RName(a), names(ys))) else id_ty)))
+      } else ()
+    }
+    let m = list.get(minors, i) ?? ""
+    list.push(fixed, lams(r.args + ihs, if i < nown then raw_apply(RName(m), names(r.args)) else RLam(x, at_t, RName(x))))
+  }
+  let ty = pis(params + [(n.motive, RPi(n.major, list.first(tys) ?? RType, RApp(RSort, RName(if plan.large then n.level else "0"))))] + own_minors + [(n.major, list.first(tys) ?? RType)], at_t)
+  let body = lams(params + [(n.motive, RPi(n.major, list.first(tys) ?? RType, RApp(RSort, RName(if plan.large then n.level else "0"))))] + own_minors + [(n.major, list.first(tys) ?? RType)], raw_apply(head_k(0), fixed + [RName(n.major)]))
+  DDef(Sig { name: ind.name + ".cases", levels: rec_levels(ind, n, plan), implicits: list.len(ind.params), ty: ty }, body)
+}
+
 // ── Records ─────────────────────────────────────────────────────────
 
 // One projection per field, defined by a match on the record:

@@ -96,7 +96,10 @@ type View = {
   via: List[String],
 }
 
-type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String] }
+// `nested`: the occurrences of a nested type inside other types
+// (`List(Rose)`), in the context of its parameters; recursor `T.rec_k`
+// eliminates the k-th.
+type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String], nested: List[Term] }
 
 // A typing context: innermost binder first.
 type Ctx = List[(String, Term)]
@@ -640,7 +643,7 @@ local fn non_recursive(env: Env, c: String, q: String) -> Bool = {
 // Two terms are equal when both inhabit the same type and that type was
 // declared `irrelevant` (in Lean's room: every proposition).
 // Proofs of a proposition (a type in Sort(0)) are always irrelevant.
-local fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
+fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
   if bu.exhausted then false
   else match infer(env, ctx, a, bu) {
     ok(ta) =>

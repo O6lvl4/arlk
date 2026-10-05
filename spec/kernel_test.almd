@@ -1290,3 +1290,118 @@ type Q: Type =
 """
   assert(rejects_with(src, "same universe"))
 }
+
+// ── Nested inductive types ─────────────────────────────────────────
+
+let NESTED_TYPES = """
+room nt
+type Nat: Type = | zero | succ(pred: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+type List[u](A: Type(u)): Type(u) = | nil | cons(head: A, tail: List(A))
+def add(m: Nat, n: Nat) -> Nat = match m {
+  zero => n,
+  succ(k) => Nat.succ(add(k, n)),
+}
+type Rose: Type = | node(kids: List(Rose))
+def leaf: Rose = Rose.node(List.nil)
+"""
+
+test "a nested type gets a recursor through the type it is nested in" {
+  let src = NESTED_TYPES + """
+def count(r: Rose) -> Nat = Rose.rec((r: Rose) => Nat, (l: List(Rose)) => Nat,
+  (kids: List(Rose), ih: Nat) => Nat.succ(ih), Nat.zero,
+  (h: Rose, t: List(Rose), a: Nat, b: Nat) => add(a, b), r)
+theorem c: Eq(Nat, count(Rose.node(List.cons(leaf, List.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "functions over a nested type and its occurrence compute, and match splits it" {
+  let src = NESTED_TYPES + """
+def size(r: Rose) -> Nat = match r {
+  node(kids) => Nat.succ(sizes(kids)),
+}
+def sizes(l: List(Rose)) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(size(h), sizes(t)),
+}
+theorem three: Eq(Nat, size(Rose.node(List.cons(leaf, List.cons(leaf, List.nil)))), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+def bare(r: Rose) -> Nat = match r {
+  node(kids) => match kids {
+    nil => Nat.succ(Nat.zero),
+    cons(h, t) => Nat.zero,
+  },
+}
+theorem leaf_bare: Eq(Nat, bare(leaf), Nat.succ(Nat.zero)) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "a wrong value over a nested type is rejected" {
+  let src = NESTED_TYPES + """
+def size(r: Rose) -> Nat = match r {
+  node(kids) => Nat.succ(sizes(kids)),
+}
+def sizes(l: List(Rose)) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(size(h), sizes(t)),
+}
+theorem wrong: Eq(Nat, size(leaf), Nat.zero) = Eq.refl
+"""
+  assert(rejects_with(src, "mismatch"))
+}
+
+test "recursion over a nested type must call each function on a field of its type" {
+  let src = NESTED_TYPES + """
+def size(r: Rose) -> Nat = match r {
+  node(kids) => Nat.succ(sizes(kids)),
+}
+def sizes(l: List(Rose)) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => sizes(h),
+}
+"""
+  assert(rejects_with(src, "structural recursion"))
+  let alone = NESTED_TYPES + """
+def size(r: Rose) -> Nat = match r {
+  node(kids) => size(kids),
+}
+"""
+  assert(rejects_with(alone, "structural recursion"))
+}
+
+test "a type nested in a negative position or in an indexed family is rejected" {
+  let neg = NESTED_TYPES + """
+type Neg(A: Type): Type = | mk(f: A -> Nat)
+type Bad: Type = | b(x: Neg(Bad))
+"""
+  assert(rejects_with(neg, "negative position"))
+  let vec = NESTED_TYPES + """
+type Vec(A: Type): (n: Nat) -> Type =
+  | vnil: Vec(A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
+type Bad: Type = | b(n: Nat, x: Vec(Bad, n))
+"""
+  assert(rejects_with(vec, "without indices"))
+}
+
+test "nesting goes through several levels and parameters" {
+  let src = NESTED_TYPES + """
+type T: Type = | n(x: List(List(T)))
+type Tree[u](A: Type(u)): Type(u) = | node(a: A, kids: List(Tree(A)))
+def count(t: T) -> Nat = T.rec((r: T) => Nat, (l: List(List(T))) => Nat, (l: List(T)) => Nat,
+  (x: List(List(T)), ih: Nat) => Nat.succ(ih),
+  Nat.zero, (h: List(T), t: List(List(T)), a: Nat, b: Nat) => Nat.succ(a),
+  Nat.zero, (h: T, t: List(T), a: Nat, b: Nat) => a, t)
+theorem c: Eq(Nat, count(T.n(List.cons(List.cons(T.n(List.nil), List.nil), List.nil))), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+def tsum(t: Tree(Nat)) -> Nat = match t {
+  node(a, kids) => add(a, tsums(kids)),
+}
+def tsums(l: List(Tree(Nat))) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(tsum(h), tsums(t)),
+}
+theorem s: Eq(Nat, tsum(Tree.node(Nat.succ(Nat.zero), List.cons(Tree.node(Nat.succ(Nat.zero), List.nil), List.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}

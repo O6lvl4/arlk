@@ -42,7 +42,9 @@ import self.syntax.{Raw, Arm, Sub}
 // many indices it has, and for each constructor its full name, its number
 // of arguments, which of them are recursive, and the inductive type (if
 // any) each argument belongs to, for matches on it.
-type Ctor = { name: String, nargs: Int, recs: List[Int], heads: List[String] }
+// `kinds`: per argument, which definition of a nested group recursion on
+// it goes to (0 the type's own, k its k-th nested occurrence, -1 none).
+type Ctor = { name: String, nargs: Int, recs: List[Int], heads: List[String], kinds: List[Int] }
 type Target = { rec: String, indices: Int, ctors: List[Ctor] }
 
 type Def = { name: String, implicits: Int, params: List[(String, Raw)], ret: Raw }
@@ -58,6 +60,12 @@ type Comp = {
   vars: List[String],
   ihs: List[(Int, String)],
   heads: List[(String, String)],
+  // In a group over a nested type: this definition's kind, the others'
+  // names and kinds, and the kinds of the fields the top-level match took
+  // apart (a call to a sibling on a field of its kind is recursion).
+  kind: Int,
+  siblings: List[(String, Int)],
+  fkinds: List[Int],
 }
 
 local fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
@@ -134,7 +142,10 @@ local fn ctor_of(t: Target, c: String) -> Ctor? =
 
 // `match x { ... }` as the body of `d`. `look` finds the type a name (a
 // type's own name, or one written in a parameter's type) stands for.
-fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> Target?) -> Raw! = {
+fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> Target?) -> Raw! =
+  compile_in(d, scrut, arms, t, look, 0, [])
+
+fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> Target?, kind: Int, siblings: List[(String, Int)]) -> Raw! = {
   let pnames = d.params |> list.map(((x, _)) => x)
   let k = match list.index_of(pnames, scrut) {
     some(i) => ok(i),
@@ -164,7 +175,7 @@ fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> 
   let motive = lams(index_params, RLam(scrut, hole(), pis(others, d.ret)))
   // Each arm is a row with one column, the matched parameter.
   let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
-  let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [] }
+  let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [], kind: kind, siblings: siblings, fkinds: [] }
   var minors: List[Raw] = []
   for ci in t.ctors {
     let taken = pnames + other_names + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s)))))
@@ -176,7 +187,7 @@ fn compile(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) -> 
     }
     let rows2 = specialise(rows, 0, ci, fields, scrut, t)!
     guard not list.is_empty(rows2) else err("the match on ${scrut} has no arm for ${ci.name}")
-    let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads) }
+    let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads), fkinds: ci.kinds }
     // The arm's type is the definition's at this constructor; an inner
     // match takes its motive from it (#19). For an indexed family the
     // constructor's indices are not written here, so its type stays as
@@ -369,7 +380,11 @@ local fn recursive_calls(cx: Comp, r: Raw) -> Raw! = {
   let (h, args) = raw_spine(r)
   match h {
     RName(f) =>
-      if f == cx.d.name then call_to_ih(cx, args)
+      if f == cx.d.name then call_to_ih(cx, f, cx.kind, args)
+      else if list.any(cx.siblings, ((g, _)) => g == f) then call_to_ih(cx, f, match list.find(cx.siblings, ((g, _)) => g == f) {
+        some((_, kd)) => kd,
+        none => -1,
+      }, args)
       else {
         var out: List[Raw] = []
         for a in args {
@@ -387,7 +402,7 @@ local fn recursive_calls(cx: Comp, r: Raw) -> Raw! = {
   }
 }
 
-local fn call_to_ih(cx: Comp, args: List[Raw]) -> Raw! = {
+local fn call_to_ih(cx: Comp, f: String, kind: Int, args: List[Raw]) -> Raw! = {
   let d = cx.d
   // Recursive calls leave the implicit parameters out, like any call.
   let explicit = list.len(d.params) - d.implicits
@@ -403,7 +418,7 @@ local fn call_to_ih(cx: Comp, args: List[Raw]) -> Raw! = {
   let ih = match arg {
     RName(v) => match list.index_of(cx.vars, v) {
       some(i) => match list.find(cx.ihs, ((j, _)) => j == i) {
-        some((_, n)) => some(n),
+        some((_, n)) => if (list.get(cx.fkinds, i) ?? 0) == kind then some(n) else none,
         none => none,
       },
       none => none,
@@ -418,6 +433,6 @@ local fn call_to_ih(cx: Comp, args: List[Raw]) -> Raw! = {
       }
       ok(raw_apply(RName(n), rest))
     },
-    none => err("${d.name} is called recursively on something that is not a smaller part of the matched value (structural recursion only, on the fields the definition's match takes apart)"),
+    none => err("${f} is called recursively on something that is not a smaller part of the matched value of its type (structural recursion only, on the fields the definition's match takes apart)"),
   }
 }

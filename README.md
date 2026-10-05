@@ -236,6 +236,31 @@ family is then indexed by the tag and a value of that tag's index type. A functi
 some types of a group, or match on just one of them. The types of a group share their parameters
 and live in one universe. See [examples/mutual.arlk](examples/mutual.arlk).
 
+**Nested types.** A type may occur among the parameters of another inductive type, as in Lean:
+
+```
+type Rose: Type =
+  | node(kids: List(Rose))
+
+def size(r: Rose) -> Nat = match r {
+  node(kids) => Nat.succ(sizes(kids)),
+}
+def sizes(l: List(Rose)) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(size(h), sizes(t)),
+}
+```
+
+`List(Rose)` is the ordinary `List`, not a copy. The checker follows `Rose` through `List`'s
+constructors at `A := Rose` (it must stay strictly positive there, and further occurrences found
+on the way, like `List(List(T))`, are followed too), then gives `Rose.rec` a motive for each
+occurrence and a companion recursor per occurrence (`Rose.rec_1` on `List(Rose)`), which compute.
+Functions, and proofs by induction, recurse through all of them together, one per type, like
+mutual ones; a match that does not recurse uses `Rose.cases`. The outer type has no indices and is
+not a proposition, and it can be nested only in types without indices, at arguments that depend
+only on its parameters. Unlike mutual types this is new theory, so it is part of the trusted base
+([docs/TRUST.md](docs/TRUST.md)). See [examples/nested.arlk](examples/nested.arlk).
+
 Next on this road: unification of indices and course-of-values recursion in `match`, nested types,
 and reading Lean and Rocq libraries directly into these native features instead of through the
 `core` encoding.

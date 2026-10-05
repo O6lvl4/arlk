@@ -70,7 +70,7 @@ fi
 must_pass "almide test (spec)" 3600 almide test
 must_pass "almide test src/" 1800 almide test src/
 
-for f in examples/logic.arlk examples/nat.arlk examples/data.arlk examples/mutual.arlk; do
+for f in examples/logic.arlk examples/nat.arlk examples/data.arlk examples/mutual.arlk examples/nested.arlk; do
   must_pass "example $f" 300 ./arlk check "$f"
 done
 

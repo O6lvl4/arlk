@@ -1,0 +1,137 @@
+// Nested inductive types, as in Lean: a type may occur inside the
+// parameters of another inductive type. A rose tree holds a list of rose
+// trees; the list is the ordinary List, not a copy of it.
+//
+// The checker follows Rose through List's constructors (it must stay
+// strictly positive there), then gives Rose a recursor with a second
+// motive, for List(Rose), and a companion recursor Rose.rec_1 on lists of
+// rose trees. Functions recurse through both types together, one function
+// per type, like mutually recursive ones.
+
+room nested
+
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+type List[u](A: Type(u)): Type(u) =
+  | nil
+  | cons(head: A, tail: List(A))
+
+def add(m: Nat, n: Nat) -> Nat = match n {
+  zero => m,
+  succ(k) => Nat.succ(add(m, k)),
+}
+
+type Rose: Type =
+  | node(kids: List(Rose))
+
+def leaf: Rose = Rose.node(List.nil)
+def fork: Rose = Rose.node(List.cons(leaf, List.cons(leaf, List.nil)))
+
+// One function on Rose, one on List(Rose): each call on a field the match
+// took apart is structural recursion.
+def size(r: Rose) -> Nat = match r {
+  node(kids) => Nat.succ(sizes(kids)),
+}
+def sizes(l: List(Rose)) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(size(h), sizes(t)),
+}
+
+theorem fork_size: Eq(Nat, size(fork), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+
+// Mirror a tree: reverse each list of children, mirroring the children.
+def append[u, A: Type(u)](xs: List(A), ys: List(A)) -> List(A) = match xs {
+  nil => ys,
+  cons(h, t) => List.cons(h, append(t, ys)),
+}
+def mirror(r: Rose) -> Rose = match r {
+  node(kids) => Rose.node(mirrors(kids)),
+}
+def mirrors(l: List(Rose)) -> List(Rose) = match l {
+  nil => List.nil,
+  cons(h, t) => append(mirrors(t), List.cons(mirror(h), List.nil)),
+}
+
+def lopsided: Rose = Rose.node(List.cons(fork, List.cons(leaf, List.nil)))
+theorem mirror_lopsided: Eq(Rose, mirror(lopsided), Rose.node(List.cons(leaf, List.cons(fork, List.nil)))) = Eq.refl
+
+// A match that does not recurse splits the type with Rose.cases.
+def is_leaf(r: Rose) -> Nat = match r {
+  node(kids) => match kids {
+    nil => Nat.succ(Nat.zero),
+    cons(h, t) => Nat.zero,
+  },
+}
+theorem leaf_is_leaf: Eq(Nat, is_leaf(leaf), Nat.succ(Nat.zero)) = Eq.refl
+
+// The recursor itself, with its motive for List(Rose).
+def leaf_or[u, A: Type(u)](kids: List(A), n: Nat) -> Nat = match kids {
+  nil => Nat.succ(Nat.zero),
+  cons(h, t) => n,
+}
+def leaves(r: Rose) -> Nat = Rose.rec((r: Rose) => Nat, (l: List(Rose)) => Nat,
+  (kids: List(Rose), ih: Nat) => leaf_or(kids, ih),
+  Nat.zero,
+  (h: Rose, t: List(Rose), ih_h: Nat, ih_t: Nat) => add(ih_h, ih_t),
+  r)
+theorem fork_leaves: Eq(Nat, leaves(fork), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+
+theorem size_mirror_lopsided: Eq(Nat, size(mirror(lopsided)), size(lopsided)) = Eq.refl
+
+// Induction over a nested type: a pair of theorems, one per type, each
+// using the other's statement on the fields as induction hypothesis. Here:
+// size written with the recursor agrees with size written by match.
+def size_r(r: Rose) -> Nat = Rose.rec((r: Rose) => Nat, (l: List(Rose)) => Nat,
+  (kids: List(Rose), ih: Nat) => Nat.succ(ih), Nat.zero,
+  (h: Rose, t: List(Rose), ih_h: Nat, ih_t: Nat) => add(ih_h, ih_t), r)
+def sizes_r(l: List(Rose)) -> Nat = Rose.rec_1((r: Rose) => Nat, (l: List(Rose)) => Nat,
+  (kids: List(Rose), ih: Nat) => Nat.succ(ih), Nat.zero,
+  (h: Rose, t: List(Rose), ih_h: Nat, ih_t: Nat) => add(ih_h, ih_t), l)
+
+def cong[u, v, A: Sort(u), B: Sort(v)](f: A -> B, x: A, y: A, h: Eq(A, x, y)) -> Eq(B, f(x), f(y)) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(B, f(x), f(y')), Eq.refl, y, h)
+def cong2(f: Nat -> Nat -> Nat, a: Nat, b: Nat, c: Nat, d: Nat, h1: Eq(Nat, a, b), h2: Eq(Nat, c, d)) -> Eq(Nat, f(a, c), f(b, d)) =
+  Eq.rec((d': Nat, e: Eq(Nat, c, d')) => Eq(Nat, f(a, c), f(b, d')),
+    Eq.rec((b': Nat, e: Eq(Nat, a, b')) => Eq(Nat, f(a, c), f(b', c)), Eq.refl, b, h1), d, h2)
+
+theorem same_size(r: Rose) -> Eq(Nat, size_r(r), size(r)) = match r {
+  node(kids) => cong(Nat.succ, sizes_r(kids), sizes(kids), same_sizes(kids)),
+}
+theorem same_sizes(l: List(Rose)) -> Eq(Nat, sizes_r(l), sizes(l)) = match l {
+  nil => Eq.refl,
+  cons(h, t) => cong2(add, size_r(h), size(h), sizes_r(t), sizes(t), same_size(h), same_sizes(t)),
+}
+
+// Parameters, and nesting through more than one type.
+type Tree[u](A: Type(u)): Type(u) =
+  | node(label: A, kids: List(Tree(A)))
+
+def total(t: Tree(Nat)) -> Nat = match t {
+  node(a, kids) => add(a, totals(kids)),
+}
+def totals(l: List(Tree(Nat))) -> Nat = match l {
+  nil => Nat.zero,
+  cons(h, t) => add(total(h), totals(t)),
+}
+theorem total_two: Eq(Nat, total(Tree.node(Nat.succ(Nat.zero), List.cons(Tree.node(Nat.succ(Nat.zero), List.nil), List.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+
+type Grid: Type =
+  | cell(rows: List(List(Grid)))
+
+def cells(g: Grid) -> Nat = match g {
+  cell(rows) => Nat.succ(rows_cells(rows)),
+}
+def rows_cells(rs: List(List(Grid))) -> Nat = match rs {
+  nil => Nat.zero,
+  cons(r, rest) => add(row_cells(r), rows_cells(rest)),
+}
+def row_cells(r: List(Grid)) -> Nat = match r {
+  nil => Nat.zero,
+  cons(g, rest) => add(cells(g), row_cells(rest)),
+}
+theorem grid: Eq(Nat, cells(Grid.cell(List.cons(List.cons(Grid.cell(List.nil), List.nil), List.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl

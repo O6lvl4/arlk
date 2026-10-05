@@ -400,7 +400,268 @@ local fn matches_mutual(env: Env, sig: Sig, body: Raw) -> Bool = {
 
 // Mutually recursive definitions (mutual.encode_defs): the combined
 // definition, then each one, checked as usual.
-local fn add_mutual_defs(mut env: Env, line: Int, group: List[Decl]) -> List[String]! = {
+local fn add_mutual_defs(mut env: Env, line: Int, group: List[Decl]) -> List[String]! =
+  match list.first(group) {
+    some(DDef(sig, body)) if nested_kind(env, sig, body) != none => add_nested_defs(env, line, group),
+    some(DTheorem(sig, body)) if nested_kind(env, sig, body) != none => add_nested_defs(env, line, group),
+    _ => add_family_defs(env, line, group),
+  }
+
+// A definition's parameters, its result type and the body under them.
+local fn def_parts(sig: Sig, body: Raw) -> (List[(String, Raw)], Raw, Raw) = {
+  var params: List[(String, Raw)] = []
+  var ty = sig.ty
+  var b = body
+  var going = true
+  while going {
+    match b {
+      RLam(x, _, inner) => match ty {
+        RPi(_, dom, rest) => {
+          list.push(params, (x, dom))
+          ty = rest
+          b = inner
+        },
+        _ => {
+          going = false
+        },
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (params, ty, b)
+}
+
+// Does the definition match on a nested type (kind 0) or on one of its
+// nested occurrences (kind k, `List(Rose)`)? The type's full name and the kind.
+local fn nested_kind(mut env: Env, sig: Sig, body: Raw) -> (String, Int)? = {
+  let (params, _, b) = def_parts(sig, body)
+  let x = match b {
+    RMatch(RName(v), _) => v,
+    _ => "",
+  }
+  match list.index_of(params |> list.map(((p, _)) => p), x) {
+    none => none,
+    some(k) => match surface_type(env, sig.levels, sig.ty) {
+      err(_) => none,
+      ok(ty) => {
+        var ctx: Ctx = []
+        var t = ty
+        var i = 0
+        while i < k {
+          match t {
+            Pi(y, dom, cod) => {
+              ctx = [(y, dom)] + ctx
+              t = cod
+            },
+            _ => (),
+          }
+          i = i + 1
+        }
+        let dom = match t {
+          Pi(_, d, _) => d,
+          _ => type0(),
+        }
+        var bu = budget()
+        let w = whnf(env, ctx, dom, bu)
+        let (h, _) = spine(w)
+        let own = match h {
+          Const(c, _) => match map.get(env.inductives, c) {
+            some(info) => if list.is_empty(info.nested) then none else some((c, 0)),
+            none => none,
+          },
+          _ => none,
+        }
+        match own {
+          some(r) => some(r),
+          none => {
+            var found: (String, Int)? = none
+            for c in consts(w) {
+              match map.get(env.inductives, c) {
+                some(info) => for (j, aux) in list.enumerate(info.nested) {
+                  if found == none and shape(aux, w, info.params, 0) then {
+                    found = some((c, j + 1))
+                  } else ()
+                },
+                none => (),
+              }
+            }
+            found
+          },
+        }
+      },
+    },
+  }
+}
+
+// Does t have the shape of a nested occurrence (its variables stand for
+// the type's parameters, which may be anything)?
+local fn shape(pat: Term, t: Term, np: Int, depth: Int) -> Bool = match pat {
+  Var(i) => if i >= depth and i < depth + np then true else t == Var(i),
+  Const(c, _) => match t {
+    Const(d, _) => c == d,
+    _ => false,
+  },
+  App(f, a) => match t {
+    App(g, b) => shape(f, g, np, depth) and shape(a, b, np, depth),
+    _ => false,
+  },
+  Pi(_, a, b) => match t {
+    Pi(_, a2, b2) => shape(a, a2, np, depth) and shape(b, b2, np, depth + 1),
+    _ => false,
+  },
+  Lam(_, a, b) => match t {
+    Lam(_, a2, b2) => shape(a, a2, np, depth) and shape(b, b2, np, depth + 1),
+    _ => false,
+  },
+  // Compared through `pat`, not the arm's binding: almide/almide#3437.
+  _ => pat == t,
+}
+
+// The constructors of the k-th type of a nested group (0: the type
+// itself), with the kind of every argument, for the match compiler.
+local fn nested_target(env: Env, q: String, kind: Int) -> patterns.Target! = {
+  let info = map.get(env.inductives, q) ?? IndInfo { params: 0, indices: 0, ctors: [], fields: [], nested: [] }
+  let np = info.params
+  var bu = budget()
+  let (pctx, _) = telescope(env, [], map.get(env.types, q) ?? type0(), np, bu)!
+  var list_ctors: List[(String, Ctx)] = []
+  if kind == 0 then {
+    for c in info.ctors {
+      let (cctx, rest) = telescope(env, [], map.get(env.types, c) ?? type0(), np, bu)!
+      var ctx = cctx
+      var t = rest
+      var going = true
+      while going {
+        match whnf(env, ctx, t, bu) {
+          Pi(x, dom, b) => {
+            ctx = [(x, dom)] + ctx
+            t = b
+          },
+          _ => {
+            going = false
+          },
+        }
+      }
+      list.push(list_ctors, (c, ctx))
+    }
+  } else {
+    for (c, _, _, ctx) in occurrence_ctors(env, pctx, list.get(info.nested, kind - 1) ?? type0(), bu)! {
+      list.push(list_ctors, (c, ctx))
+    }
+  }
+  var ctors: List[patterns.Ctor] = []
+  for (c, ctx) in list_ctors {
+    let doms = list.reverse(list.take(ctx, list.len(ctx) - np))
+    var recs: List[Int] = []
+    var kinds: List[Int] = []
+    var heads: List[String] = []
+    var i = 0
+    for (_, dom) in doms {
+      let here = list.drop(ctx, list.len(ctx) - np - i)
+      let kd = arg_kind(env, here, np, q, info.nested, dom, bu)
+      if kd >= 0 then list.push(recs, i) else ()
+      list.push(kinds, kd)
+      list.push(heads, result_head(dom) ?? "")
+      i = i + 1
+    }
+    list.push(ctors, patterns.Ctor { name: c, nargs: list.len(doms), recs: recs, heads: heads, kinds: kinds })
+  }
+  ok(patterns.Target { rec: if kind == 0 then q + ".rec" else q + ".rec_" + int.to_string(kind), indices: 0, ctors: ctors })
+}
+
+// Functions over a nested type and its occurrences, one per type
+// (`size(r: Rose)`, `sizes(l: List(Rose))`): each match is compiled with
+// calls to the others on fields as induction hypotheses, and every
+// function becomes the recursor (`Rose.rec` or `Rose.rec_k`) given all of
+// their motives and cases. Nothing here is trusted: the results are
+// ordinary definitions, checked as usual.
+local fn add_nested_defs(mut env: Env, line: Int, group: List[Decl]) -> List[String]! = {
+  var items: List[(Decl, Sig, Raw, String, Int)] = []
+  for d in group {
+    match d {
+      DDef(sig, body) => match nested_kind(env, sig, body) {
+        some((q, kd)) => list.push(items, (d, sig, body, q, kd)),
+        none => (),
+      },
+      DTheorem(sig, body) => match nested_kind(env, sig, body) {
+        some((q, kd)) => list.push(items, (d, sig, body, q, kd)),
+        none => (),
+      },
+      _ => (),
+    }
+  }
+  let fnames = group |> list.map((d) => match d {
+    DDef(sig, _) => sig.name,
+    DTheorem(sig, _) => sig.name,
+    _ => "",
+  })
+  guard list.len(items) == list.len(group) else err("the functions ${list.join(fnames, ", ")} call each other; they must all match on a nested type or its occurrences")
+  let q = match list.first(items) {
+    some((_, _, _, q, _)) => q,
+    none => "",
+  }
+  let info = map.get(env.inductives, q) ?? IndInfo { params: 0, indices: 0, ctors: [], fields: [], nested: [] }
+  guard list.all(items, ((_, _, _, q2, _)) => q2 == q) else err("the functions ${list.join(fnames, ", ")} match on different nested types")
+  let n = list.len(info.nested) + 1
+  var by_kind: List[Int] = []
+  var k = 0
+  while k < n {
+    var at: List[Int] = []
+    for (i, it) in list.enumerate(items) {
+      let (_, _, _, _, kd) = it
+      if kd == k then list.push(at, i) else ()
+    }
+    guard list.len(at) == 1 else err("functions over the nested type ${q} recurse through all of its types together: give exactly one function for each of ${q} and the ${int.to_string(n - 1)} types it is nested in (found ${int.to_string(list.len(at))} for type ${int.to_string(k)}${if k == 0 then "" else ", " + show(env, [], list.get(info.nested, k - 1) ?? type0())})")
+    list.push(by_kind, list.first(at) ?? 0)
+    k = k + 1
+  }
+  let siblings = items |> list.map(((_, sig, _, _, kd)) => (sig.name, kd))
+  let (p0, _, _) = match list.first(items) {
+    some((_, sig, body, _, _)) => def_parts(sig, body),
+    none => ([], RType, RType),
+  }
+  var motives: List[Raw] = list.repeat(RType, n)
+  var minors: List[List[Raw]] = list.repeat([], n)
+  var calls: List[(Raw, String, List[String], List[(String, Raw)])] = []
+  for (_, sig, body, _, kd) in items {
+    let (params, ret, b) = def_parts(sig, body)
+    let (scrut, arms) = match b {
+      RMatch(RName(v), arms) => (v, arms),
+      _ => ("", []),
+    }
+    let pos = list.index_of(params |> list.map(((x, _)) => x), scrut) ?? 0
+    guard list.len(params) == list.len(p0) and list.take(params, pos) == list.take(p0, pos) else err("${sig.name}: functions over a nested type must take the same parameters, before the matched one, as the others in the group")
+    let target = nested_target(env, q, kd)!
+    let d = patterns.Def { name: sig.name, implicits: sig.implicits, params: params, ret: ret }
+    let compiled = patterns.compile_in(d, scrut, arms, target, (nm) => target_named(env, nm), kd, siblings)!
+    let (_, args) = inductive.raw_spine(compiled)
+    let nc = list.len(target.ctors)
+    motives = list.set(motives, kd, list.first(args) ?? RType)
+    minors = list.set(minors, kd, list.take(list.drop(args, 1), nc))
+    list.push(calls, (RName(target.rec), scrut, list.drop(args, 1 + nc + 1) |> list.map((a) => match a {
+      RName(x) => x,
+      _ => "",
+    }), params))
+  }
+  let all_minors = minors |> list.flat_map((ms) => ms)
+  var lines: List[String] = []
+  for (it, cl) in list.zip(items, calls) {
+    let (decl, sig, _, _, _) = it
+    let (rec, scrut, others, params) = cl
+    let call = inductive.raw_apply(rec, motives + all_minors + [RName(scrut)] + (others |> list.map((x) => RName(x))))
+    let body = list.fold(list.reverse(params), call, (acc, (p, pty)) => RLam(p, pty, acc))
+    let out = match decl {
+      DTheorem(_, _) => DTheorem(sig, body),
+      _ => DDef(sig, body),
+    }
+    lines = lines + process(env, Located { line: line, decl: out })!
+  }
+  ok(lines)
+}
+
+local fn add_family_defs(mut env: Env, line: Int, group: List[Decl]) -> List[String]! = {
   var defs: List[mutual.MutualDef] = []
   for d in group {
     match d {
@@ -644,12 +905,13 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
     step(env, line, d)!
   }
   var bu = budget()
-  let plan = admissible(env, ind, bu)!
-  for d in inductive.eliminator(ind, plan) {
+  let (plan, auxes) = admissible(env, ind, bu)!
+  let q = env.room + "." + ind.name
+  let elim_decls = if list.is_empty(auxes) then inductive.eliminator(ind, plan) else inductive.nested_eliminator(ind, plan, nested_layout(env, ind, q, auxes, bu)!)
+  for d in elim_decls {
     step(env, line, d)! 
   }
-  let q = env.room + "." + ind.name
-  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name), fields: ind.fields })
+  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name), fields: ind.fields, nested: auxes })
   guard not list.contains(ind.fields, "mk") and not list.contains(ind.fields, "rec") else err("a field cannot be called mk or rec")
   for d in inductive.projections(ind) {
     step(env, line, d)!
@@ -1067,7 +1329,7 @@ local fn uniform(args: List[Term], np: Int, depth: Int) -> Bool =
 //     type is a proposition),
 //   - a proposition eliminates only into Prop, unless it is a subsingleton
 //     (no constructor, or one whose arguments are proofs or indices).
-local fn admissible(env: Env, ind: Inductive, mut bu: Budget) -> inductive.Plan! = {
+local fn admissible(env: Env, ind: Inductive, mut bu: Budget) -> (inductive.Plan, List[Term])! = {
   let q = env.room + "." + ind.name
   let np = list.len(ind.params)
   let ni = list.len(inductive.indices(ind.arity))
@@ -1080,6 +1342,7 @@ local fn admissible(env: Env, ind: Inductive, mut bu: Budget) -> inductive.Plan!
   let is_prop = level_eq(level, LZero)
   let ls = ind.levels |> list.map((u) => LParam(u))
   var large = not maybe_prop
+  var found: List[Term] = []
   for c in ind.ctors {
     let cq = q + "." + c.name
     let (pctx, rest) = telescope(env, [], map.get(env.types, cq) ?? type0(), np, bu)!
@@ -1091,7 +1354,9 @@ local fn admissible(env: Env, ind: Inductive, mut bu: Budget) -> inductive.Plan!
       match whnf(env, ctx, t, bu) {
         Pi(x, dom, body) => {
           let depth = list.len(ctx)
-          positive(env, ctx, q, np, depth, dom, bu)! 
+          for o in positive(env, ctx, q, np, depth, dom, bu)! {
+            if not list.contains(found, o) then list.push(found, o) else ()
+          }
           let u = sort_level(env, ctx, dom, bu)!
           guard is_prop or level_leq(u, level) else err("constructor ${c.name}: argument ${a} lives in a universe too large for ${ind.name}")
           if not level_eq(u, LZero) then {
@@ -1128,15 +1393,20 @@ local fn admissible(env: Env, ind: Inductive, mut bu: Budget) -> inductive.Plan!
     large = true
   } else ()
   let k = is_prop and large and list.len(ind.ctors) == 1 and list.all(ind.ctors, (c) => list.is_empty(c.args))
-  ok(inductive.Plan { large: large, k: k })
+  if list.is_empty(found) then ok((inductive.Plan { large: large, k: k }, []))
+  else {
+    guard ni == 0 else err("${ind.name}: a nested type cannot have indices yet")
+    guard not maybe_prop else err("${ind.name}: a proposition cannot be nested in another type")
+    ok((inductive.Plan { large: large, k: false }, nested_closure(env, ind, q, np, found, bu)!))
+  }
 }
 
 local fn sort_level(env: Env, ctx: Ctx, ty: Term, mut bu: Budget) -> Level! = expect_sort(env, ctx, ty, bu)
 
 // Strict positivity of one constructor argument: the type may appear only
 // as the conclusion of the argument, at its own parameters.
-local fn positive(env: Env, ctx: Ctx, q: String, np: Int, depth0: Int, dom: Term, mut bu: Budget) -> Unit! =
-  if not list.contains(consts(dom), q) then ok(())
+local fn positive(env: Env, ctx: Ctx, q: String, np: Int, depth0: Int, dom: Term, mut bu: Budget) -> List[Term]! =
+  if not list.contains(consts(dom), q) then ok([])
   else {
     var c = ctx
     var t = whnf(env, ctx, dom, bu)
@@ -1154,17 +1424,206 @@ local fn positive(env: Env, ctx: Ctx, q: String, np: Int, depth0: Int, dom: Term
       }
     }
     let (h, args) = spine(t)
-    let head_ok = match h {
-      Const(d, _) => d == q,
-      _ => false,
+    match h {
+      Const(d, _) if d == q => {
+        // Parameters of the outer declaration sit `depth0` binders up from the
+        // argument; the argument's own binders add the rest.
+        guard uniform(args, np, list.len(c)) else err("${q} must appear in a constructor argument at its own parameters")
+        guard not list.any(list.drop(args, np), (i) => list.contains(consts(i), q)) else err("${q} cannot appear in the indices of a recursive argument")
+        ok([])
+      },
+      Const(j, _) => nested_occurrence(env, c, q, np, j, t, args),
+      _ => err("${q} must appear in a constructor argument only as its result (strict positivity)"),
     }
-    guard head_ok else err("${q} must appear in a constructor argument only as its result (strict positivity)")
-    // Parameters of the outer declaration sit `depth0` binders up from the
-    // argument; the argument's own binders add the rest.
-    guard uniform(args, np, list.len(c)) else err("${q} must appear in a constructor argument at its own parameters")
-    guard not list.any(list.drop(args, np), (i) => list.contains(consts(i), q)) else err("${q} cannot appear in the indices of a recursive argument")
-    ok(())
   }
+
+// `q` inside the parameters of another inductive type j (`List(Rose)`):
+// a nested occurrence. j must have no indices, and the arguments may
+// depend only on q's own parameters. The occurrence is returned in the
+// context of those parameters; `nested_closure` then checks q's
+// positivity through j's constructors.
+local fn nested_occurrence(env: Env, c: Ctx, q: String, np: Int, j: String, t: Term, args: List[Term]) -> List[Term]! = {
+  let info = match map.get(env.inductives, j) {
+    some(i) => ok(i),
+    none => err("${q} must appear in a constructor argument only as its result, or among the parameters of an inductive type (strict positivity)"),
+  }!
+  guard info.indices == 0 and list.len(args) == info.params else err("${q} can be nested only among the parameters of a type without indices (${j} has indices)")
+  let nloc = list.len(c) - np
+  guard not list.any(args, (a) => loose(a, nloc, 0)) else err("${q} is nested in ${j} at arguments that depend on a constructor's arguments")
+  ok([shift(t, 0 - nloc, 0)])
+}
+
+// Does t mention one of the variables depth .. depth + n - 1?
+local fn loose(t: Term, n: Int, depth: Int) -> Bool = match t {
+  Var(i) => i >= depth and i < depth + n,
+  App(f, a) => loose(f, n, depth) or loose(a, n, depth),
+  Lam(_, ty, b) => loose(ty, n, depth) or loose(b, n, depth + 1),
+  Pi(_, ty, b) => loose(ty, n, depth) or loose(b, n, depth + 1),
+  _ => false,
+}
+
+// The constructors of a nested occurrence `j(args)`, at those arguments:
+// each one's arguments in order, in the context of q's parameters.
+local fn occurrence_ctors(env: Env, pctx: Ctx, occ: Term, mut bu: Budget) -> List[(String, List[Level], List[Term], Ctx)]! = {
+  let (h, args) = spine(occ)
+  let (j, us) = match h {
+    Const(j, us) => (j, us),
+    _ => ("", []),
+  }
+  let info = map.get(env.inductives, j) ?? IndInfo { params: 0, indices: 0, ctors: [], fields: [], nested: [] }
+  var out: List[(String, List[Level], List[Term], Ctx)] = []
+  for c in info.ctors {
+    var t = inst_levels(map.get(env.types, c) ?? type0(), map.get(env.lparams, c) ?? [], us)
+    for a in args {
+      t = match whnf(env, pctx, t, bu) {
+        Pi(_, _, b) => ok(subst(b, a)),
+        _ => err("constructor ${c} takes fewer parameters than ${j}"),
+      }!
+    }
+    var ctx = pctx
+    var going = true
+    while going {
+      match whnf(env, ctx, t, bu) {
+        Pi(x, dom, b) => {
+          ctx = [(x, dom)] + ctx
+          t = b
+        },
+        _ => {
+          going = false
+        },
+      }
+    }
+    out = out + [(c, us, args, ctx)]
+  }
+  ok(out)
+}
+
+// Every nested occurrence, closed under j's constructors (`List(Rose)`
+// needs `Rose` positive in List.cons's arguments at A := Rose, and may
+// reveal further occurrences there).
+local fn nested_closure(env: Env, ind: Inductive, q: String, np: Int, found: List[Term], mut bu: Budget) -> List[Term]! = {
+  let (pctx, _) = telescope(env, [], map.get(env.types, q) ?? type0(), np, bu)!
+  var all = found
+  var i = 0
+  while i < list.len(all) {
+    guard list.len(all) <= 16 else err("${ind.name}: too many nested occurrences")
+    let occ = list.get(all, i) ?? type0()
+    for (_, _, _, ctx) in occurrence_ctors(env, pctx, occ, bu)! {
+      let doms = list.reverse(list.take(ctx, list.len(ctx) - np))
+      var k = 0
+      for (_, dom) in doms {
+        let here = list.drop(ctx, list.len(ctx) - np - k)
+        for o in positive(env, here, q, np, list.len(here), dom, bu)! {
+          if not list.contains(all, o) then list.push(all, o) else ()
+        }
+        k = k + 1
+      }
+    }
+    i = i + 1
+  }
+  ok(all)
+}
+
+// The argument's kind for the recursor: 0 a recursive argument, k the
+// k-th nested occurrence, -1 neither.
+local fn arg_kind(env: Env, ctx: Ctx, np: Int, q: String, auxes: List[Term], dom: Term, mut bu: Budget) -> Int = {
+  var c = ctx
+  var t = whnf(env, ctx, dom, bu)
+  var going = true
+  while going {
+    match t {
+      Pi(x, a, b) => {
+        c = [(x, a)] + c
+        t = whnf(env, c, b, bu)
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  let (h, _) = spine(t)
+  let nloc = list.len(c) - np
+  match h {
+    Const(d, _) if d == q => 0,
+    Const(_, _) => if loose(t, nloc, 0) then -1 else match list.index_of(auxes, shift(t, 0 - nloc, 0)) {
+      some(i) => i + 1,
+      none => -1,
+    },
+    _ => -1,
+  }
+}
+
+// A term as written, its variables named by `names` (innermost first).
+local fn term_raw(t: Term, names: List[String]) -> Raw = match t {
+  Var(i) => RName(list.get(names, i) ?? "_"),
+  Const(c, ls) => RExplicit(c, ls |> list.map((l) => level_raw(l))),
+  Sort(l) => RApp(RSort, level_raw(l)),
+  App(f, a) => RApp(term_raw(f, names), term_raw(a, names)),
+  Lam(x, ty, b) => {
+    let y = inductive.fresh(if x == "_" then "x" else x, names)
+    RLam(y, term_raw(ty, names), term_raw(b, [y] + names))
+  },
+  Pi(x, ty, b) => {
+    let y = inductive.fresh(if x == "_" then "x" else x, names)
+    RPi(y, term_raw(ty, names), term_raw(b, [y] + names))
+  },
+  _ => RName("_"),
+}
+
+// What `inductive.nested_eliminator` needs: each occurrence and its
+// constructors as written, and the kind of every constructor argument.
+local fn nested_layout(env: Env, ind: Inductive, q: String, auxes: List[Term], mut bu: Budget) -> inductive.Nested! = {
+  let np = list.len(ind.params)
+  let (pctx, _) = telescope(env, [], map.get(env.types, q) ?? type0(), np, bu)!
+  let pnames = list.reverse(ind.params |> list.map(((x, _)) => x))
+  let taken0 = [ind.name] + pnames + (ind.ctors |> list.flat_map((c) => c.args |> list.map(((x, _)) => x))) + ind.levels
+  var out: List[inductive.Aux] = []
+  for occ in auxes {
+    var ctors: List[inductive.AuxCtor] = []
+    for (c, us, args, ctx) in occurrence_ctors(env, pctx, occ, bu)! {
+      let doms = list.reverse(list.take(ctx, list.len(ctx) - np))
+      var names = pnames
+      var bs: List[(String, Raw)] = []
+      var kinds: List[Int] = []
+      var k = 0
+      for (x, dom) in doms {
+        let here = list.drop(ctx, list.len(ctx) - np - k)
+        let y = inductive.fresh(if x == "_" then "a" else x, taken0 + names)
+        list.push(bs, (y, term_raw(dom, names)))
+        list.push(kinds, arg_kind(env, here, np, q, auxes, dom, bu))
+        names = [y] + names
+        k = k + 1
+      }
+      list.push(ctors, inductive.AuxCtor { name: c, head: RExplicit(c, us |> list.map((l) => level_raw(l))), params: args |> list.map((a) => term_raw(a, pnames)), args: bs, kinds: kinds })
+    }
+    list.push(out, inductive.Aux { ty: term_raw(occ, pnames), ctors: ctors })
+  }
+  var kinds: List[List[Int]] = []
+  var own: List[List[(String, Raw)]] = []
+  for c in ind.ctors {
+    let (cctx, rest) = telescope(env, [], map.get(env.types, q + "." + c.name) ?? type0(), np, bu)!
+    var ctx = cctx
+    var t = rest
+    var ks: List[Int] = []
+    var bs: List[(String, Raw)] = []
+    var names = pnames
+    for (a, _) in c.args {
+      match whnf(env, ctx, t, bu) {
+        Pi(x, dom, b) => {
+          list.push(ks, arg_kind(env, ctx, np, q, auxes, dom, bu))
+          list.push(bs, (a, term_raw(dom, names)))
+          names = [a] + names
+          ctx = [(x, dom)] + ctx
+          t = b
+        },
+        _ => (),
+      }
+    }
+    list.push(kinds, ks)
+    list.push(own, bs)
+  }
+  ok(inductive.Nested { auxes: out, kinds: kinds, args: own })
+}
 
 // `mut` only so that the call from `process` borrows the environment instead
 // of copying it (it is not changed here).
@@ -1358,14 +1817,19 @@ local fn target_named(env: Env, name: String) -> patterns.Target? = {
         let own = list.drop(pi_domains(cty), info.params)
         var recs: List[Int] = []
         var heads: List[String] = []
+        var kinds: List[Int] = []
+        let nested = not list.is_empty(info.nested)
         for (i, a) in list.enumerate(own) {
           let h = result_head(a)
-          if h == some(q) then list.push(recs, i) else ()
+          if h == some(q) and not nested then list.push(recs, i) else ()
+          list.push(kinds, if h == some(q) and not nested then 0 else -1)
           list.push(heads, h ?? "")
         }
-        list.push(ctors, patterns.Ctor { name: c, nargs: list.len(own), recs: recs, heads: heads })
+        list.push(ctors, patterns.Ctor { name: c, nargs: list.len(own), recs: recs, heads: heads, kinds: kinds })
       }
-      some(patterns.Target { rec: q + ".rec", indices: info.indices, ctors: ctors })
+      // A nested type is split by `T.cases` (no recursion); recursion goes
+      // through a group of functions, one per type (`nested_defs`).
+      some(patterns.Target { rec: q + (if list.is_empty(info.nested) then ".rec" else ".cases"), indices: info.indices, ctors: ctors })
     },
   }
 }
