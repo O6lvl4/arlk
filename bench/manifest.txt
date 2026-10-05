@@ -1,0 +1,11 @@
+# SHA-256 of the pinned benchmark inputs (#17). Fixtures are taken verbatim
+# from the issue; any change to one is a change of the benchmark and must
+# update this file in the same commit.
+9808f022314d07e0286e8b912ffcc6ccde87fea9a70cca0250231ce6bff4a2ae bench/fixtures/reverse/baseline.arlk
+39b8968bf7c142e9def1be7ac67e074e64c6e48850ab3e69078699c42d7dc69e bench/fixtures/reverse/baseline.bend
+eb18815eb12b6423aadcfe9f056eae29d3da553f8c62f49fd1afd77a1c4d5582 bench/fixtures/reverse/accumulator.arlk
+f908a0233a48a8e5bccac3d982d16291de1addb89101d7cbb0b995843ca789dc bench/fixtures/reverse/accumulator.bend
+c8759c0e3d993b81bd4e2fa7ac1b79d48e2aef476ef89b9c52f1f67f54161459 bench/fixtures/sort/sort.arlk
+8edcf9018ae7d3bc808110573a175b8dced7072b91288b0cc1a79a3f1f5f1740 bench/fixtures/sort/sort.bend
+f117abd796679ef47d87d0c3886709a361f79f2468bc9388da7526101e488791 bench/scale.py
+40b7f4e79c04bbca75a797ec166a09b9a20f04301c42a40be1f3d2fb335533cf bench/launch.c

@@ -140,6 +140,8 @@ let MAX_DEPTH = 512
 fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false }
 
 // Pay for one step; false once the budget is gone.
+fn spend_step(mut b: Budget) -> Bool = spend(b)
+
 local fn spend(mut b: Budget) -> Bool =
   if b.exhausted or b.left <= 0 then {
     b.exhausted = true
@@ -196,9 +198,14 @@ local fn size_upto(t: Term, cap: Int) -> Int = {
 }
 
 // Enter one level of nesting; false (and exhausted) past the bound.
-local fn enter(mut b: Budget) -> Bool =
+fn enter(mut b: Budget) -> Bool = enter_up_to(b, MAX_DEPTH)
+
+// The elaborator's unification nests once per argument it compares, and
+// is bounded separately (elab.UNIFY_DEPTH), so that what it accepts the
+// kernel can still compare.
+fn enter_up_to(mut b: Budget, max: Int) -> Bool =
   if not spend(b) then false
-  else if b.depth >= MAX_DEPTH then {
+  else if b.depth >= max then {
     b.exhausted = true
     false
   } else {
@@ -206,7 +213,7 @@ local fn enter(mut b: Budget) -> Bool =
     true
   }
 
-local fn leave(mut b: Budget) -> Unit = {
+fn leave(mut b: Budget) -> Unit = {
   b.depth = b.depth - 1
 }
 
@@ -441,30 +448,63 @@ fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
     r
   }
 
-local fn conv_whnf(env: Env, ctx: Ctx, wa: Term, wb: Term, mut bu: Budget) -> Bool =
-  if wa == wb then true
-  else if bu.exhausted then false
-  else {
-    // Nested matches rather than `match (wa, wb)`: almide/almide#3390.
-    match wa {
-      Sort(i) => match wb {
-        Sort(j) => level_eq(i, j),
-        _ => conv_delta(env, ctx, wa, wb, bu),
+// Two terms in weak-head normal form. Unfolding definitions is a loop, not
+// a recursion: comparing a numeral built from n definitions takes n
+// unfoldings, which must cost budget steps, not stack (#17's numeral
+// family crashed the stack at n = 6400).
+local fn conv_whnf(env: Env, ctx: Ctx, wa0: Term, wb0: Term, mut bu: Budget) -> Bool = {
+  var wa = wa0
+  var wb = wb0
+  var answer = false
+  var going = true
+  while going {
+    if wa == wb then {
+      answer = true
+      going = false
+    } else if bu.exhausted then {
+      going = false
+    } else match conv_here(env, ctx, wa, wb, bu) {
+      some(r) => {
+        answer = r
+        going = false
       },
-      Pi(x, t1, b1) => match wb {
-        Pi(_, t2, b2) => conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu),
-        _ => conv_delta(env, ctx, wa, wb, bu),
-      },
-      // η: (fun x => f x) ≡ f
-      Lam(x, t1, b1) => match wb {
-        Lam(_, t2, b2) => conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu),
-        _ => conv(env, [(x, t1)] + ctx, b1, App(shift(wb, 1, 0), Var(0)), bu),
-      },
-      _ => match wb {
-        Lam(x, t2, b2) => conv(env, [(x, t2)] + ctx, App(shift(wa, 1, 0), Var(0)), b2, bu),
-        _ => same_head_args(env, ctx, wa, wb, bu) or conv_delta(env, ctx, wa, wb, bu),
+      none => match unfold_step(env, ctx, wa, wb, bu) {
+        some((ua, ub)) => {
+          wa = ua
+          wb = ub
+        },
+        none => {
+          answer = not bu.exhausted and conv_spines(env, ctx, wa, wb, bu)
+          going = false
+        },
       },
     }
+  }
+  answer
+}
+
+// What the shapes decide without unfolding: some(answer), or none when
+// the heads differ and unfolding may still make them agree.
+local fn conv_here(env: Env, ctx: Ctx, wa: Term, wb: Term, mut bu: Budget) -> Option[Bool] =
+  // Nested matches rather than `match (wa, wb)`: almide/almide#3390.
+  match wa {
+    Sort(i) => match wb {
+      Sort(j) => some(level_eq(i, j)),
+      _ => none,
+    },
+    Pi(x, t1, b1) => match wb {
+      Pi(_, t2, b2) => some(conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu)),
+      _ => none,
+    },
+    // η: (fun x => f x) ≡ f
+    Lam(x, t1, b1) => match wb {
+      Lam(_, t2, b2) => some(conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu)),
+      _ => some(conv(env, [(x, t1)] + ctx, b1, App(shift(wb, 1, 0), Var(0)), bu)),
+    },
+    _ => match wb {
+      Lam(x, t2, b2) => some(conv(env, [(x, t2)] + ctx, App(shift(wa, 1, 0), Var(0)), b2, bu)),
+      _ => if same_head_args(env, ctx, wa, wb, bu) then some(true) else none,
+    },
   }
 
 local fn all_conv(env: Env, ctx: Ctx, xs: List[Term], ys: List[Term], mut bu: Budget) -> Bool =
@@ -492,24 +532,25 @@ local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) ->
   }
 }
 
-// Unfold one step on the side whose head was defined later, then retry.
-local fn conv_delta(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
-  if not spend(bu) then false
+// Unfold one step on the side whose head was defined later (both when
+// they are equally high), and reduce; none when neither side unfolds.
+local fn unfold_step(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Option[(Term, Term)] =
+  if not spend(bu) then none
   else match def_height(env, a) {
     some(ha) => match def_height(env, b) {
       some(hb) =>
-        if ha > hb then conv_whnf(env, ctx, whnf_core(env, ctx, unfold_head(env, a), bu), b, bu)
-        else if hb > ha then conv_whnf(env, ctx, a, whnf_core(env, ctx, unfold_head(env, b), bu), bu)
+        if ha > hb then some((whnf_core(env, ctx, unfold_head(env, a), bu), b))
+        else if hb > ha then some((a, whnf_core(env, ctx, unfold_head(env, b), bu)))
         else {
-          let wa = whnf_core(env, ctx, unfold_head(env, a), bu)
-          let wb = whnf_core(env, ctx, unfold_head(env, b), bu)
-          conv_whnf(env, ctx, wa, wb, bu)
+          let ua = whnf_core(env, ctx, unfold_head(env, a), bu)
+          let ub = whnf_core(env, ctx, unfold_head(env, b), bu)
+          some((ua, ub))
         },
-      none => conv_whnf(env, ctx, whnf_core(env, ctx, unfold_head(env, a), bu), b, bu),
+      none => some((whnf_core(env, ctx, unfold_head(env, a), bu), b)),
     },
     none => match def_height(env, b) {
-      some(_) => conv_whnf(env, ctx, a, whnf_core(env, ctx, unfold_head(env, b), bu), bu),
-      none => conv_spines(env, ctx, a, b, bu),
+      some(_) => some((a, whnf_core(env, ctx, unfold_head(env, b), bu))),
+      none => none,
     },
   }
 

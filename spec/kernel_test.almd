@@ -1088,3 +1088,25 @@ theorem length_map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> Eq(N
 """
   assert_eq(run(src), none)
 }
+
+// ── Deep computations cost budget, not stack (#17) ─────────────────
+
+// add(N_n, N_n) = N_2n, with numerals as a chain of definitions.
+fn numeral_source(n: Int) -> String = {
+  var out: List[String] = ["room deep", "type Nat: Type = | zero | succ(pred: Nat)", "type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)", "def add(m: Nat, n: Nat) -> Nat = match m {", "  zero => n,", "  succ(k) => Nat.succ(add(k, n)),", "}", "def N0: Nat = Nat.zero"]
+  var k = 1
+  while k <= 2 * n {
+    list.push(out, "def N${int.to_string(k)}: Nat = Nat.succ(N${int.to_string(k - 1)})")
+    k = k + 1
+  }
+  list.push(out, "theorem sum: Eq(Nat, add(N${int.to_string(n)}, N${int.to_string(n)}), N${int.to_string(2 * n)}) = Eq.refl")
+  list.join(out, "\n")
+}
+
+test "a long chain of definitions unfolds in a loop" {
+  assert_eq(run(numeral_source(400)), none)
+}
+
+test "a computation too deep to compare runs out of budget" {
+  assert(rejects_with(numeral_source(3000), "out of budget"))
+}

@@ -1,0 +1,151 @@
+// Self-contained insertion sort: arbitrary finite lists of Peano naturals.
+// Matched algorithm/proof structure to sort.bend; no imported libraries.
+room sorting
+
+// FOUNDATION
+
+type Number: Type =
+  | zero
+  | succ(pred: Number)
+
+type List: Type =
+  | nil
+  | cons(head: Number, tail: List)
+
+type Flag: Type =
+  | ff
+  | tt
+
+type One: Type =
+  | unit
+
+type Empty: Type =
+
+type Sum(A: Type, B: Type): Type =
+  | left(value: A)
+  | right(value: B)
+
+type Both(A: Type, B: Type): Type =
+  | pair(left: A, right: B)
+
+type Eq(A: Type, a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+def cong[A: Type, B: Type, x: A, y: A](f: A -> B, h: Eq(A, x, y)) -> Eq(B, f(x), f(y)) =
+  Eq.rec((z: A, e: Eq(A, x, z)) => Eq(B, f(x), f(z)), Eq.refl, y, h)
+
+def symm[A: Type, x: A, y: A](h: Eq(A, x, y)) -> Eq(A, y, x) =
+  Eq.rec((z: A, e: Eq(A, x, z)) => Eq(A, z, x), Eq.refl, y, h)
+
+def trans[A: Type, x: A, y: A, z: A](h: Eq(A, x, y), k: Eq(A, y, z)) -> Eq(A, x, z) =
+  Eq.rec((w: A, e: Eq(A, y, w)) => Eq(A, x, w), h, z, k)
+
+// PROGRAM
+def LE(a: Number, b: Number) -> Type = match a {
+  zero => One,
+  succ(a1) => match b {
+    zero => Empty,
+    succ(b1) => LE(a1, b1),
+  },
+}
+
+def le_case(x: Number, h: Number) -> Sum(LE(x, h), LE(h, x)) = match x {
+  zero => Sum.left(One.unit),
+  succ(a) => Number.rec((b: Number) => Sum(LE(Number.succ(a), b), LE(b, Number.succ(a))),
+    Sum.right(One.unit),
+    (b: Number, ih: _) => le_case(a, b), h),
+}
+
+def dec(x: Number, h: Number, t: List, r: List, c: Sum(LE(x, h), LE(h, x))) -> List = match c {
+  left(e) => List.cons(x, List.cons(h, t)),
+  right(e) => List.cons(h, r),
+}
+
+def insert(x: Number, xs: List) -> List = match xs {
+  nil => List.cons(x, List.nil),
+  cons(h, t) => dec(x, h, t, insert(x, t), le_case(x, h)),
+}
+
+def sort(xs: List) -> List = match xs {
+  nil => List.nil,
+  cons(h, t) => insert(h, sort(t)),
+}
+
+// PROPERTY
+def SortedB(xs: List, lo: Number) -> Type = match xs {
+  nil => One,
+  cons(h, t) => Both(LE(lo, h), SortedB(t, h)),
+}
+
+def eq_nat(a: Number, b: Number) -> Flag = match a {
+  zero => match b {
+    zero => Flag.tt,
+    succ(bp) => Flag.ff,
+  },
+  succ(ap) => match b {
+    zero => Flag.ff,
+    succ(bp) => eq_nat(ap, bp),
+  },
+}
+
+def bump(b: Flag, n: Number) -> Number = match b {
+  tt => Number.succ(n),
+  ff => n,
+}
+
+def count(x: Number, xs: List) -> Number = match xs {
+  nil => Number.zero,
+  cons(h, t) => bump(eq_nat(x, h), count(x, t)),
+}
+
+// PROOF
+// Ascending order, including its preserved lower bound.
+def sorted_ins_fin(lo: Number, x: Number, h: Number, t: List,
+  sx: Both(LE(lo, h), SortedB(t, h)), lx: LE(lo, x),
+  rec: SortedB(t, h) -> LE(h, x) -> SortedB(insert(x, t), h),
+  c: Sum(LE(x, h), LE(h, x))) -> SortedB(dec(x, h, t, insert(x, t), c), lo) = match sx {
+  pair(lh, st) => match c {
+    left(e) => Both.pair(lx, Both.pair(e, st)),
+    right(e) => Both.pair(lh, rec(st, e)),
+  },
+}
+
+def sorted_ins(xs: List, lo: Number, x: Number) -> SortedB(xs, lo) -> LE(lo, x) -> SortedB(insert(x, xs), lo) = match xs {
+  nil => (sx: SortedB(List.nil, lo), lx: LE(lo, x)) => Both.pair(lx, One.unit),
+  cons(h, t) => (sx: SortedB(List.cons(h, t), lo), lx: LE(lo, x)) =>
+    sorted_ins_fin(lo, x, h, t, sx, lx, sorted_ins(t, h, x), le_case(x, h)),
+}
+
+theorem sort_sorted(xs: List) -> SortedB(sort(xs), Number.zero) = match xs {
+  nil => One.unit,
+  cons(h, t) => sorted_ins(sort(t), Number.zero, h, sort_sorted(t), One.unit),
+}
+
+// Multiplicities, for every queried natural number.
+theorem bump_swap(a: Flag, b: Flag, n: Number) -> Eq(Number, bump(a, bump(b, n)), bump(b, bump(a, n))) = match a {
+  tt => Flag.rec((c: Flag) => Eq(Number, bump(Flag.tt, bump(c, n)), bump(c, bump(Flag.tt, n))), Eq.refl, Eq.refl, b),
+  ff => Eq.refl,
+}
+
+def count_ins_fin(x: Number, y: Number, h: Number, t: List,
+  rec: Eq(Number, count(x, List.cons(y, t)), count(x, insert(y, t))),
+  c: Sum(LE(y, h), LE(h, y))) -> Eq(Number, count(x, List.cons(y, List.cons(h, t))), count(x, dec(y, h, t, insert(y, t), c))) = match c {
+  left(e) => Eq.refl,
+  right(e) => trans(bump_swap(eq_nat(x, y), eq_nat(x, h), count(x, t)),
+    cong((n: Number) => bump(eq_nat(x, h), n), rec)),
+}
+
+theorem count_ins(x: Number, y: Number, xs: List) -> Eq(Number, count(x, List.cons(y, xs)), count(x, insert(y, xs))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => count_ins_fin(x, y, h, t, count_ins(x, y, t), le_case(y, h)),
+}
+
+theorem sort_perm(x: Number, xs: List) -> Eq(Number, count(x, sort(xs)), count(x, xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => trans(symm(count_ins(x, h, sort(t))),
+    cong((n: Number) => bump(eq_nat(x, h), n), sort_perm(x, t))),
+}
+
+// AUDIT
+axioms sort_sorted
+axioms sort_perm

@@ -164,6 +164,13 @@ must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arl
 # The native standard library and its clients, with negative controls (#18).
 must_pass "native standard library and clients" 600 tools/std-check.sh ./arlk "$LOGS/std"
 
+# Benchmark gates (#17): pinned inputs, fixtures check, semantic mutations
+# rejected; one quick measurement pass whose outcomes (not timings) must
+# match (budget exhaustion where expected, never a crash).
+must_pass "benchmark controls" 600 bench/controls.sh ./arlk "$LOGS/bench-controls"
+must_pass "benchmark outcomes (timings advisory)" 1800 python3 bench/run.py --arlk ./arlk --out "$LOGS/bench" --batches 1 --per 1 --lanes arlk,scale
+must_pass "benchmark change challenge" 300 python3 bench/change.py ./arlk
+
 # An Almide program verified through the subset's semantics (#16).
 must_pass "Almide program: reverse keeps length" 1200 tools/almide-check.sh ./arlk "$LOGS/almide"
 

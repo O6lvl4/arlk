@@ -293,6 +293,10 @@ local fn is_meta_app(t: Term) -> Bool = {
   }
 }
 
+// How deeply unification may nest (one level per compared argument):
+// well inside the native stack, which ran out near 12,800 levels.
+let UNIFY_DEPTH = 4096
+
 fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   let x = zonk(st, a)
   let y = zonk(st, b)
@@ -302,64 +306,18 @@ fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   // (`((p) => B(p.fst))(mk(a, b))` is `B(a)`): normalise, then try again.
   else if is_pattern_meta(st, x) and try_solve(st, ctx, x, nf(env, ctx, y, st.bu)) then true
   else if is_pattern_meta(st, y) and try_solve(st, ctx, y, nf(env, ctx, x, st.bu)) then true
-  else if st.bu.exhausted then false
+  // Nesting is bounded like the kernel's comparison: each unfolding of a
+  // definition goes one level deeper, so a deep computation runs out of
+  // budget instead of the stack.
+  else if not kernel.enter_up_to(st.bu, UNIFY_DEPTH) then false
   else {
     let wx = whnf_core(env, ctx, x, st.bu)
     let wy = whnf_core(env, ctx, y, st.bu)
-    if (wx != x or wy != y) and (is_meta_app(wx) or is_meta_app(wy)) then unify(env, st, ctx, wx, wy)
-    else unify_whnf(env, st, ctx, wx, wy)
+    let r = if (wx != x or wy != y) and (is_meta_app(wx) or is_meta_app(wy)) then unify(env, st, ctx, wx, wy)
+      else unify_whnf(env, st, ctx, wx, wy)
+    kernel.leave(st.bu)
+    r
   }
-}
-
-local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
-  if x == y then true
-  else match x {
-    Sort(l1) => match y {
-      Sort(l2) => unify_level(st, l1, l2),
-      _ => unify_delta(env, st, ctx, x, y),
-    },
-    Pi(n1, t1, b1) => match y {
-      Pi(_, t2, b2) => unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2),
-      _ => unify_delta(env, st, ctx, x, y),
-    },
-    Lam(n1, t1, b1) => match y {
-      Lam(_, t2, b2) => unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2),
-      _ => unify(env, st, [(n1, t1)] + ctx, b1, App(shift(y, 1, 0), Var(0))),
-    },
-    _ => match y {
-      Lam(n2, t2, b2) => unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2),
-      _ => unify_alternatives(env, st, ctx, x, y),
-    },
-  }
-
-// The ways two neutral terms can be equal, tried in order. Each starts
-// from the holes as they were: a failed attempt (same head, but the
-// arguments differ) must not leave solutions behind, or `length[?l](B, ..)
-// =?= length[u](A, ..)` fixes ?l := u before both sides compute to the
-// same number.
-local fn unify_alternatives(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
-  let metas = st.metas
-  let lmetas = st.lmetas
-  var found = false
-  var i = 0
-  while not found and i < 6 {
-    if i > 0 then {
-      st.metas = metas
-      st.lmetas = lmetas
-    } else ()
-    found = if i == 0 then unify_spines(env, st, ctx, x, y)
-      else if i == 1 then first_order(env, st, ctx, x, y)
-      else if i == 2 then first_order(env, st, ctx, y, x)
-      else if i == 3 then unify_delta(env, st, ctx, x, y)
-      else if i == 4 then unify_eta(env, st, ctx, x, y)
-      else unify_eta(env, st, ctx, y, x)
-    i = i + 1
-  }
-  if not found then {
-    st.metas = metas
-    st.lmetas = lmetas
-  } else ()
-  found
 }
 
 // Record eta (see kernel.eta_pairs): `P.mk(a1, a2) =?= p` when
@@ -376,6 +334,126 @@ local fn unify_eta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> B
         } else ()
       }
       good
+    },
+  }
+
+// Two terms in weak-head normal form. Unfolding definitions is a loop
+// (as in the kernel's conv_whnf), so a long computation costs budget
+// steps, not stack.
+local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x0: Term, y0: Term) -> Bool = {
+  var x = x0
+  var y = y0
+  var answer = false
+  var going = true
+  while going {
+    if x == y then {
+      answer = true
+      going = false
+    } else if st.bu.exhausted then {
+      going = false
+    } else match unify_here(env, st, ctx, x, y) {
+      some(r) => {
+        answer = r
+        going = false
+      },
+      none => match unfold_step(env, st, ctx, x, y) {
+        some((ux, uy)) =>
+          if is_meta_app(ux) or is_meta_app(uy) then {
+            answer = unify(env, st, ctx, ux, uy)
+            going = false
+          } else {
+            x = ux
+            y = uy
+          },
+        none => {
+          answer = attempt_eta(env, st, ctx, x, y) or attempt_eta(env, st, ctx, y, x)
+          going = false
+        },
+      },
+    }
+  }
+  answer
+}
+
+// What the shapes decide without unfolding: some(answer), or none when
+// unfolding may still make them agree.
+local fn unify_here(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Option[Bool] =
+  match x {
+    Sort(l1) => match y {
+      Sort(l2) => some(unify_level(st, l1, l2)),
+      _ => none,
+    },
+    Pi(n1, t1, b1) => match y {
+      Pi(_, t2, b2) => some(unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2)),
+      _ => none,
+    },
+    Lam(n1, t1, b1) => match y {
+      Lam(_, t2, b2) => some(unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2)),
+      _ => some(unify(env, st, [(n1, t1)] + ctx, b1, App(shift(y, 1, 0), Var(0)))),
+    },
+    _ => match y {
+      Lam(n2, t2, b2) => some(unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2)),
+      _ => if neutral_attempts(env, st, ctx, x, y) then some(true) else none,
+    },
+  }
+
+// Same head, or a hole applied too generally. Each attempt starts from
+// the holes as they were, so a failed one (same head, but the arguments
+// differ) leaves no solution behind; otherwise `length[?l](B, ..) =?=
+// length[u](A, ..)` would fix ?l := u before both sides compute to the
+// same number.
+local fn neutral_attempts(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
+  let metas = st.metas
+  let lmetas = st.lmetas
+  var found = false
+  var i = 0
+  while not found and i < 3 {
+    if i > 0 then {
+      st.metas = metas
+      st.lmetas = lmetas
+    } else ()
+    found = if i == 0 then unify_spines(env, st, ctx, x, y)
+      else if i == 1 then first_order(env, st, ctx, x, y)
+      else first_order(env, st, ctx, y, x)
+    i = i + 1
+  }
+  if not found then {
+    st.metas = metas
+    st.lmetas = lmetas
+  } else ()
+  found
+}
+
+local fn attempt_eta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
+  let metas = st.metas
+  let lmetas = st.lmetas
+  let found = unify_eta(env, st, ctx, x, y)
+  if not found then {
+    st.metas = metas
+    st.lmetas = lmetas
+  } else ()
+  found
+}
+
+// Unfold the definition defined later (both when equally high), and
+// reduce; none when neither side unfolds.
+local fn unfold_step(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Option[(Term, Term)] =
+  if not kernel.spend_step(st.bu) then none
+  else match def_height(env, x) {
+    some(hx) => match def_height(env, y) {
+      some(hy) =>
+        if hx > hy then some((whnf_core(env, ctx, unfold_head(env, x), st.bu), y))
+        else if hy > hx then some((x, whnf_core(env, ctx, unfold_head(env, y), st.bu)))
+        else {
+          let ux = whnf_core(env, ctx, unfold_head(env, x), st.bu)
+          let uy = whnf_core(env, ctx, unfold_head(env, y), st.bu)
+          some((ux, uy))
+        },
+      none => some((whnf_core(env, ctx, unfold_head(env, x), st.bu), y)),
+    },
+    none => match def_height(env, y) {
+      some(_) => some((x, whnf_core(env, ctx, unfold_head(env, y), st.bu))),
+      none => none,
     },
   }
 
@@ -428,42 +506,27 @@ local fn unify_all(env: Env, mut st: ElabState, ctx: Ctx, xs: List[Term], ys: Li
   good
 }
 
-// Unfold the definition defined later (or both), then try again.
-local fn unify_delta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
-  match def_height(env, x) {
-    some(hx) => match def_height(env, y) {
-      some(hy) =>
-        if hx > hy then unify(env, st, ctx, unfold_head(env, x), y)
-        else if hy > hx then unify(env, st, ctx, x, unfold_head(env, y))
-        else {
-          let ux = unfold_head(env, x)
-          let uy = unfold_head(env, y)
-          unify(env, st, ctx, ux, uy)
-        },
-      none => unify(env, st, ctx, unfold_head(env, x), y),
-    },
-    none => match def_height(env, y) {
-      some(_) => unify(env, st, ctx, x, unfold_head(env, y)),
-      none => false,
-    },
-  }
 
 // ── Elaboration ─────────────────────────────────────────────────────
 
 // What the elaborator needs alongside the state: the environment, the
 // universe parameters in scope.
-type Scope = { env: Env, lv: List[String] }
+// The environment is passed beside the scope, not inside it: a record
+// field holds a copy, and copying the environment for every declaration
+// made checking quadratic in the number of declarations (#17's scaling
+// families).
+type Scope = { lv: List[String] }
 
 local fn names(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
 
-local fn reduce_type(sc: Scope, mut st: ElabState, ctx: Ctx, ty: Term) -> Term = {
+local fn reduce_type(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, ty: Term) -> Term = {
   let z = zonk(st, ty)
-  whnf(sc.env, ctx, z, st.bu)
+  whnf(env, ctx, z, st.bu)
 }
 
 // A constant at fresh levels, applied to holes for its implicit parameters.
-local fn constant(sc: Scope, mut st: ElabState, ctx: Ctx, c: String, given: List[Level]?, implicit: Bool) -> (Term, Term)! = {
-  let ps = map.get(sc.env.lparams, c) ?? []
+local fn constant(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, c: String, given: List[Level]?, implicit: Bool) -> (Term, Term)! = {
+  let ps = map.get(env.lparams, c) ?? []
   // A loop, not `list.map` with a lambda: almide/almide#3410.
   var fresh: List[Level] = []
   for _p in ps {
@@ -474,15 +537,15 @@ local fn constant(sc: Scope, mut st: ElabState, ctx: Ctx, c: String, given: List
     none => fresh,
   }
   guard list.len(ls) == list.len(ps) else err("${c} takes ${int.to_string(list.len(ps))} universe levels, given ${int.to_string(list.len(ls))}")
-  let ty0 = match map.get(sc.env.types, c) {
+  let ty0 = match map.get(env.types, c) {
     some(t) => inst_levels(t, ps, ls),
     none => type0(),
   }
   var t = Const(c, ls)
   var ty = ty0
-  var k = if implicit then map.get(sc.env.implicits, c) ?? 0 else 0
+  var k = if implicit then map.get(env.implicits, c) ?? 0 else 0
   while k > 0 {
-    match reduce_type(sc, st, ctx, ty) {
+    match reduce_type(env, sc, st, ctx, ty) {
       Pi(_, dom, cod) => {
         let m = new_meta(st, ctx)
         list.push(st.typed, (ctx, m, dom))
@@ -498,7 +561,7 @@ local fn constant(sc: Scope, mut st: ElabState, ctx: Ctx, c: String, given: List
   ok((t, ty))
 }
 
-fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = match r {
+fn infer(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = match r {
   RName("_") => {
     let ty = new_meta(st, ctx)
     ok((new_meta(st, ctx), ty))
@@ -514,21 +577,21 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
       some((_, ty)) => ok((Var(i), shift(ty, i + 1, 0))),
       none => err("unbound ${x}"),
     },
-    none => match resolve_const(sc.env, x) {
-      ok(c) => constant(sc, st, ctx, c, none, true),
-      err(e) => match field_access(sc, st, ctx, x) {
+    none => match resolve_const(env, x) {
+      ok(c) => constant(env, sc, st, ctx, c, none, true),
+      err(e) => match field_access(env, sc, st, ctx, x) {
         some(found) => found,
         none => err(e),
       },
     },
   },
   RField(e, f) => {
-    let (t, ty) = infer(sc, st, ctx, e)!
-    walk_fields(sc, st, ctx, t, ty, [f])
+    let (t, ty) = infer(env, sc, st, ctx, e)!
+    walk_fields(env, sc, st, ctx, t, ty, [f])
   },
   RRecord(name, fvs) => {
-    let q = resolve_const(sc.env, name)!
-    let info = match map.get(sc.env.inductives, q) {
+    let q = resolve_const(env, name)!
+    let info = match map.get(env.inductives, q) {
       some(i) => ok(i),
       none => err("${name} is not a record type"),
     }!
@@ -544,23 +607,23 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
       }
     }
     guard list.len(args) == list.len(info.fields) and list.len(fvs) == list.len(info.fields) else err("${name} { ... } must give every field once: ${list.join(info.fields, ", ")}")
-    infer(sc, st, ctx, list.fold(args, RName(q + ".mk"), (acc, a) => RApp(acc, a)))
+    infer(env, sc, st, ctx, list.fold(args, RName(q + ".mk"), (acc, a) => RApp(acc, a)))
   },
   RInst(x, lraws) => {
     var ls: List[Level] = []
     for l in lraws {
       list.push(ls, level_of(sc.lv, l)!)
     }
-    constant(sc, st, ctx, resolve_const(sc.env, x)!, some(ls), true)
+    constant(env, sc, st, ctx, resolve_const(env, x)!, some(ls), true)
   },
   RExplicit(x, lraws) => {
     var ls: List[Level] = []
     for l in lraws {
       list.push(ls, level_of(sc.lv, l)!)
     }
-    let c = resolve_const(sc.env, x)!
-    let given = if list.is_empty(ls) and not list.is_empty(map.get(sc.env.lparams, c) ?? []) then none else some(ls)
-    constant(sc, st, ctx, c, given, false)
+    let c = resolve_const(env, x)!
+    let given = if list.is_empty(ls) and not list.is_empty(map.get(env.lparams, c) ?? []) then none else some(ls)
+    constant(env, sc, st, ctx, c, given, false)
   },
   RType => ok((type0(), Sort(LSucc(LSucc(LZero))))),
   RSort => err("Sort needs a level: Sort(0) is Prop, Sort(1) is Type"),
@@ -573,26 +636,26 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
     ok((Sort(lv), Sort(LSucc(lv))))
   },
   RApp(f, a) => {
-    let (tf, ty) = infer(sc, st, ctx, f)!
-    match reduce_type(sc, st, ctx, ty) {
+    let (tf, ty) = infer(env, sc, st, ctx, f)!
+    match reduce_type(env, sc, st, ctx, ty) {
       Pi(_, dom, cod) => {
-        let ta = check(sc, st, ctx, a, dom)!
+        let ta = check(env, sc, st, ctx, a, dom)!
         ok((App(tf, ta), subst(cod, ta)))
       },
       other => {
         guard not st.bu.exhausted else err(exhausted_error())
-        err("${show(sc.env, ctx, zonk(st, tf))} is applied to an argument, but its type is ${show(sc.env, ctx, zonk(st, other))}")
+        err("${show(env, ctx, zonk(st, tf))} is applied to an argument, but its type is ${show(env, ctx, zonk(st, other))}")
       },
     }
   },
   RLam(x, ty, b) => {
-    let (tty, _) = sort_of(sc, st, ctx, ty)!
-    let (tb, bty) = infer(sc, st, [(x, tty)] + ctx, b)!
+    let (tty, _) = sort_of(env, sc, st, ctx, ty)!
+    let (tb, bty) = infer(env, sc, st, [(x, tty)] + ctx, b)!
     ok((Lam(x, tty, tb), Pi(x, tty, bty)))
   },
   RPi(x, ty, b) => {
-    let (tty, u) = sort_of(sc, st, ctx, ty)!
-    let (tb, v) = sort_of(sc, st, [(x, tty)] + ctx, b)!
+    let (tty, u) = sort_of(env, sc, st, ctx, ty)!
+    let (tb, v) = sort_of(env, sc, st, [(x, tty)] + ctx, b)!
     ok((Pi(x, tty, tb), Sort(LIMax(u, v))))
   },
   RBracket(_) => err("brackets {...} are only allowed in the left-hand side of a rule"),
@@ -600,13 +663,13 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
 }
 
 // `p.x.y`: p is a local, x and y are fields of the records along the way.
-local fn field_access(sc: Scope, mut st: ElabState, ctx: Ctx, x: String) -> Option[Result[(Term, Term), String]] = {
+local fn field_access(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, x: String) -> Option[Result[(Term, Term), String]] = {
   let parts = string.split(x, ".")
   match index_in(names(ctx), list.first(parts) ?? "", 0) {
     none => none,
     some(i) => match list.get(ctx, i) {
       none => none,
-      some((_, ty0)) => some(walk_fields(sc, st, ctx, Var(i), shift(ty0, i + 1, 0), list.drop(parts, 1))),
+      some((_, ty0)) => some(walk_fields(env, sc, st, ctx, Var(i), shift(ty0, i + 1, 0), list.drop(parts, 1))),
     },
   }
 }
@@ -622,16 +685,16 @@ local fn record_of(env: Env, ty: Term, f: String, shown: String) -> String! = {
   }
 }
 
-local fn walk_fields(sc: Scope, mut st: ElabState, ctx: Ctx, t0: Term, ty0: Term, fields: List[String]) -> (Term, Term)! = {
+local fn walk_fields(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, t0: Term, ty0: Term, fields: List[String]) -> (Term, Term)! = {
   var t = t0
   var ty = ty0
   for f in fields {
-    let red = reduce_type(sc, st, ctx, ty)
-    let q = record_of(sc.env, red, f, show(sc.env, ctx, zonk(st, ty)))!
-    let (proj, pty) = constant(sc, st, ctx, q + "." + f, none, true)!
-    match reduce_type(sc, st, ctx, pty) {
+    let red = reduce_type(env, sc, st, ctx, ty)
+    let q = record_of(env, red, f, show(env, ctx, zonk(st, ty)))!
+    let (proj, pty) = constant(env, sc, st, ctx, q + "." + f, none, true)!
+    match reduce_type(env, sc, st, ctx, pty) {
       Pi(_, dom, cod) => {
-        guard unify(sc.env, st, ctx, ty, dom) else err("cannot read field ${f}")
+        guard unify(env, st, ctx, ty, dom) else err("cannot read field ${f}")
         let record = t
         t = App(proj, record)
         ty = subst(cod, record)
@@ -645,19 +708,19 @@ local fn walk_fields(sc: Scope, mut st: ElabState, ctx: Ctx, t0: Term, ty0: Term
 }
 
 // A type, and the level of the universe it lives in.
-fn sort_of(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Level)! = {
-  let (t, ty) = infer(sc, st, ctx, r)!
-  match reduce_type(sc, st, ctx, ty) {
+fn sort_of(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Level)! = {
+  let (t, ty) = infer(env, sc, st, ctx, r)!
+  match reduce_type(env, sc, st, ctx, ty) {
     Sort(l) => ok((t, l)),
     other => {
       let l = new_level(st)
-      guard unify(sc.env, st, ctx, other, Sort(l)) else err("${show(sc.env, ctx, zonk(st, t))} is not a type (its type is ${show(sc.env, ctx, zonk(st, other))})")
+      guard unify(env, st, ctx, other, Sort(l)) else err("${show(env, ctx, zonk(st, t))} is not a type (its type is ${show(env, ctx, zonk(st, other))})")
       ok((t, l))
     },
   }
 }
 
-fn check(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = match r {
+fn check(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = match r {
   RName("_") => {
     let m = new_meta(st, ctx)
     list.push(st.typed, (ctx, m, expected))
@@ -669,27 +732,27 @@ fn check(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term
     list.push(st.goals, (ctx, m, expected))
     ok(m)
   },
-  RLam(x, ty, b) => match reduce_type(sc, st, ctx, expected) {
+  RLam(x, ty, b) => match reduce_type(env, sc, st, ctx, expected) {
     Pi(_, dom, cod) => {
-      let (tty, _) = sort_of(sc, st, ctx, ty)!
-      guard unify(sc.env, st, ctx, tty, dom) else err("the parameter ${x}: ${show(sc.env, ctx, zonk(st, tty))} does not match the expected ${show(sc.env, ctx, zonk(st, dom))}")
-      let tb = check(sc, st, [(x, tty)] + ctx, b, cod)!
+      let (tty, _) = sort_of(env, sc, st, ctx, ty)!
+      guard unify(env, st, ctx, tty, dom) else err("the parameter ${x}: ${show(env, ctx, zonk(st, tty))} does not match the expected ${show(env, ctx, zonk(st, dom))}")
+      let tb = check(env, sc, st, [(x, tty)] + ctx, b, cod)!
       ok(Lam(x, tty, tb))
     },
-    _ => infer_then_unify(sc, st, ctx, r, expected),
+    _ => infer_then_unify(env, sc, st, ctx, r, expected),
   },
-  _ => infer_then_unify(sc, st, ctx, r, expected),
+  _ => infer_then_unify(env, sc, st, ctx, r, expected),
 }
 
-local fn infer_then_unify(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
-  let (t, ty) = infer(sc, st, ctx, r)!
-  let same = unify(sc.env, st, ctx, ty, expected)
+local fn infer_then_unify(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
+  let (t, ty) = infer(env, sc, st, ctx, r)!
+  let same = unify(env, st, ctx, ty, expected)
   guard not st.bu.exhausted else err(exhausted_error())
   if same then ok(t)
   else {
     let zt = zonk(st, ty)
     let ze = zonk(st, expected)
-    let what = "type mismatch for ${show(sc.env, ctx, zonk(st, t))}\n    expected: ${show(sc.env, ctx, ze)}\n    found:    ${show(sc.env, ctx, zt)}"
+    let what = "type mismatch for ${show(env, ctx, zonk(st, t))}\n    expected: ${show(env, ctx, ze)}\n    found:    ${show(env, ctx, zt)}"
     // Holes on both sides may be decided later; otherwise it is an error.
     if has_meta(zt) and has_meta(ze) then {
       list.push(st.postponed, (ctx, ty, expected, what))
@@ -702,7 +765,7 @@ local fn infer_then_unify(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expect
 
 // Check solved implicit arguments against their types until nothing more
 // is learned.
-local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
+local fn settle(env: Env, sc: Scope, mut st: ElabState) -> Unit! = {
   var waiting = st.typed
   var progress = true
   var failure = ""
@@ -713,7 +776,7 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
     let none_yet: List[(Ctx, Term, Term, String)] = []
     st.postponed = none_yet
     for (ctx, a, b, what) in pending {
-      if unify(sc.env, st, ctx, a, b) then {
+      if unify(env, st, ctx, a, b) then {
         progress = true
       } else list.push(st.postponed, (ctx, a, b, what))
     }
@@ -722,11 +785,11 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
       let zm = zonk(st, m)
       let zctx = ctx |> list.map(((x, ty)) => (x, zonk(st, ty)))
       if failure != "" or has_meta(zm) or list.any(zctx, ((_, ty)) => has_meta(ty)) then list.push(later, (ctx, m, dom))
-      else match kernel.infer(sc.env, zctx, zm, st.bu) {
-        ok(ty) => if unify(sc.env, st, ctx, ty, dom) then {
+      else match kernel.infer(env, zctx, zm, st.bu) {
+        ok(ty) => if unify(env, st, ctx, ty, dom) then {
           progress = true
         } else {
-          failure = "the inferred argument ${show(sc.env, zctx, zm)} has type ${show(sc.env, zctx, ty)}, but ${show(sc.env, zctx, zonk(st, dom))} was expected"
+          failure = "the inferred argument ${show(env, zctx, zm)} has type ${show(env, zctx, ty)}, but ${show(env, zctx, zonk(st, dom))} was expected"
         },
         err(e) => {
           failure = e
@@ -742,59 +805,59 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
   }
 }
 
-local fn complete(sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {
-  settle(sc, st)!
-  guard list.is_empty(st.goals) else err(goal_report(sc, st))
+local fn complete(env: Env, sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {
+  settle(env, sc, st)!
+  guard list.is_empty(st.goals) else err(goal_report(env, sc, st))
   let z = zonk(st, t)
-  guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(sc.env, [], z)} (write the missing arguments, or the universe levels in [...])")
+  guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(env, [], z)} (write the missing arguments, or the universe levels in [...])")
   ok(z)
 }
 
 // Each open goal: what it must prove, what is at hand, and what
 // unification already knows it to be.
-local fn goal_report(sc: Scope, st: ElabState) -> String = {
+local fn goal_report(env: Env, sc: Scope, st: ElabState) -> String = {
   var out: List[String] = []
   let n = list.len(st.goals)
   list.push(out, "${int.to_string(n)} open goal${if n == 1 then "" else "s"} (?)")
   for (ctx, m, ty) in st.goals {
-    list.push(out, "  goal: ${show(sc.env, ctx, zonk(st, ty))}")
+    list.push(out, "  goal: ${show(env, ctx, zonk(st, ty))}")
     var i = list.len(ctx) - 1
     while i >= 0 {
       match list.get(ctx, i) {
         some((x, xty)) => {
           let outer = list.drop(ctx, i + 1)
-          list.push(out, "    ${x}: ${show(sc.env, outer, zonk(st, xty))}")
+          list.push(out, "    ${x}: ${show(env, outer, zonk(st, xty))}")
         },
         none => (),
       }
       i = i - 1
     }
     let zm = zonk(st, m)
-    if not has_meta(zm) then list.push(out, "    (unification found: ${show(sc.env, ctx, zm)})") else ()
+    if not has_meta(zm) then list.push(out, "    (unification found: ${show(env, ctx, zm)})") else ()
   }
   list.join(out, "\n")
 }
 
 // A closed type, as written with holes and implicit arguments.
 fn elab_type(env: Env, lv: List[String], r: Raw) -> Term! = {
-  let sc = Scope { env: env, lv: lv }
+  let sc = Scope { lv: lv }
   var st = state()
-  let (t, _) = sort_of(sc, st, [], r)!
-  complete(sc, st, t, "this type")
+  let (t, _) = sort_of(env, sc, st, [], r)!
+  complete(env, sc, st, t, "this type")
 }
 
 // A closed term of the given (complete) type.
 fn elab_term(env: Env, lv: List[String], r: Raw, expected: Term) -> Term! = {
-  let sc = Scope { env: env, lv: lv }
+  let sc = Scope { lv: lv }
   var st = state()
-  let t = check(sc, st, [], r, expected)!
-  complete(sc, st, t, "this term")
+  let t = check(env, sc, st, [], r, expected)!
+  complete(env, sc, st, t, "this term")
 }
 
 // A closed term and its type, for `check` and `eval`.
 fn elab_infer(env: Env, lv: List[String], r: Raw) -> (Term, Term)! = {
-  let sc = Scope { env: env, lv: lv }
+  let sc = Scope { lv: lv }
   var st = state()
-  let (t, ty) = infer(sc, st, [], r)!
-  ok((complete(sc, st, t, "this term")!, complete(sc, st, ty, "its type")!))
+  let (t, ty) = infer(env, sc, st, [], r)!
+  ok((complete(env, sc, st, t, "this term")!, complete(env, sc, st, ty, "its type")!))
 }

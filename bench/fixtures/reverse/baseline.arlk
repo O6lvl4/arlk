@@ -1,0 +1,34 @@
+// Matched domain: every finite list of Peano naturals.
+// FOUNDATION
+room reverse
+type N: Type = | z | s(p: N)
+type L: Type = | nil | con(h: N, t: L)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+theorem cong_s[a: N, b: N](e: Eq(N, a, b)) -> Eq(N, N.s(a), N.s(b)) =
+  Eq.rec((b': N, p: Eq(N, a, b')) => Eq(N, N.s(a), N.s(b')), Eq.refl, b, e)
+theorem trans[a: N, b: N, c: N](ab: Eq(N, a, b), bc: Eq(N, b, c)) -> Eq(N, a, c) =
+  Eq.rec((c': N, p: Eq(N, b, c')) => Eq(N, a, c'), ab, c, bc)
+// PROGRAM
+def len(xs: L) -> N = match xs {
+  nil => N.z,
+  con(h, t) => N.s(len(t)),
+}
+def snoc(xs: L, x: N) -> L = match xs {
+  nil => L.con(x, L.nil),
+  con(h, t) => L.con(h, snoc(t, x)),
+}
+def rev(xs: L) -> L = match xs {
+  nil => L.nil,
+  con(h, t) => snoc(rev(t), h),
+}
+// PROOF
+theorem len_snoc(xs: L, x: N) -> Eq(N, len(snoc(xs, x)), N.s(len(xs))) = match xs {
+  nil => Eq.refl,
+  con(h, t) => cong_s(len_snoc(t, x)),
+}
+theorem rev_length(xs: L) -> Eq(N, len(rev(xs)), len(xs)) = match xs {
+  nil => Eq.refl,
+  con(h, t) => trans(len_snoc(rev(t), h), cong_s(rev_length(t))),
+}
+// AUDIT
+axioms rev_length

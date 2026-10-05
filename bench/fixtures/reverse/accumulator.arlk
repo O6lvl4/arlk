@@ -1,0 +1,41 @@
+// Matched domain: every finite list of Peano naturals.
+// FOUNDATION
+room reverse
+type N: Type = | z | s(p: N)
+type L: Type = | nil | con(h: N, t: L)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+theorem cong_s[a: N, b: N](e: Eq(N, a, b)) -> Eq(N, N.s(a), N.s(b)) =
+  Eq.rec((b': N, p: Eq(N, a, b')) => Eq(N, N.s(a), N.s(b')), Eq.refl, b, e)
+theorem trans[a: N, b: N, c: N](ab: Eq(N, a, b), bc: Eq(N, b, c)) -> Eq(N, a, c) =
+  Eq.rec((c': N, p: Eq(N, b, c')) => Eq(N, a, c'), ab, c, bc)
+// PROGRAM
+def len(xs: L) -> N = match xs {
+  nil => N.z,
+  con(h, t) => N.s(len(t)),
+}
+def add(x: N, y: N) -> N = match x {
+  z => y,
+  s(p) => N.s(add(p, y)),
+}
+def go(xs: L, acc: L) -> L = match xs {
+  nil => acc,
+  con(h, t) => go(t, L.con(h, acc)),
+}
+def rev(xs: L) -> L = go(xs, L.nil)
+// PROOF
+theorem add_s(x: N, y: N) -> Eq(N, add(x, N.s(y)), N.s(add(x, y))) = match x {
+  z => Eq.refl,
+  s(p) => cong_s(add_s(p, y)),
+}
+theorem add_z(x: N) -> Eq(N, add(x, N.z), x) = match x {
+  z => Eq.refl,
+  s(p) => cong_s(add_z(p)),
+}
+theorem go_length(xs: L, acc: L) -> Eq(N, len(go(xs, acc)), add(len(xs), len(acc))) = match xs {
+  nil => Eq.refl,
+  con(h, t) => trans(go_length(t, L.con(h, acc)), add_s(len(t), len(acc))),
+}
+theorem rev_length(xs: L) -> Eq(N, len(rev(xs)), len(xs)) =
+  trans(go_length(xs, L.nil), add_z(len(xs)))
+// AUDIT
+axioms rev_length
