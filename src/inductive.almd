@@ -16,10 +16,13 @@
 //
 // Everything here is ordinary Arlk syntax, and the kernel checks each
 // generated declaration like any other: a rule that does not preserve
-// types is rejected. What the kernel cannot see from the declarations is
-// whether the type itself is admissible (strict positivity, universe
-// levels, which universes it may eliminate into); kernel.almd checks that
-// before anything is added, and passes the outcome in as a `Plan`.
+// types is rejected. What retyping cannot see is whether the type itself
+// is admissible (strict positivity, universe levels, which universes it
+// may eliminate into) and whether this file emitted the intended
+// recursor schema: `admissible` in checker.almd decides the first before
+// anything is added (and passes the outcome in as a `Plan`), and the
+// second rests on this file. Both are part of the trusted base; see
+// docs/TRUST.md.
 
 import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm}
 

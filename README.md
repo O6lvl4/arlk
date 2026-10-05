@@ -338,6 +338,9 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 
 ## What the kernel trusts (read this before believing a result)
 
+The full map of the trusted base, with the code each guarantee rests on, is in
+[docs/TRUST.md](docs/TRUST.md). In short:
+
 - **Rules are assumptions.** A rule is type-checked against its declared variable types, but Arlk
   does not yet check confluence, termination, or full subject reduction. A bad rule set can make
   a room inconsistent. That is why rules appear in `axioms`.
@@ -349,8 +352,14 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
   it does not, is spelled out under [Results](#results).
 - **Symbols are assumptions.** The checker cannot tell a type former (`Nat`) from a logical
   axiom (`excluded_middle`). Both show up in `axioms`.
-- **λΠ only.** There are no universes or polymorphism in the core. Richer logics, Lean's
-  included, are *encoded* in rooms, as Dedukti does.
+- **Native type theory.** The kernel has universes (`Sort(u)`, impredicative and
+  proof-irrelevant Prop), universe polymorphism and rewrite rules. Absorbed Lean and Rocq
+  libraries still go through the `core` encoding (lib/core.arlk); native code does not.
+- **Inductive types are admitted by checks outside term typing.** Positivity, universe fit, the
+  Prop elimination restriction and the generated recursor schema (checker.almd `admissible`,
+  inductive.almd) are part of the trusted base; retyping the generated rules does not replace them.
+- **The elaborator and the match compiler are not trusted.** Their output is a complete term,
+  checked by the kernel.
 
 ## Roadmap
 
