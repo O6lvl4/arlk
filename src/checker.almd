@@ -4,9 +4,10 @@
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
-import self.kernel.{Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
+import self.kernel.{IndInfo, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
+import self.patterns
 
 // Named surface terms → de Bruijn terms. `scope` is innermost first; `lv`
 // holds the universe parameters in scope. A bracket is transparent here;
@@ -45,6 +46,7 @@ fn resolve(env: Env, lv: List[String], scope: List[String], r: Raw) -> Term! = m
   RLam(x, ty, b) => ok(Lam(x, resolve(env, lv, scope, ty)!, resolve(env, lv, [x] + scope, b)!)),
   RPi(x, ty, b) => ok(Pi(x, resolve(env, lv, scope, ty)!, resolve(env, lv, [x] + scope, b)!)),
   RBracket(inner) => resolve(env, lv, scope, inner),
+  RMatch(_, _) => err("a match must be a definition's whole body, on one of its parameters"),
 }
 
 local fn has_bracket(r: Raw) -> Bool = match r {
@@ -344,6 +346,7 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
     step(env, line, d)! 
   }
   let q = env.room + "." + ind.name
+  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name) })
   let elim = if plan.large then "into any universe" else "into Prop only"
   ok(["✓ type ${q}: ${int.to_string(list.len(ind.ctors))} constructors, recursor ${q}.rec ${elim}"])
 }
@@ -491,11 +494,11 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     ok((declare(env, sig, "symbol", ty, none)!, []))
   },
   DDef(sig, body_raw) => {
-    let (ty, body) = typed_body(env, sig.levels, sig.ty, body_raw)!
+    let (ty, body) = typed_body(env, sig.levels, sig.ty, compile_match(env, sig, body_raw)!)!
     ok((declare(env, sig, "def", ty, some(body))!, []))
   },
   DTheorem(sig, body_raw) => {
-    let (ty, body) = typed_body(env, sig.levels, sig.ty, body_raw)!
+    let (ty, body) = typed_body(env, sig.levels, sig.ty, compile_match(env, sig, body_raw)!)!
     let c = declare(env, sig, "theorem", ty, some(body))!
     ok((c, ["✓ theorem ${env.room}.${sig.name}: ${show(env, [], ty)}"]))
   },
@@ -569,6 +572,110 @@ local fn surface_type(env: Env, lv: List[String], r: Raw) -> Term! =
 
 local fn surface_term(env: Env, lv: List[String], r: Raw, ty: Term) -> Term! =
   if needs_elab(env, r) then elab.elab_term(env, lv, r, ty) else resolve(env, lv, [], r)
+
+// A body that is `match x { ... }` (under the parameters' lambdas) is
+// compiled to x's recursor first.
+local fn compile_match(env: Env, sig: Sig, body: Raw) -> Raw! = {
+  var params: List[(String, Raw)] = []
+  var ty = sig.ty
+  var b = body
+  var going = true
+  while going {
+    match b {
+      RLam(x, _, inner) => match ty {
+        RPi(y, dom, rest) => {
+          list.push(params, (x, dom))
+          ty = if y == x then rest else rest
+          b = inner
+        },
+        _ => {
+          going = false
+        },
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  match b {
+    RMatch(RName(x), arms) => {
+      let dom = match list.find(params, ((p, _)) => p == x) {
+        some((_, d)) => d,
+        none => RType,
+      }
+      let target = match_target(env, dom)!
+      let resolved = arms |> list.map((a) => {
+        ...a,
+        // `succ` or `Nat.succ`: a constructor of the matched type first.
+        ctor: if a.ctor == "_" then "_" else match list.find(target.ctors, ((c, _, _)) => string.ends_with(c, "." + a.ctor)) {
+          some((c, _, _)) => c,
+          none => match resolve_const(env, a.ctor) {
+            ok(c) => c,
+            err(_) => a.ctor,
+          },
+        },
+      })
+      let d = patterns.Def { name: sig.name, implicits: sig.implicits, params: params, ret: ty }
+      let compiled = patterns.compile(d, x, resolved, target)!
+      ok(list.fold(list.reverse(params), compiled, (acc, (p, pty)) => RLam(p, pty, acc)))
+    },
+    RMatch(_, _) => err("match on a parameter of ${sig.name} (by name)"),
+    _ => ok(body),
+  }
+}
+
+// The recursor and constructors of the type a matched parameter has.
+local fn match_target(env: Env, dom: Raw) -> patterns.Target! = {
+  let (h, _) = raw_head(dom)
+  let name = match h {
+    RName(x) => ok(x),
+    RInst(x, _) => ok(x),
+    _ => err("match needs a parameter whose type is an inductive type"),
+  }!
+  let q = resolve_const(env, name)!
+  let info = match map.get(env.inductives, q) {
+    some(i) => ok(i),
+    none => err("${name} is not an inductive type, so it cannot be matched"),
+  }!
+  guard info.indices == 0 else err("matching on an indexed family (${name}) is not supported yet")
+  var ctors: List[(String, Int, List[Int])] = []
+  for c in info.ctors {
+    let cty = map.get(env.types, c) ?? type0()
+    let args = pi_domains(cty)
+    let own = list.drop(args, info.params)
+    var recs: List[Int] = []
+    for (i, a) in list.enumerate(own) {
+      if result_head(a) == some(q) then list.push(recs, i) else ()
+    }
+    list.push(ctors, (c, list.len(own), recs))
+  }
+  ok(patterns.Target { rec: q + ".rec", ctors: ctors })
+}
+
+local fn raw_head(r: Raw) -> (Raw, Int) = match r {
+  RApp(f, _) => {
+    let (h, n) = raw_head(f)
+    (h, n + 1)
+  },
+  other => (other, 0),
+}
+
+local fn pi_domains(t: Term) -> List[Term] = match t {
+  Pi(_, dom, b) => [dom] + pi_domains(b),
+  _ => [],
+}
+
+// The head constant at the end of a (function) type.
+local fn result_head(t: Term) -> String? = match t {
+  Pi(_, _, b) => result_head(b),
+  _ => {
+    let (h, _) = spine(t)
+    match h {
+      Const(c, _) => some(c),
+      _ => none,
+    }
+  },
+}
 
 local fn typed_body(env: Env, lv: List[String], ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
   no_brackets([ty_raw, body_raw])!

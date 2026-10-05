@@ -1,7 +1,8 @@
 // Inductive types, defined and checked by Arlk itself: the recursors and
 // their computation rules are generated, then checked by the kernel.
 // Implicit parameters (in [...], like Almide's generics) and universe
-// levels are inferred.
+// levels are inferred. `match` compiles to the recursor (structural
+// recursion), and a theorem proved by `match` is a proof by induction.
 
 room data
 
@@ -9,8 +10,10 @@ type Nat: Type =
   | zero
   | succ(n: Nat)
 
-def add(m: Nat, n: Nat) -> Nat =
-  Nat.rec((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+def add(m: Nat, n: Nat) -> Nat = match n {
+  zero => m,
+  succ(k) => Nat.succ(add(m, k)),
+}
 
 def one: Nat = Nat.succ(Nat.zero)
 def two: Nat = Nat.succ(one)
@@ -23,15 +26,29 @@ type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
 // The kernel computes 1 + 1, so reflexivity proves it equals 2.
 theorem one_plus_one: Eq(Nat, add(one, one), two) = Eq.refl
 
+def cong[u, v, A: Sort(u), B: Sort(v)](f: A -> B, x: A, y: A, h: Eq(A, x, y)) -> Eq(B, f(x), f(y)) =
+  Eq.rec((y': A, e: Eq(A, x, y')) => Eq(B, f(x), f(y')), Eq.refl, y, h)
+
+// 0 + n = n does not compute (add recurses on its second argument): it
+// needs induction on n.
+theorem zero_add(n: Nat) -> Eq(Nat, add(Nat.zero, n), n) = match n {
+  zero => Eq.refl,
+  succ(k) => cong(Nat.succ, add(Nat.zero, k), k, zero_add(k)),
+}
+
 type List[u](A: Type(u)): Type(u) =
   | nil
   | cons(head: A, tail: List(A))
 
-def length[u, A: Type(u)](xs: List(A)) -> Nat =
-  List.rec((l: List(A)) => Nat, Nat.zero, (h: A, t: List(A), r: Nat) => Nat.succ(r), xs)
+def length[u, A: Type(u)](xs: List(A)) -> Nat = match xs {
+  nil => Nat.zero,
+  cons(h, t) => Nat.succ(length(t)),
+}
 
-def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) =
-  List.rec((l: List(A)) => List(B), List.nil, (h: A, t: List(A), r: List(B)) => List.cons(f(h), r), xs)
+def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) = match xs {
+  nil => List.nil,
+  cons(h, t) => List.cons(f(h), map(f, t)),
+}
 
 def numbers: List(Nat) = List.cons(Nat.zero, List.cons(one, List.nil))
 
@@ -63,4 +80,4 @@ theorem or_swap(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Or(b, a) =
 
 def explode[u](A: Sort(u), h: False) -> A = False.rec((x: False) => A, h)
 
-axioms map_keeps_length
+axioms zero_add

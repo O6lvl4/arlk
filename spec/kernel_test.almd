@@ -448,3 +448,47 @@ test "inference never makes a false statement true" {
 test "what cannot be inferred is reported, not guessed" {
   assert(rejects_with(LISTS + "def e: Nat = length(List.nil)", "cannot infer"))
 }
+
+// ── Pattern matching ────────────────────────────────────────────────
+
+let ADD = NAT + """
+  type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+    | refl: Eq(A, a, a)
+  def add(m: Nat, n: Nat) -> Nat = match n {
+    zero => m,
+    succ(k) => Nat.succ(add(m, k)),
+  }
+  def cong[u, v, A: Sort(u), B: Sort(v)](f: A -> B, x: A, y: A, h: Eq(A, x, y)) -> Eq(B, f(x), f(y)) =
+    Eq.rec((y': A, e: Eq(A, x, y')) => Eq(B, f(x), f(y')), Eq.refl, y, h)
+  """
+
+test "a match compiles to the recursor, and computes" {
+  assert(accepts(ADD + "theorem two: Eq(Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl"))
+}
+
+test "a theorem proved by a match is a proof by induction" {
+  assert(accepts(ADD + """
+    theorem zero_add(n: Nat) -> Eq(Nat, add(Nat.zero, n), n) = match n {
+      zero => Eq.refl,
+      succ(k) => cong(Nat.succ, add(Nat.zero, k), k, zero_add(k)),
+    }
+    """))
+  // The induction hypothesis is for k, not for anything: a wrong step fails.
+  assert(rejects_with(ADD + """
+    theorem bad(n: Nat) -> Eq(Nat, add(Nat.zero, n), Nat.zero) = match n {
+      zero => Eq.refl,
+      succ(k) => bad(k),
+    }
+    """, "mismatch"))
+}
+
+test "only structural recursion is accepted" {
+  assert(rejects_with(NAT + "def loop(n: Nat) -> Nat = match n {\n  zero => Nat.zero,\n  succ(k) => loop(Nat.succ(k)),\n}", "structural recursion"))
+  assert(rejects_with(NAT + "def loop(n: Nat) -> Nat = match n {\n  zero => loop(n),\n  succ(k) => k,\n}", "structural recursion"))
+}
+
+test "every constructor needs an arm, each at most one" {
+  assert(rejects_with(NAT + "def f(n: Nat) -> Nat = match n {\n  zero => n,\n}", "no arm for"))
+  assert(rejects_with(NAT + "def f(n: Nat) -> Nat = match n {\n  zero => n,\n  zero => n,\n  succ(k) => k,\n}", "two arms"))
+  assert(accepts(NAT + "def pred(n: Nat) -> Nat = match n {\n  succ(k) => k,\n  _ => Nat.zero,\n}"))
+}

@@ -435,6 +435,7 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
     ok((Pi(x, tty, tb), Sort(LIMax(u, v))))
   },
   RBracket(_) => err("brackets {...} are only allowed in the left-hand side of a rule"),
+  RMatch(_, _) => err("a match must be a definition's whole body, on one of its parameters"),
 }
 
 // A type, and the level of the universe it lives in.

@@ -119,12 +119,24 @@ type List[u](A: Type(u)): Type(u) =
   | nil
   | cons(head: A, tail: List(A))
 
-def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) =
-  List.rec((l: List(A)) => List(B), List.nil, (h: A, t: List(A), r: List(B)) => List.cons(f(h), r), xs)
+// Almide's match: compiled to the recursor, structural recursion only.
+def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) = match xs {
+  nil => List.nil,
+  cons(h, t) => List.cons(f(h), map(f, t)),
+}
 
-def add(m: Nat, n: Nat) -> Nat = Nat.rec((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+def add(m: Nat, n: Nat) -> Nat = match n {
+  zero => m,
+  succ(k) => Nat.succ(add(m, k)),
+}
 
 theorem one_plus_one: Eq(Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
+
+// A theorem proved by match is a proof by induction: zero_add(k) is the hypothesis for k.
+theorem zero_add(n: Nat) -> Eq(Nat, add(Nat.zero, n), n) = match n {
+  zero => Eq.refl,
+  succ(k) => cong(Nat.succ, add(Nat.zero, k), k, zero_add(k)),
+}
 ```
 
 **Inductive types.** A `type` declaration gives the type former, its constructors (`Nat.succ`),
@@ -136,6 +148,13 @@ not, exactly as in Lean). Propositions with one argument-free constructor (`Eq`)
 computation. The generated recursor and rules are then checked by the kernel like any
 declaration, and a rejected type leaves nothing behind.
 
+**Pattern matching.** A definition whose body is `match x { ... }` on one of its parameters is
+compiled to x's recursor (src/patterns.almd): each arm becomes a minor premise, and a recursive
+call on an argument the arm took apart becomes the induction hypothesis. Anything else that calls
+the definition is rejected, so definitions always terminate. Parameters after the matched one may
+change in recursive calls (an accumulator) and travel through the motive. Arms may use short
+constructor names and `_` for the rest; a missing or repeated arm is an error.
+
 **Inference.** The elaborator (src/elab.almd) fills in implicit arguments, universe levels and `_`
 holes by unification (higher-order patterns, as in Lean and Agda): `List.cons(x, xs)` is
 `List.cons[0](Nat, x, xs)`, `Eq.refl` finds its type and value from the statement. The elaborator
@@ -143,7 +162,7 @@ is not trusted: its output is a complete kernel term, checked like a hand-writte
 inference is a type error, never a false theorem. What it cannot infer it reports. See
 [examples/data.arlk](examples/data.arlk).
 
-Next on this road: pattern-matching definitions compiled to recursors, structures with
+Next on this road: nested patterns and matching on indexed families, structures with
 projections, mutual and nested types, and reading Lean and Rocq libraries directly into these native
 features instead of through the `core` encoding.
 

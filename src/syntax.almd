@@ -30,6 +30,9 @@ type Raw =
   // Generated code only: a constant at the given levels with every
   // argument explicit (no implicit arguments inserted), like Lean's `@c`.
   | RExplicit(String, List[Raw])
+  // `match x { C(a, b) => e, _ => e }`, Almide's match: compiled to the
+  // recursor of x's type (structural recursion, see patterns.almd).
+  | RMatch(Raw, List[Arm])
   | RApp(Raw, Raw)
   | RLam(String, Raw, Raw)
   | RPi(String, Raw, Raw)
@@ -57,6 +60,9 @@ type Constructor = { name: String, args: List[(String, Raw)], result: Raw? }
 
 type Located = { line: Int, decl: Decl }
 
+// One arm of a match: a constructor (or `_`), the names it binds, the body.
+type Arm = { ctor: String, vars: List[String], body: Raw }
+
 // A declared name: its universe parameters, how many of its leading
 // parameters are implicit (written in `[...]`, inferred at each use), and
 // its full type.
@@ -77,6 +83,7 @@ let KEYWORDS = [
   "Type",
   "Sort",
   "type",
+  "match",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
@@ -296,8 +303,39 @@ local fn args_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)!
   }
 }
 
+// `C(a, b) => body`, `C => body` or `_ => body`, separated by commas.
+local fn arms(ts: List[Token], p: Int, acc: List[Arm]) -> (List[Arm], Int)! =
+  if is_sym(ts, p, "}") then ok((acc, p + 1))
+  else {
+    let (ctor, p1) = ident(ts, p)!
+    let (vars, p2) = (if is_sym(ts, p1, "(") then arm_vars(ts, p1 + 1, []) else ok(([], p1)))!
+    let p3 = expect(ts, p2, "=>")!
+    let (body, p4) = term(ts, p3)!
+    let acc2 = acc + [Arm { ctor: ctor, vars: vars, body: body }]
+    if is_sym(ts, p4, ",") then arms(ts, p4 + 1, acc2)
+    else {
+      let p5 = expect(ts, p4, "}")!
+      ok((acc2, p5))
+    }
+  }
+
+local fn arm_vars(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int)! = {
+  let (x, p1) = ident(ts, p)!
+  if is_sym(ts, p1, ",") then arm_vars(ts, p1 + 1, acc + [x])
+  else {
+    let p2 = expect(ts, p1, ")")!
+    ok((acc + [x], p2))
+  }
+}
+
 local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   let t = tok(ts, p)
+  guard not is_kw(ts, p, "match") else {
+    let (scrut, p1) = term(ts, p + 1)!
+    let p2 = expect(ts, p1, "{")!
+    let (as, p3) = arms(ts, p2, [])!
+    ok((RMatch(scrut, as), p3))
+  }
   if t.kind == "ident" then {
     if is_sym(ts, p + 1, "[") then {
       let (ls, p1) = level_list(ts, p + 2, [])!
@@ -564,6 +602,20 @@ test "inductive types: parameters, indices, constructors with and without result
   }
   match first_decl("type Nat: Type = | zero | succ(n: Nat)") {
     DInductive(ind) => assert_eq(ind.ctors |> list.map((c) => c.result == none), [true, true]),
+    _ => assert(false),
+  }
+}
+
+test "match: Almide's syntax, arms with and without bound names" {
+  match first_decl("def f(n: Nat) -> Nat = match n {\n  Nat.zero => n,\n  Nat.succ(k) => k,\n  _ => n,\n}") {
+    DDef(_, body) => match body {
+      RLam(_, _, RMatch(RName(x), as)) => {
+        assert_eq(x, "n")
+        assert_eq(as |> list.map((a) => a.ctor), ["Nat.zero", "Nat.succ", "_"])
+        assert_eq(as |> list.map((a) => list.len(a.vars)), [0, 1, 0])
+      },
+      _ => assert(false),
+    },
     _ => assert(false),
   }
 }

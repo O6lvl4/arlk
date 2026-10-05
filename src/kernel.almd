@@ -68,9 +68,13 @@ type Env = {
   // how many leading parameters of a constant are implicit (inferred by
   // the elaborator); only constants that have some are listed
   implicits: Map[String, Int],
+  // inductive types: their number of parameters, indices and constructors
+  inductives: Map[String, IndInfo],
   room: String,
   order: List[String],
 }
+
+type IndInfo = { params: Int, indices: Int, ctors: List[String] }
 
 // A typing context: innermost binder first.
 type Ctx = List[(String, Term)]
@@ -86,6 +90,7 @@ fn empty() -> Env = Env {
   rooms: ["main": []],
   lparams: [:],
   implicits: [:],
+  inductives: [:],
   room: "main",
   order: [],
 }

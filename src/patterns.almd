@@ -1,0 +1,171 @@
+// Pattern matching, compiled to recursors.
+//
+//   def add(m: Nat, n: Nat) -> Nat = match n {
+//     Nat.zero => m,
+//     Nat.succ(k) => Nat.succ(add(m, k)),
+//   }
+//
+// becomes
+//
+//   def add(m: Nat, n: Nat) -> Nat =
+//     Nat.rec((n: _) => Nat,
+//             m,
+//             (k: _, ih_k: _) => Nat.succ(ih_k),
+//             n)
+//
+// The match must be a definition's whole body, on one of its parameters.
+// A recursive call must pass, in that position, an argument the arm took
+// apart (k above): that is structural recursion, so the definition always
+// terminates, and the call becomes the induction hypothesis for k.
+// Parameters before the matched one stay fixed in recursive calls;
+// parameters after it may change, and are passed along through the
+// motive. Theorems are proved by induction the same way.
+//
+// The result still has holes (`_`) for binder types; the elaborator fills
+// them from the recursor's type, and the kernel checks the outcome, so
+// nothing here is trusted.
+
+import self.syntax.{Raw, Arm}
+
+// What the compiler needs to know about the matched type: its recursor,
+// and for each constructor its full name, its number of arguments and
+// which of them are recursive.
+type Target = { rec: String, ctors: List[(String, Int, List[Int])] }
+
+type Def = { name: String, implicits: Int, params: List[(String, Raw)], ret: Raw }
+
+local fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
+
+local fn raw_spine(r: Raw) -> (Raw, List[Raw]) = spine_acc(r, [])
+
+local fn spine_acc(r: Raw, args: List[Raw]) -> (Raw, List[Raw]) = match r {
+  RApp(f, a) => spine_acc(f, [a] + args),
+  other => (other, args),
+}
+
+local fn hole() -> Raw = RName("_")
+
+local fn lams(xs: List[String], body: Raw) -> Raw =
+  list.fold(list.reverse(xs), body, (acc, x) => RLam(x, hole(), acc))
+
+local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+local fn fresh(x: String, taken: List[String]) -> String =
+  if list.contains(taken, x) then fresh(x + "'", taken) else x
+
+// Every name written in r (binders and references), to keep generated
+// names apart from them.
+local fn names_in(r: Raw) -> List[String] = match r {
+  RName(x) => [x],
+  RApp(f, a) => names_in(f) + names_in(a),
+  RLam(x, ty, b) => [x] + names_in(ty) + names_in(b),
+  RPi(x, ty, b) => [x] + names_in(ty) + names_in(b),
+  RBracket(b) => names_in(b),
+  RMatch(s, arms) => names_in(s) + (arms |> list.flat_map((a) => a.vars + names_in(a.body))),
+  _ => [],
+}
+
+// `match x { ... }` as the body of `d`. `arms` have their constructors
+// already resolved to full names (or "_").
+fn compile(d: Def, scrut: String, arms: List[Arm], t: Target) -> Raw! = {
+  let pnames = d.params |> list.map(((x, _)) => x)
+  let k = match list.index_of(pnames, scrut) {
+    some(i) => ok(i),
+    none => err("match on ${scrut}: only a parameter of ${d.name} can be matched"),
+  }!
+  guard k >= d.implicits else err("match on ${scrut}: an implicit parameter cannot be matched")
+  let others = list.drop(d.params, k + 1)
+  let other_names = others |> list.map(((x, _)) => x)
+  // Each constructor gets exactly one arm (a `_` arm covers the rest).
+  for a in arms {
+    guard a.ctor == "_" or list.any(t.ctors, ((c, _, _)) => c == a.ctor) else err("${a.ctor} is not a constructor of ${scrut}'s type")
+  }
+  let named = arms |> list.filter((a) => a.ctor != "_") |> list.map((a) => a.ctor)
+  guard list.len(list.unique(named)) == list.len(named) else err("a constructor has two arms in the match on ${scrut}")
+  let wildcard = list.find(arms, (a) => a.ctor == "_")
+  let motive = RLam(scrut, hole(), pis(others, d.ret))
+  var minors: List[Raw] = []
+  for (c, nargs, recs) in t.ctors {
+    let arm = match list.find(arms, (a) => a.ctor == c) {
+      some(a) => ok(a),
+      none => match wildcard {
+        some(w) => ok(Arm { ctor: c, vars: [], body: w.body }),
+        none => err("the match on ${scrut} has no arm for ${c}"),
+      },
+    }!
+    let taken = pnames + names_in(arm.body) + arm.vars
+    let vars = if arm.ctor == c and a_specific(arm, c) then arm.vars
+      else list.map(0..<nargs, (i) => fresh("_" + int.to_string(i + 1), taken))
+    guard list.len(vars) == nargs else err("${c} takes ${int.to_string(nargs)} arguments, the arm names ${int.to_string(list.len(vars))}")
+    var ihs: List[(Int, String)] = []
+    for i in recs {
+      let v = list.get(vars, i) ?? ""
+      list.push(ihs, (i, fresh("ih_" + v, taken + vars + (ihs |> list.map(((_, n)) => n)))))
+    }
+    let body = recursive_calls(d, k, arm.body, vars, ihs)!
+    list.push(minors, lams(vars + (ihs |> list.map(((_, n)) => n)) + other_names, body))
+  }
+  let call = raw_apply(RName(t.rec), [motive] + minors + [RName(scrut)])
+  ok(raw_apply(call, other_names |> list.map((x) => RName(x))))
+}
+
+local fn a_specific(a: Arm, c: String) -> Bool = a.ctor == c
+
+// Replace each recursive call `d(..., v, others...)`, where v is a
+// recursive argument the arm bound, by its induction hypothesis applied to
+// the others. Anything else that calls d is not structural recursion.
+local fn recursive_calls(d: Def, k: Int, r: Raw, vars: List[String], ihs: List[(Int, String)]) -> Raw! = {
+  let (h, args) = raw_spine(r)
+  match h {
+    RName(f) =>
+      if f == d.name then call_to_ih(d, k, args, vars, ihs)
+      else {
+        var out: List[Raw] = []
+        for a in args {
+          list.push(out, recursive_calls(d, k, a, vars, ihs)!)
+        }
+        ok(raw_apply(h, out))
+      },
+    _ => match r {
+      RApp(f, a) => ok(RApp(recursive_calls(d, k, f, vars, ihs)!, recursive_calls(d, k, a, vars, ihs)!)),
+      RLam(x, ty, b) => ok(RLam(x, recursive_calls(d, k, ty, vars, ihs)!, recursive_calls(d, k, b, vars, ihs)!)),
+      RPi(x, ty, b) => ok(RPi(x, recursive_calls(d, k, ty, vars, ihs)!, recursive_calls(d, k, b, vars, ihs)!)),
+      RMatch(_, _) => err("a match must be a definition's whole body"),
+      other => ok(other),
+    },
+  }
+}
+
+local fn call_to_ih(d: Def, k: Int, args: List[Raw], vars: List[String], ihs: List[(Int, String)]) -> Raw! = {
+  // Recursive calls leave the implicit parameters out, like any call.
+  let explicit = list.len(d.params) - d.implicits
+  guard list.len(args) == explicit else err("the recursive call to ${d.name} must pass all ${int.to_string(explicit)} arguments")
+  let pos = k - d.implicits
+  // Parameters before the matched one are fixed.
+  for (i, a) in list.enumerate(list.take(args, pos)) {
+    let (p, _) = list.get(d.params, d.implicits + i) ?? ("", RType)
+    guard a == RName(p) else err("in a recursive call to ${d.name}, ${p} must be passed unchanged (it comes before the matched parameter)")
+  }
+  let arg = list.get(args, pos) ?? RType
+  let ih = match arg {
+    RName(v) => match list.index_of(vars, v) {
+      some(i) => match list.find(ihs, ((j, _)) => j == i) {
+        some((_, n)) => some(n),
+        none => none,
+      },
+      none => none,
+    },
+    _ => none,
+  }
+  match ih {
+    some(n) => {
+      var rest: List[Raw] = []
+      for a in list.drop(args, pos + 1) {
+        list.push(rest, recursive_calls(d, k, a, vars, ihs)!)
+      }
+      ok(raw_apply(RName(n), rest))
+    },
+    none => err("${d.name} is called recursively on something that is not a smaller part of the matched value (structural recursion only)"),
+  }
+}
