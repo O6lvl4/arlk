@@ -81,7 +81,20 @@ type Env = {
 // carried along it got there (`renamed`), and images given for symbols of
 // rooms built on the source, used when a translation reaches them
 // (`pending`, still to be checked against their translated types).
-type View = { source: String, images: Map[String, Term], renamed: Map[String, String], pending: Map[String, Raw] }
+// `name`, `target` (the declaring room), what was mapped and what carried
+// as assumptions, and the views it was composed of are kept for `views`
+// and `routes`.
+type View = {
+  source: String,
+  images: Map[String, Term],
+  renamed: Map[String, String],
+  pending: Map[String, Raw],
+  name: String,
+  target: String,
+  mapped: List[String],
+  carried: List[String],
+  via: List[String],
+}
 
 type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String] }
 

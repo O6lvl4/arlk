@@ -86,6 +86,9 @@ irrelevant T  where x: A               values of T are all equal (definitional p
 type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
 view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
 translate V name                       carry name (from a room built on S) here along V, checked again
+view V from S via v1, v2               compose two views (S read in R by v1, R read here by v2), checked
+views                                  list the views: mapped and carried symbols, what each rests on
+routes from S                          list the ways (at most two views) from S into this room
 theorem t(...) -> T = search(l, ...)   find a proof (bounded search), print it, check it like a written one
 
 check t                                print the type of t
@@ -447,7 +450,15 @@ axioms holtypes.em
 ```
 
 Excluded middle in Arlk's own logic, proved by HOL's library and resting on exactly the axioms Lean
-assumes. CI rejects a degenerate view that reads every HOL statement as true, and
+assumes.
+
+Views can be found and composed. `views` lists every view with what it maps, what it carries as
+assumptions and what its images rest on; `routes from S` lists the ways from room S into the
+current room through at most two views, each with the assumptions it rests on, and when there are
+several it shows them all and picks none. `view ac from a via ab, bc` composes two views: each
+image of `ab` is carried along `bc`, and the result goes through the same checks as a written view,
+so a theorem translated along `ac` is the one translated along `ab` and then `bc`. Discovery only
+proposes: nothing is used until it is declared and checked. CI rejects a degenerate view that reads every HOL statement as true, and
 [spec/fixtures/reject](spec/fixtures/reject) has views with a wrongly typed image, a broken rule,
 and an attempt to replace a theorem.
 

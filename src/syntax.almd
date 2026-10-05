@@ -61,6 +61,11 @@ type Decl =
   // `theorem t(...) -> T = search(lemma, ..., depth: n)`: a proof found by
   // bounded search (src/search.almd), then checked like a written one.
   | DSearch(Sig, String, List[String], Int)
+  // `view V from S via v1, v2`: two views composed, checked as a view.
+  | DViewVia(String, String, List[String])
+  // `views`: the catalog; `routes from S`: ways from S into this room.
+  | DViews
+  | DRoutes(String)
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -109,6 +114,8 @@ let KEYWORDS = [
   "translate",
   "let",
   "search",
+  "views",
+  "routes",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
@@ -700,9 +707,31 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       let (name, p1) = ident(ts, p + 1)!
       guard tok(ts, p1).text == "from" else err(fail_at(ts, p1, "expected `from` and the room the view reads: view V from S { ... }"))
       let (src, p2) = ident(ts, p1 + 1)!
+      guard tok(ts, p2).text != "via" else {
+        var names: List[String] = []
+        var q = p2 + 1
+        var going = true
+        while going {
+          let (x, q1) = ident(ts, q)!
+          list.push(names, x)
+          if is_sym(ts, q1, ",") then {
+            q = q1 + 1
+          } else {
+            q = q1
+            going = false
+          }
+        }
+        ok((DViewVia(name, src, names), q))
+      }
       let p3 = expect(ts, p2, "{")!
       let (entries, p4) = view_entries(ts, p3)!
       ok((DView(name, src, entries), p4))
+    },
+    "views" => ok((DViews, p + 1)),
+    "routes" => {
+      guard tok(ts, p + 1).text == "from" else err(fail_at(ts, p + 1, "expected `from`: routes from S"))
+      let (src, p1) = ident(ts, p + 2)!
+      ok((DRoutes(src), p1))
     },
     "translate" => {
       let (v, p1) = ident(ts, p + 1)!

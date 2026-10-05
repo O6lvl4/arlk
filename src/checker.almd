@@ -318,6 +318,17 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
       },
     }
   },
+  DViewVia(name, src, via) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match compose_view(env, name, src, via) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
   DTranslate(v, name) => {
     let start = list.len(env.order)
     let nrules = list.len(env.rules)
@@ -430,7 +441,16 @@ local fn add_view(mut env: Env, name: String, src: String, entries: List[(String
     guard not map.contains(given, q) and not map.contains(pending, q) else err("view ${name}: ${x} is mapped twice")
     if home == src then map.insert(given, q, r) else map.insert(pending, q, r)
   }
-  var v = View { source: src, images: [:], renamed: [:], pending: pending }
+  let none_yet: Map[String, Term] = [:]
+  install_view(env, name, src, given, none_yet, pending, [])
+}
+
+// The checks every view goes through, written or composed: each image
+// against its symbol's translated type, the source's definitions and
+// theorems carried and checked again, its rules kept by conversion.
+local fn install_view(mut env: Env, name: String, src: String, given: Map[String, Raw], terms: Map[String, Term], pending: Map[String, Raw], via: List[String]) -> List[String]! = {
+  let vq = env.room + "." + name
+  var v = View { source: src, images: [:], renamed: [:], pending: pending, name: vq, target: env.room, mapped: [], carried: [], via: via }
   var order: List[String] = []
   for q in env.order {
     if room_of(env, q) == src then list.push(order, q) else ()
@@ -443,9 +463,15 @@ local fn add_view(mut env: Env, name: String, src: String, entries: List[(String
         image(env, v, q, r)!
         mapped = mapped + 1
       },
-      none => {
-        let _ = carry_decl(env, v, name, q)!
-        if is_symbol(env, q) then list.push(carried, q) else ()
+      none => match map.get(terms, q) {
+        some(t) => {
+          image_term(env, v, q, t)!
+          mapped = mapped + 1
+        },
+        none => {
+          let _ = carry_decl(env, v, name, q)!
+          if is_symbol(env, q) then list.push(carried, q) else ()
+        },
       },
     }
   }
@@ -456,9 +482,12 @@ local fn add_view(mut env: Env, name: String, src: String, entries: List[(String
   for r in env.irrelevants {
     guard r.room != src else err("view ${name}: ${src} declares irrelevant types, which views do not carry yet")
   }
+  v.mapped = list.sort(map.keys(v.images))
+  v.carried = carried
   map.insert(env.views, vq, v)
   let note = if list.is_empty(carried) then "" else "; carried as assumptions: ${list.join(carried, ", ")}"
-  ok(["✓ view ${vq}: ${src} in ${env.room}, ${int.to_string(mapped)} symbols mapped${note}"])
+  let route = if list.is_empty(via) then "" else " (composed: ${list.join(via, " then ")})"
+  ok(["✓ view ${vq}: ${src} in ${env.room}${route}, ${int.to_string(mapped)} symbols mapped${note}"])
 }
 
 // The image of a symbol: a term of this room with the symbol's translated type.
@@ -471,6 +500,158 @@ local fn image(mut env: Env, mut v: View, q: String, r: Raw) -> Unit! = {
   check(env, [], t, ty, bu)!
   map.insert(v.images, q, t)
   ok(())
+}
+
+// An image given as a term (a composed view's): checked the same way.
+local fn image_term(mut env: Env, mut v: View, q: String, t: Term) -> Unit! = {
+  guard not map.contains(env.lparams, q) else err("${q} has universe parameters; a view maps only symbols without them")
+  let ty = carry(v, map.get(env.types, q) ?? type0())
+  var bu = budget()
+  expect_sort(env, [], ty, bu)!
+  check(env, [], t, ty, bu)!
+  map.insert(v.images, q, t)
+  ok(())
+}
+
+// ── Composing and finding views (#13) ───────────────────────────────
+
+// A view by the name it was declared with (`ab` or `b.ab`), among the
+// views whose source is `src`; two candidates are an error that lists them.
+local fn view_named(env: Env, n: String, src: String) -> View! = {
+  var found: List[View] = []
+  for (k, v) in map.entries(env.views) {
+    if (k == n or string.ends_with(k, "." + n)) and v.source == src then list.push(found, v) else ()
+  }
+  match found {
+    [] => err("no view ${n} from ${src}"),
+    [v] => ok(v),
+    many => err("${n} is ambiguous: ${list.join(many |> list.map((v) => v.name), ", ")}"),
+  }
+}
+
+// `view ac from a via ab, bc`: ab reads a in b, bc (declared here) reads b
+// here; each image of ab is carried along bc, and the result is checked
+// as a view of its own.
+local fn compose_view(mut env: Env, name: String, src: String, via: List[String]) -> List[String]! = {
+  guard list.len(via) == 2 else err("view ${name}: compose exactly two views (via first, second)")
+  guard map.contains(env.rooms, src) else err("view ${name}: unknown room ${src}")
+  let vq = env.room + "." + name
+  guard not map.contains(env.views, vq) else err("view ${vq} already exists")
+  let first = view_named(env, list.get(via, 0) ?? "", src)!
+  var second = view_named(env, list.get(via, 1) ?? "", first.target)!
+  guard second.target == env.room else err("view ${name}: ${second.name} reads ${first.target} in ${second.target}, not here (${env.room})")
+  guard map.is_empty(first.pending) else err("view ${name}: ${first.name} maps symbols of rooms built on ${src}; composing those is not supported yet")
+  var terms: Map[String, Term] = [:]
+  for (q, t) in map.entries(first.images) {
+    carry_closure(env, second, t)!
+    map.insert(terms, q, carry(second, t))
+  }
+  let none_raw: Map[String, Raw] = [:]
+  let lines = install_view(env, name, src, none_raw, terms, none_raw, [first.name, second.name])!
+  // Only now: if anything failed, the declarations are rolled back and the
+  // second view must not remember them.
+  map.insert(env.views, second.name, second)
+  ok(lines)
+}
+
+// Carry along v everything t uses that is built on v's source.
+local fn carry_closure(mut env: Env, mut v: View, t: Term) -> Unit! = {
+  var need: List[(Int, String)] = []
+  var seen: Map[String, Bool] = [:]
+  var stack: List[String] = consts(t)
+  var going = true
+  while going {
+    match list.pop(stack) {
+      none => {
+        going = false
+      },
+      some(c) => {
+        let skip = map.contains(seen, c) or map.contains(v.images, c) or map.contains(v.renamed, c) or not sees(env, room_of(env, c), v.source)
+        if skip then ()
+        else {
+          map.insert(seen, c, true)
+          let h = match map.get(env.entries, c) {
+            some(e) => e.height,
+            none => 0,
+          }
+          list.push(need, (h, c))
+          for d in consts(map.get(env.types, c) ?? type0()) {
+            list.push(stack, d)
+          }
+          match map.get(env.bodies, c) {
+            some(b) => for d in consts(b) {
+              list.push(stack, d)
+            },
+            none => (),
+          }
+        }
+      },
+    }
+  }
+  let prefix = match list.last(string.split(v.name, ".")) {
+    some(x) => x,
+    none => v.name,
+  }
+  for (_, c) in list.sort_by(need, ((h, _)) => h) {
+    let _ = carry_decl(env, v, prefix, c)!
+  }
+  ok(())
+}
+
+// The symbols a view's images rest on (what using it assumes).
+local fn footprint(env: Env, v: View) -> List[String] = {
+  var out: List[String] = []
+  for (_, t) in map.entries(v.images) {
+    for c in consts(t) {
+      for s in deps(env, c).symbols {
+        if list.contains(out, s) then () else list.push(out, s)
+      }
+    }
+  }
+  list.sort(out)
+}
+
+local fn rests_on(env: Env, vs: List[View]) -> String = {
+  var all: List[String] = []
+  for v in vs {
+    for x in footprint(env, v) + v.carried {
+      if list.contains(all, x) then () else list.push(all, x)
+    }
+  }
+  if list.is_empty(all) then "(nothing)" else list.join(all, ", ")
+}
+
+local fn catalog(env: Env) -> List[String] = {
+  var out: List[String] = []
+  for v in list.sort_by(map.values(env.views), (v) => v.name) {
+    let via = if list.is_empty(v.via) then "" else ", composed of " + list.join(v.via, " then ")
+    list.push(out, "view ${v.name}: ${v.source} in ${v.target}${via}")
+    list.push(out, "  mapped:  ${list.join(v.mapped, ", ")}")
+    list.push(out, "  carried: ${if list.is_empty(v.carried) then "(none)" else list.join(v.carried, ", ")}")
+    list.push(out, "  rests on: ${rests_on(env, [v])}")
+  }
+  if list.is_empty(out) then ["no views"] else out
+}
+
+// Routes from room src into this room: a view declared here (one hop), or
+// a view into some room r followed by a view of r declared here (two). The
+// search stops at two hops; every route found is listed, none is chosen.
+local fn routes(env: Env, src: String) -> List[String] = {
+  var out: List[String] = []
+  let here = map.values(env.views) |> list.filter((v) => v.target == env.room)
+  for v in here {
+    if v.source == src then list.push(out, "route ${src} -> ${env.room}: ${v.name}; rests on ${rests_on(env, [v])}") else ()
+  }
+  for v2 in here {
+    for v1 in map.values(env.views) {
+      if v1.source == src and v1.target == v2.source and v1.target != env.room then {
+        list.push(out, "route ${src} -> ${v1.target} -> ${env.room}: ${v1.name} then ${v2.name}; rests on ${rests_on(env, [v1, v2])} (compose with: view NAME from ${src} via ${v1.name}, ${v2.name})")
+      } else ()
+    }
+  }
+  if list.is_empty(out) then ["no route from ${src} to ${env.room} within two views (inconclusive: longer routes are not searched)"]
+  else if list.len(out) > 1 then ["${int.to_string(list.len(out))} routes; none is chosen for you:"] + out
+  else out
 }
 
 local fn no_brackets_ok(r: Raw) -> Raw! = {
@@ -770,6 +951,12 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   },
   DInductive(_) => err("a type declaration is processed by `process`"),
   DView(_, _, _) => err("a view is processed by `process`"),
+  DViewVia(_, _, _) => err("a view is processed by `process`"),
+  DViews => ok((NoChange, catalog(env))),
+  DRoutes(src) => {
+    guard map.contains(env.rooms, src) else err("unknown room ${src}")
+    ok((NoChange, routes(env, src)))
+  },
   DSearch(sig, kind, names, depth) => {
     no_brackets([sig.ty])!
     let ty = surface_type(env, sig.levels, sig.ty)!
