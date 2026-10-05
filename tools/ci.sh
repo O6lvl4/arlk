@@ -92,6 +92,18 @@ else
   record "Rocq Corelib.Init (known baseline)" FAIL "differs from the baseline, see $LOGS/rocq-init.diff"
 fi
 
+# Lean's Init.Data.Nat.Lemmas: 1553 of 1573 declarations check. Exactly
+# the known failures (three roots in Nat.Linear's reflection proofs: one
+# conversion, two out of budget; the rest depend on them) are allowed.
+log="$LOGS/lean-nat-lemmas.log"
+limit 2400 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
+grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/lean-nat-lemmas.failures"
+if diff -u absorbed/lean/init_data_nat_lemmas.expected-failures "$LOGS/lean-nat-lemmas.failures" >"$LOGS/lean-nat-lemmas.diff" && grep -q '^20 failed, 1553 declarations checked' "$log"; then
+  record "Lean Init.Data.Nat.Lemmas (known baseline)" pass "20 known failures, 1553 checked"
+else
+  record "Lean Init.Data.Nat.Lemmas (known baseline)" FAIL "differs from the baseline, see $LOGS/lean-nat-lemmas.diff"
+fi
+
 # Lean's theorems on Rocq's numbers (examples/transport.arlk): checked, and
 # a broken translation or a false preservation lemma must be rejected.
 LIBS="lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk"

@@ -117,6 +117,11 @@ partial def exportExpr (fvs : Array Expr) (e : Expr) : M Json := do
   | .lit (.natVal n) =>
     let _ ← ensure ``Nat.zero []
     let _ ← ensure ``Nat.succ []
+    -- A large literal is spelled in binary with Nat.add and Nat.mul (see
+    -- absorb.almd), which must come before the declaration that uses it.
+    if n > 4096 then
+      let _ ← ensure ``Nat.add []
+      let _ ← ensure ``Nat.mul []
     return Json.mkObj [("n", toJson n)]
   | .lit (.strVal _) => throwError "string literals are not supported yet"
   | .proj s i x =>

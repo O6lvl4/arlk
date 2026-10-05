@@ -1,0 +1,20 @@
+absorbed/lean/init_data_nat_lemmas.arlk:2605: type mismatch for Eq.trans@1
+absorbed/lean/init_data_nat_lemmas.arlk:2613: unknown name Nat.Linear.Poly.denote_reverse
+absorbed/lean/init_data_nat_lemmas.arlk:2615: unknown name Nat.Linear.Poly.of_denote_eq_cancelAux
+absorbed/lean/init_data_nat_lemmas.arlk:2617: unknown name Nat.Linear.Poly.denote_reverse
+absorbed/lean/init_data_nat_lemmas.arlk:2619: unknown name Nat.Linear.Poly.denote_eq_cancelAux
+absorbed/lean/init_data_nat_lemmas.arlk:2621: unknown name Nat.Linear.Poly.of_denote_eq_cancel
+absorbed/lean/init_data_nat_lemmas.arlk:2667: out of budget: reduction did not finish
+absorbed/lean/init_data_nat_lemmas.arlk:2669: unknown name Nat.Linear.Expr.denote_toPoly_go
+absorbed/lean/init_data_nat_lemmas.arlk:2675: unknown name Nat.Linear.Poly.denote_reverse
+absorbed/lean/init_data_nat_lemmas.arlk:2677: unknown name Nat.Linear.Poly.of_denote_le_cancelAux
+absorbed/lean/init_data_nat_lemmas.arlk:2683: unknown name Nat.Linear.Poly.denote_reverse
+absorbed/lean/init_data_nat_lemmas.arlk:2685: unknown name Nat.Linear.Poly.denote_le_cancelAux
+absorbed/lean/init_data_nat_lemmas.arlk:2687: unknown name Nat.Linear.Poly.of_denote_le_cancel
+absorbed/lean/init_data_nat_lemmas.arlk:2689: unknown name Nat.Linear.Poly.denote_eq_cancel_eq
+absorbed/lean/init_data_nat_lemmas.arlk:2707: out of budget: reduction did not finish
+absorbed/lean/init_data_nat_lemmas.arlk:2709: unknown name Nat.Linear.Poly.isNum_._sparseCasesOn_1.else_eq@1@0
+absorbed/lean/init_data_nat_lemmas.arlk:2711: unknown name _private.Init.Data.Nat.Linear.0.Nat.Linear.Poly.isZero.match_1.eq_2@1
+absorbed/lean/init_data_nat_lemmas.arlk:2713: unknown name Nat.Linear.Poly.of_isZero
+absorbed/lean/init_data_nat_lemmas.arlk:2715: unknown name Nat.Linear.ExprCnstr.denote_toNormPoly
+absorbed/lean/init_data_nat_lemmas.arlk:2719: unknown name Nat.Linear.ExprCnstr.eq_true_of_isValid

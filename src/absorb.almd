@@ -85,7 +85,7 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
   "n" => {
     let n = int_of(get(v, "n")!)!
     guard n >= 0 else err("the numeral ${int.to_string(n)} is negative; natural-number literals must be at least 0")
-    guard n <= 4096 else err("the numeral ${int.to_string(n)} is too large to spell in unary")
+    guard n <= 4096 or (set.contains(o.reserved, "Nat.add") and set.contains(o.reserved, "Nat.mul")) else err("the numeral ${int.to_string(n)} is too large to spell in unary (and Nat.add, Nat.mul are not in the export to spell it in binary)")
     ok(numeral(n))
   },
   "a" => {
@@ -132,7 +132,13 @@ local fn app_spine(v: Value, args: List[Value]) -> (Value, List[Value])! =
 
 // A loop, not recursion: the accepted maximum would otherwise be a
 // recursion depth. Callers have checked 0 <= n.
-local fn numeral(n: Int) -> String = {
+// Small numerals in unary; a large one as 2 * q + r with the library's own
+// Nat.mul and Nat.add, which compute to the same number (size O(log n)).
+local fn numeral(n: Int) -> String =
+  if n <= 4096 then unary(n)
+  else "Nat.add(Nat.mul(" + unary(2) + ", " + numeral(n / 2) + "), " + unary(n % 2) + ")"
+
+local fn unary(n: Int) -> String = {
   var s = "Nat.zero"
   var k = 0
   while k < n {
@@ -255,6 +261,7 @@ test "levels and numerals" {
   assert_eq(level(Out { lib: "Init", reserved: set.new() }, 2), "core.l2")
   assert_eq(level(Out { lib: "Init", reserved: set.new() }, 11), "core.ls(core.ls(core.l9))")
   assert_eq(numeral(2), "Nat.succ(Nat.succ(Nat.zero))")
+  assert(string.starts_with(numeral(10000), "Nat.add(Nat.mul(Nat.succ(Nat.succ(Nat.zero)), Nat.add(Nat.mul("))
 }
 
 test "numerals: negative ones are rejected, the bounds hold" {
