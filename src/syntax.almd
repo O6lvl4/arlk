@@ -10,7 +10,15 @@
 // indices happens in the elaborator, which knows the rooms.
 type Token = { kind: String, text: String, line: Int }
 
-type Raw = | RName(String) | RType | RApp(Raw, Raw) | RLam(String, Raw, Raw) | RPi(String, Raw, Raw)
+// `RBracket` is `{t}`: only legal in a rule's left-hand side, where it
+// stands for a subterm fixed by typing and checked by conversion.
+type Raw =
+  | RName(String)
+  | RType
+  | RApp(Raw, Raw)
+  | RLam(String, Raw, Raw)
+  | RPi(String, Raw, Raw)
+  | RBracket(Raw)
 
 type Decl = | DRoom(String, List[String]) | DSymbol(String, Raw) | DDef(String, Raw, Raw) | DTheorem(String, Raw, Raw) | DRule(List[(String, Raw)], Raw, Raw) | DCheck(Raw) | DEval(Raw) | DAxioms(String)
 
@@ -28,7 +36,9 @@ let KEYWORDS = [
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
-local fn is_ident_char(c: String) -> Bool = c != "" and (string.is_alphanumeric(c) or c == "_" or c == "'")
+// `@` lets absorbed names carry universe levels: `Eq@1`, `HAdd@0@0@0`.
+local fn is_ident_char(c: String) -> Bool =
+  c != "" and (string.is_alphanumeric(c) or c == "_" or c == "'" or c == "@")
 
 local fn at(cs: List[String], i: Int) -> String = list.get(cs, i) ?? ""
 
@@ -43,7 +53,7 @@ local fn punct(cs: List[String], i: Int) -> (String, Int)? = {
     "=>" => some(("=>", 2)),
     ":=" => some((":=", 2)),
     _ => match c {
-      "(" | ")" | "[" | "]" | ":" | "," | "." => some((c, 1)),
+      "(" | ")" | "[" | "]" | "{" | "}" | ":" | "," | "." => some((c, 1)),
       "→" => some(("->", 1)),
       "↪" => some(("-->", 1)),
       "⇒" => some(("=>", 1)),
@@ -153,7 +163,7 @@ local fn ident(ts: List[Token], p: Int) -> (String, Int)! = {
 
 local fn starts_atom(ts: List[Token], p: Int) -> Bool = {
   let t = tok(ts, p)
-  t.kind == "ident" or is_kw(ts, p, "Type") or is_sym(ts, p, "(")
+  t.kind == "ident" or is_kw(ts, p, "Type") or is_sym(ts, p, "(") or is_sym(ts, p, "{")
 }
 
 // `(` name+ `:` — a binder group rather than a parenthesised term.
@@ -246,6 +256,10 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
     let (inner, p1) = term(ts, p + 1)!
     let p2 = expect(ts, p1, ")")!
     ok((inner, p2))
+  } else if is_sym(ts, p, "{") then {
+    let (inner, p1) = term(ts, p + 1)!
+    let p2 = expect(ts, p1, "}")!
+    ok((RBracket(inner), p2))
   } else err(fail_at(ts, p, "expected a term"))
 }
 
@@ -383,4 +397,11 @@ test "binder groups share a type" {
   let ds = parse("#check fun (x y : A) => x.")!
   let d = (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl
   assert_eq(d, DCheck(RLam("x", RName("A"), RLam("y", RName("A"), RName("x")))))
+}
+
+test "brackets and level suffixes parse" {
+  let ds = parse("rule [l : Lvl] El {ls l} (sort l) --> Univ@1 l.")!
+  let d = (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl
+  let lhs = RApp(RApp(RName("El"), RBracket(RApp(RName("ls"), RName("l")))), RApp(RName("sort"), RName("l")))
+  assert_eq(d, DRule([("l", RName("Lvl"))], lhs, RApp(RName("Univ@1"), RName("l"))))
 }

@@ -1,0 +1,246 @@
+// arlk absorb: turn a Lean export (tools/lean-export) into Arlk source.
+//
+// The output is ordinary Arlk text. It holds Lean's type theory as the
+// `lean` room, then every absorbed declaration in the `Init` room. Checking
+// it needs only `arlk check`: Lean is not involved and nothing in this
+// translator is trusted, because the kernel re-checks every line.
+
+import json
+
+// Lean's type theory, written in Arlk.
+let LEAN_ROOM = """
+  -- Lean's type theory, written in Arlk.
+  --
+  -- Lean has a tower of universes: Sort 0 (Prop), Sort 1 (Type), Sort 2, ...
+  -- Here a universe level is a value of `Lvl`. The types living in universe
+  -- `l` are values of `Univ l`, and `El l A` turns such a value into an
+  -- Arlk type. Lean's function types are values too: `pi a b A B` is
+  -- `(x : A) -> B x`, and a rule unfolds it into an Arlk function type.
+  room lean.
+
+  symbol Lvl : Type.
+  symbol lz : Lvl.
+  symbol ls : Lvl -> Lvl.
+
+  symbol max : Lvl -> Lvl -> Lvl.
+  rule [m : Lvl] max lz m --> m.
+  rule [n : Lvl] max (ls n) lz --> ls n.
+  rule [n : Lvl, m : Lvl] max (ls n) (ls m) --> ls (max n m).
+
+  -- The level of a function type from universe a into universe b: 0 when
+  -- b is 0 (a function into Prop is a proposition), max a b otherwise.
+  symbol imax : Lvl -> Lvl -> Lvl.
+  rule [n : Lvl] imax n lz --> lz.
+  rule [n : Lvl, m : Lvl] imax n (ls m) --> max n (ls m).
+
+  symbol Univ : Lvl -> Type.
+  symbol El : (l : Lvl) -> Univ l -> Type.
+
+  symbol sort : (l : Lvl) -> Univ (ls l).
+  rule [l : Lvl] El {ls l} (sort l) --> Univ l.
+
+  symbol pi : (a : Lvl) -> (b : Lvl) -> (A : Univ a) -> (El a A -> Univ b) -> Univ (imax a b).
+  rule [a : Lvl, b : Lvl, A : Univ a, B : El a A -> Univ b]
+    El {imax a b} (pi a b A B) --> (x : El a A) -> El b (B x).
+  """
+
+// Named levels l0 .. l9; higher ones are spelled with ls.
+let NAMED_LEVELS = 10
+
+local fn level_defs() -> String = {
+  let lines = list.map(0..<NAMED_LEVELS, (n) =>
+    if n == 0 then "def l0 : Lvl := lz." else "def l${int.to_string(n)} : Lvl := ls l${int.to_string(n - 1)}.")
+  list.join(lines, "\n")
+}
+
+local fn level(n: Int) -> String =
+  if n < NAMED_LEVELS then "lean.l${int.to_string(n)}" else "(lean.ls ${level(n - 1)})"
+
+// ── Names ───────────────────────────────────────────────────────────
+
+let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "fun", "Type"]
+
+local fn plain_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'"
+
+// A Lean constant name as an Arlk identifier: dots and `@levels` stay,
+// anything else becomes `_`.
+fn mangle(name: String) -> String = {
+  let cs = string.chars(name) |> list.map((c) => if plain_char(c) or c == "." or c == "@" then c else "_")
+  let s = list.join(cs, "")
+  if list.contains(KEYWORDS, s) then s + "'" else s
+}
+
+// A binder name that reads well and cannot capture: Lean's hygienic
+// suffixes are dropped, and a clash with an outer binder or a constant
+// gets primes.
+local fn binder(raw: String, outer: List[String], reserved: Set[String]) -> String = {
+  let base = match string.index_of(raw, "._@") {
+    some(i) => string.slice(raw, 0, i),
+    none => raw,
+  }
+  let kept = list.join(string.chars(base) |> list.filter((c) => plain_char(c)), "")
+  let named = if kept == "" then "x" else if string.is_digit(string.take(kept, 1)) then "x" + kept else kept
+  let safe = if list.contains(KEYWORDS, named) then named + "'" else named
+  prime_until_free(safe, outer, reserved)
+}
+
+local fn prime_until_free(x: String, outer: List[String], reserved: Set[String]) -> String =
+  if list.contains(outer, x) or set.contains(reserved, x) then prime_until_free(x + "'", outer, reserved) else x
+
+// ── Expressions ─────────────────────────────────────────────────────
+
+local fn get(v: Value, k: String) -> Value! = value.field(v, k)
+local fn int_of(v: Value) -> Int! = value.as_int(v)
+local fn str_of(v: Value) -> String! = value.as_string(v)
+local fn arr_of(v: Value) -> List[Value]! = value.as_array(v)
+
+local fn kind_of(v: Value) -> String = list.first(value.keys(v)) ?? ""
+
+local fn paren(s: String, atomic: Bool) -> String = if atomic then s else "(" + s + ")"
+
+local fn is_atomic(v: Value) -> Bool = match kind_of(v) {
+  "v" | "c" => true,
+  "n" => (int_of(get(v, "n") ?? value.null()) ?? 1) == 0,
+  _ => false,
+}
+
+// `names` holds the binders in scope, innermost first, so a de Bruijn
+// index is a position in it.
+fn expr(names: List[String], reserved: Set[String], v: Value) -> String! = match kind_of(v) {
+  "v" => {
+    let i = int_of(get(v, "v")!)!
+    ok(list.get(names, i) ?? "#${int.to_string(i)}")
+  },
+  "c" => ok(mangle(str_of(get(v, "c")!)!)),
+  "s" => ok("lean.sort ${level(int_of(get(v, "s")!)!)}"),
+  "n" => {
+    let n = int_of(get(v, "n")!)!
+    guard n <= 4096 else err("the numeral ${int.to_string(n)} is too large to spell in unary")
+    ok(numeral(n))
+  },
+  "a" => {
+    let (head, args) = app_spine(v, [])!
+    let parts = [paren(expr(names, reserved, head)!, is_atomic(head))]
+      + (args |> list.map((a) => paren(expr(names, reserved, a)!, is_atomic(a)))!)
+    ok(list.join(parts, " "))
+  },
+  "l" => {
+    let xs = arr_of(get(v, "l")!)!
+    let (x, dom, ld) = binder_parts(names, reserved, xs)!
+    let body = expr([x] + names, reserved, list.get(xs, 3) ?? value.null())!
+    ok("fun (${x} : lean.El ${level(ld)} ${dom}) => ${body}")
+  },
+  "p" => {
+    let xs = arr_of(get(v, "p")!)!
+    let (x, dom, ld) = binder_parts(names, reserved, xs)!
+    let body = expr([x] + names, reserved, list.get(xs, 3) ?? value.null())!
+    let lb = int_of(list.get(xs, 4) ?? value.null())!
+    ok("lean.pi ${level(ld)} ${level(lb)} ${dom} (fun (${x} : lean.El ${level(ld)} ${dom}) => ${body})")
+  },
+  other => err("unknown expression node '${other}'"),
+}
+
+local fn binder_parts(names: List[String], reserved: Set[String], xs: List[Value]) -> (String, String, Int)! = {
+  let raw = str_of(list.get(xs, 0) ?? value.null())!
+  let dom_v = list.get(xs, 1) ?? value.null()
+  let dom = paren(expr(names, reserved, dom_v)!, is_atomic(dom_v))
+  let ld = int_of(list.get(xs, 2) ?? value.null())!
+  ok((binder(raw, names, reserved), dom, ld))
+}
+
+local fn app_spine(v: Value, args: List[Value]) -> (Value, List[Value])! =
+  if kind_of(v) == "a" then {
+    let fa = arr_of(get(v, "a")!)!
+    app_spine(list.get(fa, 0) ?? value.null(), [list.get(fa, 1) ?? value.null()] + args)
+  } else ok((v, args))
+
+local fn numeral(n: Int) -> String = if n == 0 then "Nat.zero" else "Nat.succ " + paren(numeral(n - 1), n - 1 == 0)
+
+// A Lean type `T` living in universe `l` is the Arlk type `El l T`.
+local fn el(names: List[String], reserved: Set[String], ty: Value, lvl: Int) -> String! = {
+  let t = expr(names, reserved, ty)!
+  ok("lean.El ${level(lvl)} ${paren(t, is_atomic(ty))}")
+}
+
+// ── Rules ───────────────────────────────────────────────────────────
+
+local fn pattern(names: List[String], reserved: Set[String], p: Value) -> String! = match kind_of(p) {
+  "pv" => {
+    let i = int_of(get(p, "pv")!)!
+    ok(list.get(names, i) ?? "#${int.to_string(i)}")
+  },
+  "pb" => ok("{" + expr(names, reserved, get(p, "pb")!)! + "}"),
+  _ => {
+    let c = mangle(str_of(get(p, "pc")!)!)
+    let args = arr_of(get(p, "args")!)! |> list.map((a) => pattern(names, reserved, a)!)!
+    if list.is_empty(args) then ok(c) else ok("(" + list.join([c] + args, " ") + ")")
+  },
+}
+
+local fn rule(reserved: Set[String], r: Value) -> String! = {
+  // Rule variables, each typed in the context of the ones before it.
+  var names: List[String] = []
+  var decls: List[String] = []
+  for v in arr_of(get(r, "vars")!)! {
+    let parts = arr_of(v)!
+    let x = binder(str_of(list.get(parts, 0) ?? value.null())!, names, reserved)
+    let ty = el(names, reserved, list.get(parts, 1) ?? value.null(), int_of(list.get(parts, 2) ?? value.null())!)!
+    decls = decls + ["${x} : ${ty}"]
+    names = [x] + names
+  }
+  let head = mangle(str_of(get(r, "head")!)!)
+  let args = arr_of(get(r, "args")!)! |> list.map((p) => pattern(names, reserved, p)!)!
+  let rhs = expr(names, reserved, get(r, "rhs")!)!
+  ok("rule [${list.join(decls, ", ")}]\n  ${list.join([head] + args, " ")}\n  --> ${rhs}.")
+}
+
+// ── Declarations ────────────────────────────────────────────────────
+
+local fn decl(reserved: Set[String], d: Value) -> String! = {
+  let name = mangle(str_of(get(d, "name")!)!)
+  let ty = el([], reserved, get(d, "type")!, int_of(get(d, "level")!)!)!
+  let kind = str_of(get(d, "kind")!)!
+  let head = match kind {
+    "def" | "theorem" => "${kind} ${name} :\n  ${ty} :=\n  ${expr([], reserved, get(d, "value")!)!}.",
+    _ => "symbol ${name} : ${ty}.",
+  }
+  let rules = match value.field(d, "rules") {
+    ok(rs) => arr_of(rs)! |> list.map((r) => rule(reserved, r)!)!,
+    err(_) => [],
+  }
+  ok(list.join([head] + rules, "\n"))
+}
+
+fn absorb(src: String) -> String! = {
+  let root = json.parse(src)!
+  let target = mangle(str_of(get(root, "target")!)!)
+  let decls = arr_of(get(root, "decls")!)!
+  let reserved = set.from_list(decls |> list.map((d) => mangle(str_of(get(d, "name")!)!))!)
+  let body = decls |> list.map((d) => decl(reserved, d)!)!
+  let header = """
+    -- Absorbed from Lean 4 by `arlk absorb`: ${target} and everything it uses.
+    -- Check it with `arlk check`; Lean is not needed and not trusted.
+    """
+  ok(list.join([header, LEAN_ROOM, level_defs(), "", "room Init uses lean.", ""] + body + ["", "#axioms ${target}."], "\n") + "\n")
+}
+
+test "mangling keeps dots and levels and escapes the rest" {
+  assert_eq(mangle("HAdd.hAdd@0@0@0"), "HAdd.hAdd@0@0@0")
+  assert_eq(mangle("Nat.add.match_1@1"), "Nat.add.match_1@1")
+  assert_eq(mangle("«term_+_»"), "_term____")
+  assert_eq(mangle("rule"), "rule'")
+}
+
+test "binders drop hygiene and avoid capture" {
+  let reserved = set.from_list(["Nat"])
+  assert_eq(binder("a._@._internal._hyg.0", [], reserved), "a")
+  assert_eq(binder("a._@._internal._hyg.0", ["a"], reserved), "a'")
+  assert_eq(binder("Nat", [], reserved), "Nat'")
+  assert_eq(binder("x✝", [], reserved), "x")
+}
+
+test "levels and numerals" {
+  assert_eq(level(2), "lean.l2")
+  assert_eq(level(11), "(lean.ls (lean.ls lean.l9))")
+  assert_eq(numeral(2), "Nat.succ (Nat.succ Nat.zero)")
+}

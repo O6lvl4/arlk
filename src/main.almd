@@ -1,27 +1,42 @@
 // arlk — the Arlk proof checker.
 //
-//   arlk check FILE.arlk     check every declaration, print theorems and commands
+//   arlk check FILE.arlk                 check every declaration
+//   arlk absorb EXPORT.json [-o OUT]     turn a Lean export into Arlk source
+
 import fs
 import process
 import self.syntax
 import self.kernel
+import self.absorb
+
+let USAGE = """
+  usage:
+    arlk check FILE.arlk                 check every declaration
+    arlk absorb EXPORT.json [-o OUT]     turn a Lean export (tools/lean-export) into Arlk source
+  """
 
 effect fn main() -> Unit = {
   let args = process.args()
   match (list.get(args, 1), list.get(args, 2)) {
     (some("check"), some(path)) => run_check(path)!,
+    (some("absorb"), some(path)) => run_absorb(path, output_flag(args))!,
     _ => {
-      println("usage: arlk check FILE.arlk")
+      println(USAGE)
       process.exit(2)
     },
   }
+}
+
+local fn output_flag(args: List[String]) -> String? = match list.index_of(args, "-o") {
+  some(i) => list.get(args, i + 1),
+  none => none,
 }
 
 effect fn run_check(path: String) -> Unit = {
   let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
   match syntax.parse(src) {
     err(e) => {
-      println("${path}:${e}")
+      println("✗ ${path}:${e}")
       process.exit(1)
     },
     ok(ds) => {
@@ -34,11 +49,25 @@ effect fn run_check(path: String) -> Unit = {
           println("✗ ${path}:${e}")
           process.exit(1)
         },
-        none => {
-          let n = list.len(out.env.order)
-          println("ok: ${path} (${int.to_string(n)} declarations)")
-        },
+        none => println("ok: ${path} (${int.to_string(list.len(out.env.order))} declarations)"),
       }
+    },
+  }
+}
+
+effect fn run_absorb(path: String, out: String?) -> Unit = {
+  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match absorb.absorb(src) {
+    err(e) => {
+      println("✗ ${path}: ${e}")
+      process.exit(1)
+    },
+    ok(text) => match out {
+      some(o) => {
+        fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+        println("wrote ${o}")
+      },
+      none => println(text),
     },
   }
 }

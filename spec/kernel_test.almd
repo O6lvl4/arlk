@@ -111,7 +111,7 @@ test "rules cannot be attached to defs or theorems" {
 }
 
 test "non-linear and unbound pattern variables are rejected" {
-  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop] f x x --> x.", "at most once"))
+  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop] f x x --> x.", "only once"))
   assert(rejects_with(
     "symbol f : Prop -> Prop. symbol a : Prop. rule [x : Prop, y : Prop] f x --> a.",
     "must appear",
@@ -191,4 +191,52 @@ test "#axioms reports only what a theorem actually uses" {
     },
     err(e) => assert_eq(e, ""),
   }
+}
+
+test "a bracket matches by conversion, so a variable can be repeated" {
+  assert(accepts("""
+    room nat uses logic.
+    symbol Nat : Type.
+    symbol z : Nat.
+    symbol s : Nat -> Nat.
+    symbol Vec : Nat -> Type.
+    symbol vnil : Vec z.
+    symbol vcons : (n : Nat) -> Nat -> Vec n -> Vec (s n).
+    symbol tail : (n : Nat) -> Vec (s n) -> Vec n.
+    rule [n : Nat, x : Nat, v : Vec n] tail {n} (vcons n x v) --> v.
+    symbol eqv : (n : Nat) -> Vec n -> Vec n -> Prop.
+    symbol reflv : (n : Nat) -> (v : Vec n) -> Prf (eqv n v v).
+    theorem t : Prf (eqv z (tail z (vcons z z vnil)) vnil) := reflv z vnil.
+    """))
+}
+
+test "without the bracket the same rule does not type-check" {
+  assert(rejects_with("""
+    room nat uses logic.
+    symbol Nat : Type.
+    symbol s : Nat -> Nat.
+    symbol Vec : Nat -> Type.
+    symbol vcons : (n : Nat) -> Nat -> Vec n -> Vec (s n).
+    symbol tail : (n : Nat) -> Vec (s n) -> Vec n.
+    rule [m : Nat, n : Nat, x : Nat, v : Vec n] tail m (vcons n x v) --> v.
+    """, "type mismatch"))
+}
+
+test "brackets are only allowed in rule patterns" {
+  assert(rejects_with("symbol a : Prop. def b : Prop := {a}.", "only allowed in the left-hand side"))
+  assert(rejects_with("symbol f : Prop -> Prop. symbol a : Prop. rule [x : Prop] f x --> {a}.", "only allowed in the left-hand side"))
+}
+
+test "a bracket cannot mention a variable the pattern leaves unbound" {
+  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop, y : Prop] f x {y} --> x.", "must appear"))
+}
+
+test "names inside a room may contain dots" {
+  assert(accepts("""
+    room nat uses logic.
+    symbol Nat : Type.
+    symbol Nat.zero : Nat.
+    def Nat.one@0 : Nat := Nat.zero.
+    def two : Nat := nat.Nat.one@0.
+    """))
 }
