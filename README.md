@@ -11,13 +11,15 @@ like function signatures, a call is `f(a, b)`, a function is `(x: A) => body`, a
 is `(x: A) -> B`. Unicode is only an optional alias, and errors say what was expected and what
 was found.
 
-**Lean 4 and Rocq are absorbed, not linked, and they meet in one place.**
+**Lean 4, Rocq and Metamath are absorbed, not linked, and Lean and Rocq meet in one place.**
 
 - Lean's whole `Init.Data.Nat.Basic` module (308 of its 310 theorems, 823 declarations with their
   dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
 - Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: 969 of 973 declarations) is
   checked the same way.
-- Both sit on one shared foundation, [lib/core.arlk](lib/core.arlk). That foundation has Rocq's
+- Metamath's `set.mm`: its whole propositional calculus (1776 theorems, from `ax-mp` to `stoic4b`)
+  is read straight from the database, proofs included, and checked by the same kernel.
+- Lean and Rocq sit on one shared foundation, [lib/core.arlk](lib/core.arlk). That foundation has Rocq's
   cumulative universes *and* Lean's proof irrelevance, so a single proof can use both libraries.
   [examples/bridge.arlk](examples/bridge.arlk) turns Lean's theorem `Nat.add_comm` into a statement
   about Rocq's equality on Rocq's numbers.
@@ -154,6 +156,25 @@ uses it.
 | Cumulativity | explicit `lift`, computed in the encoding's own level arithmetic |
 | `SProp`, primitive projections, cofixpoints, primitive integers | not yet |
 
+### Metamath
+
+`arlk absorb-mm set.mm --upto LABEL` reads a Metamath database directly; no export step and no
+Metamath tool is involved.
+
+| Metamath | In Arlk |
+|---|---|
+| Typecodes `wff`, `setvar`, `class` | types |
+| `\|- φ` | the type `Prf(φ)` |
+| Syntax axiom `wi $a wff ( ph -> ps ) $.` | constructor `symbol wi(ph: wff, ps: wff) -> wff` |
+| Logical axiom with hypotheses (`ax-mp`) | `symbol ax_mp(ph: wff, ps: wff, min: Prf(ph), maj: Prf(wi(ph, ps))) -> Prf(ps)` |
+| Theorem and its proof (normal or compressed) | `theorem a1i(ph: wff, ps: wff, a1i_1: Prf(ph)) -> Prf(wi(ps, ph)) = ax_mp(...)` |
+| Math strings | parsed with the database's own syntax axioms |
+| Dummy variables | replaced by a variable of the same typecode (sound without `$d`) |
+| `$d` distinct-variable conditions | not yet: needed from predicate calculus on |
+
+Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay symbols here, so
+`axioms` lists exactly the ones a theorem depends on.
+
 ### Results
 
 | Library | Declarations checked | Time |
@@ -162,12 +183,13 @@ uses it.
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~40 s |
 | Rocq `Corelib.Init.Peano` | 118, all of them | 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~55 s |
+| Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | ~13 s |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
 template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.
 
 Nothing on the way is trusted. The exporters and `arlk absorb` only produce text. The tests in
-`spec/absorb_test.almd` show that a false statement is rejected, that deleting one rule breaks a
+`spec/absorb_test.almd` and `spec/metamath_test.almd` show that a false statement is rejected, that deleting one rule breaks a
 Lean proof (it really computes through Lean's definitions of `+` and `0`), and that lifting Rocq's
 `nat` *down* a universe is rejected.
 
@@ -218,6 +240,8 @@ almide build src/main.almd -o arlk
 
 ./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
+./arlk check absorbed/metamath/set_prop.arlk
+./arlk absorb-mm set.mm --upto stoic4b -o out.arlk
 tools/check-absorbed.sh
 
 almide test            # kernel and absorb tests (spec/): good proofs pass, bad ones are rejected
@@ -251,8 +275,9 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
    alone. Lean is needed only as the source of the original text, never to trust a result. The
    translation starts from Lean's kernel export, the same way
    [lean4-rust-backend](https://github.com/O6lvl4/lean4-rust-backend) takes Lean's compiler IR out
-   as JSON and rebuilds it outside Lean. Next: Metamath (ZFC), Isabelle/HOL, Agda, and Dedukti
-   `.dk` files, each into a room of its own.
+   as JSON and rebuilds it outside Lean. Metamath has started too (set.mm's propositional calculus); next for it is `$d`
+   and predicate calculus up to ZFC. After that: Isabelle/HOL, Agda, and Dedukti `.dk` files, each
+   into a room of its own.
 4. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 
@@ -271,3 +296,4 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 | [almide#3393](https://github.com/almide/almide/issues/3393) `almide fmt` moves trailing comments and collapses variants | sources are not run through `almide fmt` for now |
 | [almide#3397](https://github.com/almide/almide/issues/3397) native `list.slice` clones the whole list per call | copy ranges with `list.get` in the lexer |
 | [almide#3400](https://github.com/almide/almide/issues/3400) native codegen drops the element of a one-element list pattern over a variant | nested `match` on the element |
+| [almide#3401](https://github.com/almide/almide/issues/3401) same-named types in two modules resolve to the other module's type | `metamath.almd` names its record `Proving`, not `Ctx` |

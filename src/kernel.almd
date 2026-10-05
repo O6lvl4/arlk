@@ -689,34 +689,53 @@ type Deps = { symbols: List[String], rules: List[Rule], lemmas: List[String] }
 // Everything `name` rests on: the symbols it assumes, the rules attached to
 // them, and the defs/theorems it goes through. Transitive.
 fn deps(env: Env, name: String) -> Deps = {
-  let start = Deps { symbols: [], rules: [], lemmas: [] }
-  deps_walk(env, [name], [], start, name)
-}
-
-local fn deps_walk(env: Env, queue: List[String], seen: List[String], acc: Deps, root: String) -> Deps = match queue {
-  [] => acc,
-  [c, ..rest] =>
-    if list.contains(seen, c) then deps_walk(env, rest, seen, acc, root)
-    else match map.get(env.entries, c) {
-      none => deps_walk(env, rest, seen + [c], acc, root),
-      some(e) => {
-        let body_consts = match map.get(env.bodies, c) {
-          some(b) => consts(b),
-          none => [],
-        }
-        let rules = if e.kind == "symbol" then (env.rules + env.irrelevants) |> list.filter((r) => r.head == c) else []
-        let rule_consts = rules |> list.flat_map((r) => rule_mentions(r))
-        let acc2 = match e.kind {
-          "symbol" => { ...acc, symbols: acc.symbols + [c], rules: acc.rules + rules },
-          _ => if c == root then acc else { ...acc, lemmas: acc.lemmas + [c] },
-        }
-        let ty_consts = match map.get(env.types, c) {
-          some(ty) => consts(ty),
-          none => [],
-        }
-        deps_walk(env, rest + ty_consts + body_consts + rule_consts, seen + [c], acc2, root)
-      },
-    },
+  // A loop with an explicit stack: dependency chains in absorbed libraries
+  // run thousands of declarations deep.
+  var pending: List[String] = [name]
+  var seen: Map[String, Bool] = [:]
+  var symbols: List[String] = []
+  var rules: List[Rule] = []
+  var lemmas: List[String] = []
+  var queued: List[String] = []
+  while not list.is_empty(pending) {
+    let c = list.pop(pending) ?? ""
+    if map.contains(seen, c) then () else {
+      map.insert(seen, c, true)
+      match map.get(env.entries, c) {
+        none => (),
+        some(e) => {
+          if e.kind == "symbol" then {
+            list.push(symbols, c)
+            for r in env.rules + env.irrelevants {
+              if r.head == c then {
+                list.push(rules, r)
+                for m in list.reverse(rule_mentions(r)) {
+                  list.push(queued, m)
+                }
+              } else ()
+            }
+          } else if c != name then list.push(lemmas, c) else ()
+          // Visit in source order: the type, then the body, then the rules.
+          let body = match map.get(env.bodies, c) {
+            some(b) => consts(b),
+            none => [],
+          }
+          let ty = match map.get(env.types, c) {
+            some(t) => consts(t),
+            none => [],
+          }
+          for m in queued {
+            list.push(pending, m)
+          }
+          queued = []
+          for m in list.reverse(ty + body) {
+            list.push(pending, m)
+          }
+        },
+      }
+    }
+  }
+  Deps { symbols: symbols, rules: rules, lemmas: lemmas }
 }
 
 local fn rule_mentions(r: Rule) -> List[String] =
@@ -742,14 +761,21 @@ type Outcome = { env: Env, output: List[String], error: String? }
 
 // Check declarations in order, stopping at the first failure.
 fn check_all(env: Env, ds: List[Located]) -> Outcome = {
-  let out: List[String] = []
-  check_from(env, ds, out)
-}
-
-local fn check_from(env: Env, ds: List[Located], out: List[String]) -> Outcome = match ds {
-  [] => Outcome { env: env, output: out, error: none },
-  [d, ..rest] => match process(env, d) {
-    ok((env2, lines)) => check_from(env2, rest, out + lines),
-    err(e) => Outcome { env: env, output: out, error: some("${int.to_string(d.line)}: ${e}") },
-  },
+  var cur = env
+  var out: List[String] = []
+  var error: String? = none
+  for d in ds {
+    if error == none then match process(cur, d) {
+      ok((env2, lines)) => {
+        cur = env2
+        for l in lines {
+          list.push(out, l)
+        }
+      },
+      err(e) => {
+        error = some("${int.to_string(d.line)}: ${e}")
+      },
+    } else ()
+  }
+  Outcome { env: cur, output: out, error: error }
 }

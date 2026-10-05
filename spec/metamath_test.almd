@@ -1,0 +1,46 @@
+// Metamath's set.mm, absorbed and checked by the Arlk kernel alone.
+
+import fs
+import self.syntax
+import self.kernel
+import self.metamath
+
+let DB = "absorbed/metamath/set_prop.mm"
+let ABSORBED = "absorbed/metamath/set_prop.arlk"
+
+fn check(src: String) -> String? = match syntax.parse(src) {
+  err(e) => some("parse: " + e),
+  ok(ds) => kernel.check_all(kernel.empty(), ds).error,
+}
+
+test "the committed file is exactly what absorb-mm produces" {
+  assert_eq(metamath.absorb_mm(fs.read_text(DB)!, "stoic4b"), ok(fs.read_text(ABSORBED)!))
+}
+
+test "set.mm's propositional calculus checks without a Metamath verifier" {
+  assert_eq(check(fs.read_text(ABSORBED)!), none)
+}
+
+test "a theorem with a changed statement is rejected" {
+  let src = fs.read_text(ABSORBED)!
+  let good = "theorem pm2.43(ph: wff, ps: wff) -> Prf(wi(wi(ph, wi(ph, ps)), wi(ph, ps)))"
+  let bad = "theorem pm2.43(ph: wff, ps: wff) -> Prf(wi(wi(ph, wi(ps, ps)), wi(ph, ps)))"
+  assert(string.contains(src, good))
+  match check(string.replace(src, good, bad)) {
+    some(e) => assert(string.contains(e, "type mismatch")),
+    none => assert(false),
+  }
+}
+
+test "using a hypothesis the theorem does not have is rejected" {
+  // mp2's proof applies ax-mp to its hypotheses; give it one fewer.
+  let src = fs.read_text(ABSORBED)!
+  let start = string.index_of(src, "theorem mp2(") ?? -1
+  assert(start >= 0)
+  let rest = string.drop(src, start)
+  let line_end = string.index_of(rest, ") =\n") ?? 0
+  let header = string.take(rest, line_end)
+  let dropped = string.replace(header, ", mp2_3: Prf(wi(ph, wi(ps, ch)))", "")
+  assert(dropped != header)
+  assert(check(string.replace(src, header, dropped)) != none)
+}

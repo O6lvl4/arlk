@@ -1,0 +1,420 @@
+// arlk absorb-mm: a Metamath database (set.mm) as Arlk source.
+//
+// Metamath has typecodes and substitution; Arlk has types and functions.
+//   - a typecode (wff, setvar, class) becomes a type,
+//   - `|- φ` becomes the type `Prf(φ)`,
+//   - a syntax axiom (`wi $a wff ( ph -> ps )`) becomes a constructor
+//     symbol `wi(ph: wff, ps: wff) -> wff`,
+//   - a logical axiom becomes a symbol whose arguments are its hypotheses,
+//   - a theorem becomes a function whose body is its proof, read back from
+//     Metamath's stack machine (normal and compressed proofs).
+//
+// Math strings are parsed with the database's own syntax axioms. Nothing
+// here is trusted: the kernel re-checks every proof.
+
+type Hyp = { name: String, essential: Bool, tc: String, toks: List[String] }
+
+// A syntax axiom used as a grammar rule: its template, the typecode of each
+// variable slot, and the slots in argument order.
+type Syn = { name: String, toks: List[String], slots: Map[String, String], order: List[String] }
+
+type Assertion = { name: String, nhyps: Int }
+
+// The provable typecode, and the syntax typecode its statements are parsed as.
+// `${` opens a scope; spelled in two parts because `${` in a string
+// literal starts an interpolation.
+let SCOPE_OPEN = "$" + "{"
+
+let PROVABLE = "|-"
+let STATEMENT = "wff"
+
+let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Prf"]
+
+// ── Names ───────────────────────────────────────────────────────────
+
+local fn plain(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'"
+
+// A label as an Arlk constant: `ax-mp` is `ax_mp`, `pm2.43` stays.
+fn label_name(label: String) -> String = {
+  let cs = string.chars(label) |> list.map((c) => if plain(c) or c == "." then c else "_")
+  let s = list.join(cs, "")
+  if list.contains(KEYWORDS, s) then s + "'" else s
+}
+
+// A variable or hypothesis label as an Arlk binder: `a1i.1` is `a1i_1`.
+fn binder_name(x: String) -> String = {
+  let s = list.join(string.chars(x) |> list.map((c) => if plain(c) then c else "_"), "")
+  if list.contains(KEYWORDS, s) then s + "'" else s
+}
+
+local fn call(f: String, args: List[String]) -> String =
+  if list.is_empty(args) then f else f + "(" + list.join(args, ", ") + ")"
+
+// ── Tokens ──────────────────────────────────────────────────────────
+
+local fn at(ts: List[String], i: Int) -> String = list.get(ts, i) ?? ""
+
+// Whitespace-separated tokens, comments dropped.
+fn tokens(src: String) -> List[String] = {
+  let flat = string.replace(string.replace(string.replace(src, "\n", " "), "\t", " "), "\r", " ")
+  var out: List[String] = []
+  var in_comment = false
+  for w in string.split(flat, " ") {
+    if w == "" then ()
+    else if in_comment then {
+      if w == "$)" then {
+        in_comment = false
+      } else ()
+    } else if w == "$(" then {
+      in_comment = true
+    } else list.push(out, w)
+  }
+  out
+}
+
+// The database up to the end of the statement labelled `upto`.
+local fn prefix(src: String, upto: String) -> String! = {
+  let start = match string.index_of(src, " " + upto + " $p ") {
+    some(i) => i,
+    none => match string.index_of(src, " " + upto + " $a ") {
+      some(i) => i,
+      none => -1,
+    },
+  }
+  guard start >= 0 else err("no statement labelled ${upto}")
+  let rest = string.drop(src, start)
+  let stop = string.index_of(rest, " $.") ?? string.len(rest)
+  ok(string.take(src, start + stop + 3))
+}
+
+local fn copy(ts: List[String], i: Int, j: Int) -> List[String] = {
+  var out: List[String] = []
+  var k = i
+  while k < j {
+    list.push(out, at(ts, k))
+    k = k + 1
+  }
+  out
+}
+
+local fn find(ts: List[String], i: Int, t: String) -> Int =
+  if i >= list.len(ts) or at(ts, i) == t then i else find(ts, i + 1, t)
+
+// ── Parsing math strings ────────────────────────────────────────────
+
+// Every parse of `tc` starting at `pos`: (tree, end). Memoised per
+// (typecode, position); a typecode that reaches itself at the same position
+// finds nothing, which is enough because set.mm's grammar is not
+// left-recursive within a typecode.
+local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], tc: String, pos: Int, mut memo: Map[String, List[(String, Int)]]) -> List[(String, Int)] = {
+  let key = tc + " " + int.to_string(pos)
+  match map.get(memo, key) {
+    some(r) => r,
+    none => {
+      map.insert(memo, key, [])
+      var found: List[(String, Int)] = []
+      let t = at(toks, pos)
+      if map.get(vars, t) == some(tc) then list.push(found, (binder_name(t), pos + 1)) else ()
+      for rule in map.get(g, tc) ?? [] {
+        for (binds, end) in match_rule(g, toks, vars, rule, 0, pos, [:], memo) {
+          let args = rule.order |> list.map((v) => map.get(binds, v) ?? "?")
+          list.push(found, (call(rule.name, args), end))
+        }
+      }
+      map.insert(memo, key, found)
+      found
+    },
+  }
+}
+
+local fn match_rule(g: Map[String, List[Syn]], toks: List[String], vars: Map[String, String], rule: Syn, k: Int, pos: Int, binds: Map[String, String], mut memo: Map[String, List[(String, Int)]]) -> List[(Map[String, String], Int)] =
+  if k >= list.len(rule.toks) then [(binds, pos)]
+  else {
+    let t = at(rule.toks, k)
+    match map.get(rule.slots, t) {
+      some(stc) => {
+        var res: List[(Map[String, String], Int)] = []
+        for (tree, end) in parse_tc(g, toks, vars, stc, pos, memo) {
+          for r in match_rule(g, toks, vars, rule, k + 1, end, map.set(binds, t, tree), memo) {
+            list.push(res, r)
+          }
+        }
+        res
+      },
+      none => if at(toks, pos) == t then match_rule(g, toks, vars, rule, k + 1, pos + 1, binds, memo) else [],
+    }
+  }
+
+fn parse_math(g: Map[String, List[Syn]], vars: Map[String, String], tc: String, toks: List[String]) -> String! = {
+  var memo: Map[String, List[(String, Int)]] = [:]
+  let whole = parse_tc(g, toks, vars, tc, 0, memo) |> list.filter(((_, end)) => end == list.len(toks))
+  match list.first(whole) {
+    some((tree, _)) => ok(tree),
+    none => err("cannot parse `${list.join(toks, " ")}` as ${tc}"),
+  }
+}
+
+// ── Proofs ──────────────────────────────────────────────────────────
+
+// (Not `Ctx`: kernel.almd has one, almide/almide#3401.)
+// What a proof step refers to: a hypothesis in scope (by its binder), or
+// an assertion applied to the top of the stack.
+type Proving = {
+  label: String,
+  hyps: Map[String, Hyp],
+  asserts: Map[String, Assertion],
+  mandatory: List[String],
+  // Dummy variables: any value of the right typecode will do, because
+  // there are no distinct-variable conditions to respect. A mandatory
+  // variable if there is one, else the typecode's `some_` witness.
+  standins: Map[String, String],
+}
+
+local fn step(c: Proving, stack: List[String], label: String) -> List[String]! =
+  match map.get(c.hyps, label) {
+    some(h) =>
+      if list.contains(c.mandatory, label) then ok(stack + [h.name])
+      else match map.get(c.standins, h.tc) {
+        some(s) => ok(stack + [s]),
+        none => err("${c.label}: dummy variable ${label} has no stand-in of typecode ${h.tc}"),
+      },
+    none => match map.get(c.asserts, label) {
+      some(a) => {
+        let n = list.len(stack)
+        guard n >= a.nhyps else err("${c.label}: proof stack underflow at ${label}")
+        ok(list.take(stack, n - a.nhyps) + [call(a.name, list.drop(stack, n - a.nhyps))])
+      },
+      none => err("${c.label}: unknown label ${label} in a proof"),
+    },
+  }
+
+fn proof_term(c: Proving, proof: List[String]) -> String! = {
+  var stack: List[String] = []
+  if at(proof, 0) == "(" then {
+    let close = find(proof, 1, ")")
+    let labels = copy(proof, 1, close)
+    let code = list.join(copy(proof, close + 1, list.len(proof)), "")
+    let m = list.len(c.mandatory)
+    let l = list.len(labels)
+    var saved: List[String] = []
+    var acc = 0
+    for ch in string.chars(code) {
+      let cp = string.codepoint(ch) ?? 0
+      if cp >= 65 and cp <= 84 then {
+        let num = acc * 20 + (cp - 65) + 1
+        acc = 0
+        if num <= m then {
+          stack = step(c, stack, list.get(c.mandatory, num - 1) ?? "")!
+        } else if num <= m + l then {
+          stack = step(c, stack, list.get(labels, num - m - 1) ?? "")!
+        } else {
+          let s = list.get(saved, num - m - l - 1)
+          guard s != none else err("${c.label}: bad back-reference in a compressed proof")
+          stack = stack + [s ?? ""]
+        }
+      } else if cp >= 85 and cp <= 89 then {
+        acc = acc * 5 + (cp - 84)
+      } else if ch == "Z" then {
+        list.push(saved, list.last(stack) ?? "")
+      } else {
+        guard false else err("${c.label}: incomplete proof (`${ch}`)")
+      }
+    }
+  } else {
+    for label in proof {
+      guard label != "?" else err("${c.label}: incomplete proof")
+      stack = step(c, stack, label)!
+    }
+  }
+  match stack {
+    [t] => ok(t),
+    _ => err("${c.label}: the proof leaves ${int.to_string(list.len(stack))} terms on the stack"),
+  }
+}
+
+// ── Statements ──────────────────────────────────────────────────────
+
+local fn type_of(g: Map[String, List[Syn]], vars: Map[String, String], tc: String, toks: List[String]) -> String! =
+  if tc == PROVABLE then ok("Prf(" + parse_math(g, vars, STATEMENT, toks)! + ")")
+  else if list.len(toks) == 1 and map.get(vars, at(toks, 0)) != none then ok(binder_name(tc))
+  else err("a hypothesis of typecode ${tc} is not supported")
+
+// A typecode becomes a type the first time a variable or a syntax axiom has it.
+local fn declare_typecode(mut typecodes: Map[String, Bool], mut out: List[String], tc: String) -> Unit =
+  if map.contains(typecodes, tc) then () else {
+    map.insert(typecodes, tc, true)
+    list.push(out, "symbol ${binder_name(tc)}: Type")
+    // Metamath assumes every typecode has variables; a dummy variable
+    // with nothing else to stand in for it uses this one.
+    list.push(out, "symbol some_${binder_name(tc)}: ${binder_name(tc)}")
+    if tc == STATEMENT then list.push(out, "symbol Prf(p: ${STATEMENT}) -> Type") else ()
+  }
+
+fn absorb_mm(src: String, upto: String) -> String! = {
+  let ts = tokens(prefix(src, upto)!)
+  let n = list.len(ts)
+  var hyps: Map[String, Hyp] = [:]
+  var active: List[String] = []
+  var scopes: List[Int] = []
+  var asserts: Map[String, Assertion] = [:]
+  var grammar: Map[String, List[Syn]] = [:]
+  var taken: Map[String, Bool] = [:]
+  var typecodes: Map[String, Bool] = [:]
+  var out: List[String] = []
+  var count = 0
+  var i = 0
+  while i < n {
+    let t = at(ts, i)
+    if t == SCOPE_OPEN then {
+      list.push(scopes, list.len(active))
+      i = i + 1
+    } else if t == "$}" then {
+      let k = list.last(scopes) ?? 0
+      active = list.take(active, k)
+      scopes = list.take(scopes, list.len(scopes) - 1)
+      i = i + 1
+    } else if t == "$c" or t == "$v" then {
+      i = find(ts, i, "$.") + 1
+    } else {
+      guard t != "$d" else err("distinct-variable conditions ($d) are not supported yet")
+      let label = t
+      let kw = at(ts, i + 1)
+      let stop = find(ts, i + 2, "$.")
+      let body = copy(ts, i + 2, stop)
+      let tc = at(body, 0)
+      i = stop + 1
+      if kw == "$f" then {
+        let v = at(body, 1)
+        map.insert(hyps, label, Hyp { name: binder_name(v), essential: false, tc: tc, toks: [v] })
+        list.push(active, label)
+        declare_typecode(typecodes, out, tc)
+      } else if kw == "$e" then {
+        map.insert(hyps, label, Hyp { name: binder_name(label), essential: true, tc: tc, toks: list.drop(body, 1) })
+        list.push(active, label)
+      } else if kw == "$a" or kw == "$p" then {
+        let eq = find(body, 0, "$=")
+        let stmt = copy(body, 1, eq)
+        // Variables in scope, and the ones this assertion mentions.
+        var vars: Map[String, String] = [:]
+        var floating: Map[String, String] = [:]
+        for h in active {
+          match map.get(hyps, h) {
+            some(hy) => if hy.essential then () else {
+              map.insert(vars, at(hy.toks, 0), hy.tc)
+              map.insert(floating, at(hy.toks, 0), h)
+            },
+            none => (),
+          }
+        }
+        var mentioned: Map[String, Bool] = [:]
+        for x in stmt {
+          map.insert(mentioned, x, true)
+        }
+        for h in active {
+          match map.get(hyps, h) {
+            some(hy) => if hy.essential then {
+              for x in hy.toks {
+                map.insert(mentioned, x, true)
+              }
+            } else (),
+            none => (),
+          }
+        }
+        let mandatory = active |> list.filter((h) => match map.get(hyps, h) {
+          some(hy) => hy.essential or map.contains(mentioned, at(hy.toks, 0)),
+          none => false,
+        })
+        // Parameters, each typed by the ones before it.
+        var params: List[String] = []
+        for h in mandatory {
+          let hy = map.get(hyps, h) ?? Hyp { name: "", essential: false, tc: "", toks: [] }
+          let ty = if hy.essential then type_of(grammar, vars, hy.tc, hy.toks)! else binder_name(hy.tc)
+          list.push(params, "${hy.name}: ${ty}")
+        }
+        var name = label_name(label)
+        while map.contains(taken, name) {
+          name = name + "'"
+        }
+        map.insert(taken, name, true)
+        let result = if tc == PROVABLE then type_of(grammar, vars, tc, stmt)! else binder_name(tc)
+        let sig = if list.is_empty(params) then "${name}: ${result}" else "${name}(${list.join(params, ", ")}) -> ${result}"
+        if kw == "$a" then {
+          if tc != PROVABLE then declare_typecode(typecodes, out, tc) else ()
+          list.push(out, "symbol " + sig)
+          if tc != PROVABLE then {
+            // A syntax axiom: also a grammar rule.
+            var slots: Map[String, String] = [:]
+            var order: List[String] = []
+            for h in mandatory {
+              let hy = map.get(hyps, h) ?? Hyp { name: "", essential: false, tc: "", toks: [] }
+              map.insert(slots, at(hy.toks, 0), hy.tc)
+              list.push(order, at(hy.toks, 0))
+            }
+            let rule = Syn { name: name, toks: stmt, slots: slots, order: order }
+            map.insert(grammar, tc, (map.get(grammar, tc) ?? []) + [rule])
+          } else ()
+        } else {
+          // Dummy variables stand in for the first mandatory variable of their typecode.
+          var standins: Map[String, String] = [:]
+          for (code, _) in map.entries(typecodes) {
+            map.insert(standins, code, "some_" + binder_name(code))
+          }
+          for h in list.reverse(mandatory) {
+            match map.get(hyps, h) {
+              some(hy) => if hy.essential then () else map.insert(standins, hy.tc, hy.name),
+              none => (),
+            }
+          }
+          let ctx = Proving { label: label, hyps: hyps, asserts: asserts, mandatory: mandatory, standins: standins }
+          let proof = proof_term(ctx, copy(body, eq + 1, list.len(body)))!
+          let kind = if tc == PROVABLE then "theorem" else "def"
+          list.push(out, "${kind} ${sig} =\n  ${proof}")
+          count = count + 1
+        }
+        map.insert(asserts, label, Assertion { name: name, nhyps: list.len(mandatory) })
+        if label == upto then {
+          i = n
+        } else ()
+      } else {
+        guard false else err("unexpected `${kw}` after ${label}")
+      }
+    }
+  }
+  let header = """
+    // Absorbed from Metamath by `arlk absorb-mm`: set.mm up to ${upto}
+    // (${int.to_string(count)} theorems). Check it with `arlk check <this file>`;
+    // no Metamath verifier is needed or trusted.
+    """
+  let last = label_name(upto)
+  ok(list.join([header, "room setmm", ""] + out + ["", "axioms ${last}"], "\n") + "\n")
+}
+
+test "labels and binders" {
+  assert_eq(label_name("ax-mp"), "ax_mp")
+  assert_eq(label_name("pm2.43"), "pm2.43")
+  assert_eq(binder_name("a1i.1"), "a1i_1")
+}
+
+test "a tiny database with a compressed proof" {
+  let db = string.replace(string.replace("""
+    $c ( ) -> wff |- $.
+    $v ph ps $.
+    wph $f wff ph $.
+    wps $f wff ps $.
+    wi $a wff ( ph -> ps ) $.
+    OPEN
+      min $e |- ph $.
+      maj $e |- ( ph -> ps ) $.
+      ax-mp $a |- ps $.
+    CLOSE
+    ax-1 $a |- ( ph -> ( ps -> ph ) ) $.
+    OPEN
+      a1i.1 $e |- ph $.
+      a1i $p |- ( ps -> ph ) $=
+        ( wi ax-1 ax-mp ) ABADCABEF $.
+    CLOSE
+    """, "OPEN", "$" + "{"), "CLOSE", "$" + "}")
+  let text = absorb_mm(db, "a1i")
+  assert(string.contains(text ?? "", "theorem a1i(ph: wff, ps: wff, a1i_1: Prf(ph)) -> Prf(wi(ps, ph)) ="))
+  assert(string.contains(text ?? "", "symbol ax_mp(ph: wff, ps: wff, min: Prf(ph), maj: Prf(wi(ph, ps))) -> Prf(ps)"))
+}

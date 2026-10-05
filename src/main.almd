@@ -1,7 +1,8 @@
 // arlk — the Arlk proof checker.
 //
 //   arlk check FILE.arlk                 check every declaration
-//   arlk absorb EXPORT.json [-o OUT]     turn a Lean export into Arlk source
+//   arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export into Arlk source
+//   arlk absorb-mm DB.mm --upto LABEL    turn a Metamath database into Arlk source
 
 import env
 import fs
@@ -9,6 +10,7 @@ import process
 import self.syntax
 import self.kernel
 import self.absorb
+import self.metamath
 
 let USAGE = """
   usage:
@@ -16,15 +18,19 @@ let USAGE = """
                                          check files in order, into one environment
                                          (--timing: list the slowest declarations;
                                           --keep-going: report every failure, not just the first)
-    arlk absorb EXPORT.json [-o OUT]     turn a Lean export (tools/lean-export) into Arlk source
+    arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export (tools/) into Arlk source
+    arlk absorb-mm DB.mm --upto LABEL [-o OUT]
+                                         turn a Metamath database, up to LABEL, into Arlk source
   """
 
 effect fn main() -> Unit = {
   let args = process.args()
-  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-"))
+  let upto = flag(args, "--upto")
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o"))
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
-    some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", output_flag(args))!,
+    some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
+    some("absorb-mm") if not list.is_empty(files) and upto != none => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     _ => {
       println(USAGE)
       process.exit(2)
@@ -32,7 +38,7 @@ effect fn main() -> Unit = {
   }
 }
 
-local fn output_flag(args: List[String]) -> String? = match list.index_of(args, "-o") {
+local fn flag(args: List[String], name: String) -> String? = match list.index_of(args, name) {
   some(i) => list.get(args, i + 1),
   none => none,
 }
@@ -108,6 +114,23 @@ effect fn report_timing(times: List[(Int, Int)]) -> Unit = {
 effect fn run_absorb(path: String, out: String?) -> Unit = {
   let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
   match absorb.absorb(src) {
+    err(e) => {
+      println("✗ ${path}: ${e}")
+      process.exit(1)
+    },
+    ok(text) => match out {
+      some(o) => {
+        fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+        println("wrote ${o}")
+      },
+      none => println(text),
+    },
+  }
+}
+
+effect fn run_absorb_mm(path: String, upto: String, out: String?) -> Unit = {
+  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match metamath.absorb_mm(src, upto) {
     err(e) => {
       println("✗ ${path}: ${e}")
       process.exit(1)
