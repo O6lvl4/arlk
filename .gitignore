@@ -1,2 +1,14 @@
 target/
 /arlk
+# Rocq plugin build output
+tools/rocq-export/Makefile.rocq
+tools/rocq-export/Makefile.rocq.conf
+tools/rocq-export/.Makefile.rocq.d
+tools/rocq-export/.lia.cache
+tools/rocq-export/src/*.cm*
+tools/rocq-export/src/*.o
+tools/rocq-export/src/*.a
+tools/rocq-export/src/*.d
+tools/rocq-export/src/arlk_export.ml
+# Lean build output
+tools/lean-export/.lake/
