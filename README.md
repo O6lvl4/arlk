@@ -155,15 +155,20 @@ the definition is rejected, so definitions always terminate. Parameters after th
 change in recursive calls (an accumulator) and travel through the motive. Arms may use short
 constructor names and `_` for the rest; a missing or repeated arm is an error.
 
+**Records.** `type Point = { x: Nat, y: Nat }` is a type with one constructor `Point.mk` and a
+projection per field, defined by a match; a field's type may mention earlier fields
+(`type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }`).
+As in Almide, `p.x` reads a field and `Point { x: a, y: b }` builds a value.
+
 **Inference.** The elaborator (src/elab.almd) fills in implicit arguments, universe levels and `_`
-holes by unification (higher-order patterns, as in Lean and Agda): `List.cons(x, xs)` is
+holes by unification (higher-order patterns with pruning, first-order approximation, postponed
+equations, as in Lean and Agda): `List.cons(x, xs)` is
 `List.cons[0](Nat, x, xs)`, `Eq.refl` finds its type and value from the statement. The elaborator
 is not trusted: its output is a complete kernel term, checked like a hand-written one, so a wrong
 inference is a type error, never a false theorem. What it cannot infer it reports. See
 [examples/data.arlk](examples/data.arlk).
 
-Next on this road: nested patterns and matching on indexed families, structures with
-projections, mutual and nested types, and reading Lean and Rocq libraries directly into these native
+Next on this road: nested patterns and matching on indexed families, mutual and nested types, and reading Lean and Rocq libraries directly into these native
 features instead of through the `core` encoding.
 
 ## Absorbing provers

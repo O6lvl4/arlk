@@ -74,7 +74,7 @@ type Env = {
   order: List[String],
 }
 
-type IndInfo = { params: Int, indices: Int, ctors: List[String] }
+type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String] }
 
 // A typing context: innermost binder first.
 type Ctx = List[(String, Term)]

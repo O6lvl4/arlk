@@ -33,6 +33,10 @@ type Raw =
   // `match x { C(a, b) => e, _ => e }`, Almide's match: compiled to the
   // recursor of x's type (structural recursion, see patterns.almd).
   | RMatch(Raw, List[Arm])
+  // `Point { x: a, y: b }`: a record value, fields in any order.
+  | RRecord(String, List[(String, Raw)])
+  // `e.x`: a field of a record value (`p.x` on a name lexes as one name).
+  | RField(Raw, String)
   | RApp(Raw, Raw)
   | RLam(String, Raw, Raw)
   | RPi(String, Raw, Raw)
@@ -54,7 +58,9 @@ type Decl =
 // `params` are fixed across the family, `arity` is the rest of its type
 // (the indices, then a sort). A constructor without a result type builds
 // the type applied to its parameters.
-type Inductive = { name: String, levels: List[String], params: List[(String, Raw)], arity: Raw, ctors: List[Constructor] }
+// A record (`= { x: A, y: B }`) is an inductive type with one constructor
+// `mk` taking the fields; `fields` lists them, and they get projections.
+type Inductive = { name: String, levels: List[String], params: List[(String, Raw)], arity: Raw, ctors: List[Constructor], fields: List[String] }
 
 type Constructor = { name: String, args: List[(String, Raw)], result: Raw? }
 
@@ -102,7 +108,7 @@ local fn punct(cs: List[String], i: Int) -> (String, Int)? = {
     "->" => some(("->", 2)),
     "=>" => some(("=>", 2)),
     _ => match c {
-      "(" | ")" | "{" | "}" | "[" | "]" | ":" | "," | "=" | "|" | "+" => some((c, 1)),
+      "(" | ")" | "{" | "}" | "[" | "]" | ":" | "," | "=" | "|" | "+" | "." => some((c, 1)),
       "→" => some(("->", 1)),
       "⇒" => some(("=>", 1)),
       _ => none,
@@ -286,11 +292,15 @@ local fn arrow(ts: List[Token], p: Int, lhs: Raw) -> (Raw, Int)! =
     ok((RPi("_", lhs, rhs), p1))
   } else ok((lhs, p))
 
-// f(a, b)(c): each argument list applies in turn.
+// f(a, b)(c).x: each argument list applies in turn, `.x` reads a field.
 local fn calls(ts: List[Token], p: Int, f: Raw) -> (Raw, Int)! =
   if is_sym(ts, p, "(") then {
     let (args, p1) = args_list(ts, p + 1, [])!
     calls(ts, p1, list.fold(args, f, (acc, a) => RApp(acc, a)))
+  } else if is_sym(ts, p, ".") then {
+    let (x, p1) = ident(ts, p + 1)!
+    // `.x.y` after a call lexes as `.` then the name `x.y`.
+    calls(ts, p1, list.fold(string.split(x, "."), f, (acc, g) => RField(acc, g)))
   } else ok((f, p))
 
 local fn args_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)! = {
@@ -337,7 +347,11 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
     ok((RMatch(scrut, as), p3))
   }
   if t.kind == "ident" then {
-    if is_sym(ts, p + 1, "[") then {
+    // `Point { x: ...`: a record value (a match's arms never start `name:`).
+    if is_sym(ts, p + 1, "{") and tok(ts, p + 2).kind == "ident" and is_sym(ts, p + 3, ":") then {
+      let (fs, p1) = field_values(ts, p + 2, [])!
+      ok((RRecord(t.text, fs), p1))
+    } else if is_sym(ts, p + 1, "[") then {
       let (ls, p1) = level_list(ts, p + 2, [])!
       ok((RInst(t.text, ls), p1))
     } else ok((RName(t.text), p + 1))
@@ -432,6 +446,36 @@ local fn signature(ts: List[Token], p: Int) -> (Signature, Int)! = {
 
 let DECL_HINT = "expected a declaration (room, type, symbol, def, theorem, rule, irrelevant, check, eval, axioms)"
 
+// `x: A, y: B }` (after the brace).
+local fn field_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! =
+  if is_sym(ts, p, "}") then ok((acc, p + 1))
+  else {
+    let (f, p1) = ident(ts, p)!
+    let p2 = expect(ts, p1, ":")!
+    let (ty, p3) = term(ts, p2)!
+    let acc2 = acc + [(f, ty)]
+    if is_sym(ts, p3, ",") then field_list(ts, p3 + 1, acc2)
+    else {
+      let p4 = expect(ts, p3, "}")!
+      ok((acc2, p4))
+    }
+  }
+
+// `x: a, y: b }`: a record value's fields.
+local fn field_values(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! =
+  if is_sym(ts, p, "}") then ok((acc, p + 1))
+  else {
+    let (f, p1) = ident(ts, p)!
+    let p2 = expect(ts, p1, ":")!
+    let (v, p3) = term(ts, p2)!
+    let acc2 = acc + [(f, v)]
+    if is_sym(ts, p3, ",") then field_values(ts, p3 + 1, acc2)
+    else {
+      let p4 = expect(ts, p3, "}")!
+      ok((acc2, p4))
+    }
+  }
+
 // `(x: A, y: B)` if present.
 local fn opt_binders(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! =
   if is_sym(ts, p, "(") then {
@@ -471,11 +515,17 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       let (name, p0) = ident(ts, p + 1)!
       let (levels, p1) = level_params(ts, p0)!
       let (params, p2) = opt_binders(ts, p1)!
-      let p3 = expect(ts, p2, ":")!
-      let (arity, p4) = term(ts, p3)!
+      // `: Type` may be left out.
+      let (arity, p4) = (if is_sym(ts, p2, ":") then term(ts, p2 + 1) else ok((RType, p2)))!
       let p5 = expect(ts, p4, "=")!
-      let (ctors, p6) = constructors(ts, p5, [])!
-      ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: ctors }), p6))
+      if is_sym(ts, p5, "{") then {
+        let (fields, p6) = field_list(ts, p5 + 1, [])!
+        let ctor = Constructor { name: "mk", args: fields, result: none }
+        ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: [ctor], fields: fields |> list.map(((f, _)) => f) }), p6))
+      } else {
+        let (ctors, p6) = constructors(ts, p5, [])!
+        ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: ctors, fields: [] }), p6))
+      }
     },
     "symbol" => {
       let (sg, p1) = signature(ts, p + 1)!
@@ -618,4 +668,16 @@ test "match: Almide's syntax, arms with and without bound names" {
     },
     _ => assert(false),
   }
+}
+
+test "records: fields, values, and type annotations that can be left out" {
+  match first_decl("type Point = { x: Nat, y: Nat }") {
+    DInductive(ind) => {
+      assert_eq(ind.fields, ["x", "y"])
+      assert_eq(ind.arity, RType)
+      assert_eq(ind.ctors |> list.map((c) => c.name), ["mk"])
+    },
+    _ => assert(false),
+  }
+  assert_eq(first_decl("check Point { y: b, x: a }"), DCheck(RRecord("Point", [("y", RName("b")), ("x", RName("a"))])))
 }

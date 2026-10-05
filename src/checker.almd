@@ -47,6 +47,8 @@ fn resolve(env: Env, lv: List[String], scope: List[String], r: Raw) -> Term! = m
   RPi(x, ty, b) => ok(Pi(x, resolve(env, lv, scope, ty)!, resolve(env, lv, [x] + scope, b)!)),
   RBracket(inner) => resolve(env, lv, scope, inner),
   RMatch(_, _) => err("a match must be a definition's whole body, on one of its parameters"),
+  RRecord(_, _) => err("internal: a record value must be elaborated"),
+  RField(_, _) => err("internal: a field access must be elaborated"),
 }
 
 local fn has_bracket(r: Raw) -> Bool = match r {
@@ -346,7 +348,11 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
     step(env, line, d)! 
   }
   let q = env.room + "." + ind.name
-  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name) })
+  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name), fields: ind.fields })
+  guard not list.contains(ind.fields, "mk") and not list.contains(ind.fields, "rec") else err("a field cannot be called mk or rec")
+  for d in inductive.projections(ind) {
+    step(env, line, d)!
+  }
   let elim = if plan.large then "into any universe" else "into Prop only"
   ok(["✓ type ${q}: ${int.to_string(list.len(ind.ctors))} constructors, recursor ${q}.rec ${elim}"])
 }
@@ -537,7 +543,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
 // `_` goes through the elaborator; everything else (absorbed libraries,
 // hand-written kernel terms) is resolved directly.
 local fn needs_elab(env: Env, r: Raw) -> Bool =
-  if map.is_empty(env.implicits) and map.is_empty(env.lparams) then has_hole(r)
+  if map.is_empty(env.implicits) and map.is_empty(env.lparams) and map.is_empty(env.inductives) then has_hole(r)
   else uses_inference(env, r)
 
 local fn has_hole(r: Raw) -> Bool = match r {
@@ -551,8 +557,11 @@ local fn has_hole(r: Raw) -> Bool = match r {
 local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
   RName(x) => x == "_" or match resolve_const(env, x) {
     ok(c) => map.contains(env.implicits, c) or map.contains(env.lparams, c),
-    err(_) => false,
+    // `p.x` (a field of a local p) is the elaborator's to read.
+    err(_) => string.contains(x, "."),
   },
+  RRecord(_, _) => true,
+  RField(_, _) => true,
   RInst(x, _) => match resolve_const(env, x) {
     ok(c) => map.contains(env.implicits, c),
     err(_) => false,
@@ -630,6 +639,7 @@ local fn match_target(env: Env, dom: Raw) -> patterns.Target! = {
   let name = match h {
     RName(x) => ok(x),
     RInst(x, _) => ok(x),
+    RExplicit(x, _) => ok(x),
     _ => err("match needs a parameter whose type is an inductive type"),
   }!
   let q = resolve_const(env, name)!

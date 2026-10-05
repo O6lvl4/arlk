@@ -15,7 +15,7 @@
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta}
 import self.syntax.{Raw}
-import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of}
+import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of}
 import self.kernel
 
 // `typed`: holes for implicit arguments with the type their solution must
@@ -27,9 +27,12 @@ type ElabState = {
   next: Int,
   bu: Budget,
   typed: List[(Ctx, Term, Term)],
+  // Equations between types that could not be decided yet (both sides
+  // waiting on holes); retried as holes get solved.
+  postponed: List[(Ctx, Term, Term, String)],
 }
 
-fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [] }
+fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [], postponed: [] }
 
 // ── Holes ───────────────────────────────────────────────────────────
 
@@ -204,9 +207,21 @@ local fn try_solve(mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
     Meta(n) =>
       if map.contains(st.metas, n) or mentions_meta(b, n) then false
       else match pattern_args(args) {
-        some(vars) => match abstract(b, vars, 0) {
+        some(vars) => match abstract(prune(st, b, vars, 0), vars, 0) {
           some(body) => {
-            let sol = list.fold(list.reverse(vars), body, (acc, i) => Lam(name_of(ctx, i), type0(), acc))
+            // Each binder gets the type its variable has in ctx, rewritten
+            // over the binders before it.
+            var sol = body
+            var j = list.len(vars) - 1
+            while j >= 0 {
+              let i = list.get(vars, j) ?? 0
+              let ty = match list.get(ctx, i) {
+                some((_, t)) => abstract(shift(t, i + 1, 0), list.take(vars, j), 0) ?? type0(),
+                none => type0(),
+              }
+              sol = Lam(name_of(ctx, i), ty, sol)
+              j = j - 1
+            }
             map.insert(st.metas, n, sol)
             true
           },
@@ -218,9 +233,54 @@ local fn try_solve(mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   }
 }
 
+// Holes inside a candidate solution that are applied to variables the
+// solution may not mention lose those arguments: `?k(x, y)` with y out of
+// scope becomes `?k'(x)`, where ?k := (x, y) => ?k'(x). Without this,
+// `?h(A) =?= S(?k(A, s))` would fail for no reason.
+local fn prune(mut st: ElabState, t: Term, allowed: List[Int], depth: Int) -> Term = {
+  let (h, args) = spine(t)
+  match h {
+    Meta(n) =>
+      if map.contains(st.metas, n) then t
+      else match pattern_args(args) {
+        some(vars) => {
+          let keep = vars |> list.filter((i) => i < depth or list.contains(allowed, i - depth))
+          if list.len(keep) == list.len(vars) then t
+          else {
+            let m = st.next
+            st.next = m + 1
+            // ?n := (v1, .., vk) => ?m(the kept ones), as positions in vs.
+            let k = list.len(vars)
+            let body = apply(Meta(m), keep |> list.map((i) => match list.index_of(vars, i) {
+              some(j) => Var(k - 1 - j),
+              none => Var(0),
+            }))
+            map.insert(st.metas, n, list.fold(vars, body, (acc, _) => Lam("x", type0(), acc)))
+            apply(Meta(m), keep |> list.map((i) => Var(i)))
+          }
+        },
+        none => t,
+      },
+    _ => match t {
+      App(f, a) => App(prune(st, f, allowed, depth), prune(st, a, allowed, depth)),
+      Lam(x, ty, b) => Lam(x, prune(st, ty, allowed, depth), prune(st, b, allowed, depth + 1)),
+      Pi(x, ty, b) => Pi(x, prune(st, ty, allowed, depth), prune(st, b, allowed, depth + 1)),
+      other => other,
+    },
+  }
+}
+
 local fn name_of(ctx: Ctx, i: Int) -> String = match list.get(ctx, i) {
   some((x, _)) => x,
   none => "x",
+}
+
+local fn is_pattern_meta(st: ElabState, t: Term) -> Bool = {
+  let (h, args) = spine(t)
+  match h {
+    Meta(n) => not map.contains(st.metas, n) and pattern_args(args) != none,
+    _ => false,
+  }
 }
 
 local fn is_meta_app(t: Term) -> Bool = {
@@ -236,6 +296,10 @@ fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   let y = zonk(st, b)
   if x == y then true
   else if try_solve(st, ctx, x, y) or try_solve(st, ctx, y, x) then true
+  // A variable the solution may not mention can disappear by computing
+  // (`((p) => B(p.fst))(mk(a, b))` is `B(a)`): normalise, then try again.
+  else if is_pattern_meta(st, x) and try_solve(st, ctx, x, nf(env, ctx, y, st.bu)) then true
+  else if is_pattern_meta(st, y) and try_solve(st, ctx, y, nf(env, ctx, x, st.bu)) then true
   else if st.bu.exhausted then false
   else {
     let wx = whnf_core(env, ctx, x, st.bu)
@@ -262,8 +326,20 @@ local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> 
     },
     _ => match y {
       Lam(n2, t2, b2) => unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2),
-      _ => unify_spines(env, st, ctx, x, y) or unify_delta(env, st, ctx, x, y),
+      _ => unify_spines(env, st, ctx, x, y) or first_order(env, st, ctx, x, y) or first_order(env, st, ctx, y, x) or unify_delta(env, st, ctx, x, y),
     },
+  }
+
+// `?m(xs, a) =?= f(b)` outside the pattern fragment: try `?m(xs) =?= f`
+// and `a =?= b` (Lean's first-order approximation).
+local fn first_order(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
+  if not is_meta_app(x) or is_pattern_meta(st, x) then false
+  else match x {
+    App(f, a) => match y {
+      App(g, b) => unify(env, st, ctx, f, g) and unify(env, st, ctx, a, b),
+      _ => false,
+    },
+    _ => false,
   }
 
 local fn unify_spines(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
@@ -383,7 +459,37 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
       some((_, ty)) => ok((Var(i), shift(ty, i + 1, 0))),
       none => err("unbound ${x}"),
     },
-    none => constant(sc, st, ctx, resolve_const(sc.env, x)!, none, true),
+    none => match resolve_const(sc.env, x) {
+      ok(c) => constant(sc, st, ctx, c, none, true),
+      err(e) => match field_access(sc, st, ctx, x) {
+        some(found) => found,
+        none => err(e),
+      },
+    },
+  },
+  RField(e, f) => {
+    let (t, ty) = infer(sc, st, ctx, e)!
+    walk_fields(sc, st, ctx, t, ty, [f])
+  },
+  RRecord(name, fvs) => {
+    let q = resolve_const(sc.env, name)!
+    let info = match map.get(sc.env.inductives, q) {
+      some(i) => ok(i),
+      none => err("${name} is not a record type"),
+    }!
+    guard not list.is_empty(info.fields) else err("${name} is not a record type")
+    for (f, _) in fvs {
+      guard list.contains(info.fields, f) else err("${name} has no field ${f}")
+    }
+    var args: List[Raw] = []
+    for f in info.fields {
+      match list.find(fvs, ((g, _)) => g == f) {
+        some((_, v)) => list.push(args, v),
+        none => (),
+      }
+    }
+    guard list.len(args) == list.len(info.fields) and list.len(fvs) == list.len(info.fields) else err("${name} { ... } must give every field once: ${list.join(info.fields, ", ")}")
+    infer(sc, st, ctx, list.fold(args, RName(q + ".mk"), (acc, a) => RApp(acc, a)))
   },
   RInst(x, lraws) => {
     var ls: List[Level] = []
@@ -438,6 +544,51 @@ fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = matc
   RMatch(_, _) => err("a match must be a definition's whole body, on one of its parameters"),
 }
 
+// `p.x.y`: p is a local, x and y are fields of the records along the way.
+local fn field_access(sc: Scope, mut st: ElabState, ctx: Ctx, x: String) -> Option[Result[(Term, Term), String]] = {
+  let parts = string.split(x, ".")
+  match index_in(names(ctx), list.first(parts) ?? "", 0) {
+    none => none,
+    some(i) => match list.get(ctx, i) {
+      none => none,
+      some((_, ty0)) => some(walk_fields(sc, st, ctx, Var(i), shift(ty0, i + 1, 0), list.drop(parts, 1))),
+    },
+  }
+}
+
+local fn record_of(env: Env, ty: Term, f: String, shown: String) -> String! = {
+  let (h, _) = spine(ty)
+  match h {
+    Const(c, _) => match map.get(env.inductives, c) {
+      some(info) => if list.contains(info.fields, f) then ok(c) else err("${shown} has no field ${f}"),
+      none => err("${shown} is not a record, so it has no field ${f}"),
+    },
+    _ => err("cannot see which record ${shown} is, to read its field ${f}"),
+  }
+}
+
+local fn walk_fields(sc: Scope, mut st: ElabState, ctx: Ctx, t0: Term, ty0: Term, fields: List[String]) -> (Term, Term)! = {
+  var t = t0
+  var ty = ty0
+  for f in fields {
+    let red = reduce_type(sc, st, ctx, ty)
+    let q = record_of(sc.env, red, f, show(sc.env, ctx, zonk(st, ty)))!
+    let (proj, pty) = constant(sc, st, ctx, q + "." + f, none, true)!
+    match reduce_type(sc, st, ctx, pty) {
+      Pi(_, dom, cod) => {
+        guard unify(sc.env, st, ctx, ty, dom) else err("cannot read field ${f}")
+        let record = t
+        t = App(proj, record)
+        ty = subst(cod, record)
+      },
+      _ => {
+        t = t
+      },
+    }
+  }
+  ok((t, ty))
+}
+
 // A type, and the level of the universe it lives in.
 fn sort_of(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Level)! = {
   let (t, ty) = infer(sc, st, ctx, r)!
@@ -473,8 +624,17 @@ local fn infer_then_unify(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expect
   let (t, ty) = infer(sc, st, ctx, r)!
   let same = unify(sc.env, st, ctx, ty, expected)
   guard not st.bu.exhausted else err(exhausted_error())
-  guard same else err("type mismatch for ${show(sc.env, ctx, zonk(st, t))}\n    expected: ${show(sc.env, ctx, zonk(st, expected))}\n    found:    ${show(sc.env, ctx, zonk(st, ty))}")
-  ok(t)
+  if same then ok(t)
+  else {
+    let zt = zonk(st, ty)
+    let ze = zonk(st, expected)
+    let what = "type mismatch for ${show(sc.env, ctx, zonk(st, t))}\n    expected: ${show(sc.env, ctx, ze)}\n    found:    ${show(sc.env, ctx, zt)}"
+    // Holes on both sides may be decided later; otherwise it is an error.
+    if has_meta(zt) and has_meta(ze) then {
+      list.push(st.postponed, (ctx, ty, expected, what))
+      ok(t)
+    } else err(what)
+  }
 }
 
 // ── Entry points ────────────────────────────────────────────────────
@@ -487,6 +647,15 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
   var failure = ""
   while progress and failure == "" {
     progress = false
+    // Postponed equations first: one may now be decidable.
+    let pending = st.postponed
+    let none_yet: List[(Ctx, Term, Term, String)] = []
+    st.postponed = none_yet
+    for (ctx, a, b, what) in pending {
+      if unify(sc.env, st, ctx, a, b) then {
+        progress = true
+      } else list.push(st.postponed, (ctx, a, b, what))
+    }
     var later: List[(Ctx, Term, Term)] = []
     for (ctx, m, dom) in waiting {
       let zm = zonk(st, m)
@@ -506,7 +675,10 @@ local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
     waiting = later
   }
   guard failure == "" else err(failure)
-  ok(())
+  match list.first(st.postponed) {
+    some((_, _, _, what)) => err(what),
+    none => ok(()),
+  }
 }
 
 local fn complete(sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {

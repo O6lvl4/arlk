@@ -21,7 +21,7 @@
 // levels, which universes it may eliminate into); kernel.almd checks that
 // before anything is added, and passes the outcome in as a `Plan`.
 
-import self.syntax.{Raw, Decl, Inductive, Constructor, Sig}
+import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm}
 
 // `large`: the motive may land in any universe (else only in Prop).
 // `k`: a proposition with one constructor and no arguments (like Eq):
@@ -253,6 +253,56 @@ fn eliminator(ind0: Inductive, plan: Plan) -> List[Decl] = {
   }
   out
 }
+
+// ── Records ─────────────────────────────────────────────────────────
+
+// One projection per field, defined by a match on the record:
+//   def Sigma.snd[u, v, A, B](p: Sigma(A, B)) -> B(Sigma.fst(p)) = match p { mk(fst, snd) => snd }
+// A field's type may mention earlier fields; there they are projections of p.
+fn projections(ind0: Inductive) -> List[Decl] = {
+  let ind = own_levels(ind0)
+  let p = fresh("self", user_names(ind))
+  let target = raw_apply(at_levels(ind, ind.name), names(ind.params))
+  var out: List[Decl] = []
+  var earlier: List[String] = []
+  for (f, ty) in ind.fields |> list.map((f) => (f, field_type(ind, f))) {
+    let proj = (g: String) => RApp(RName(ind.name + "." + g), RName(p))
+    let ty2 = substitute(ty, earlier, earlier |> list.map((g) => proj(g)))
+    let sig = Sig { name: ind.name + "." + f, levels: ind.levels, implicits: list.len(ind.params), ty: pis(ind.params + [(p, target)], ty2) }
+    let arm = Arm { ctor: "mk", vars: ind.fields, body: RName(f) }
+    let body = lams(ind.params + [(p, target)], RMatch(RName(p), [arm]))
+    list.push(out, DDef(sig, body))
+    list.push(earlier, f)
+  }
+  out
+}
+
+local fn field_type(ind: Inductive, f: String) -> Raw = match list.first(ind.ctors) {
+  some(c) => match list.find(c.args, ((x, _)) => x == f) {
+    some((_, ty)) => ty,
+    none => RType,
+  },
+  none => RType,
+}
+
+// Replace free occurrences of names by terms (binders stop it).
+fn substitute(r: Raw, from: List[String], to: List[Raw]) -> Raw = match r {
+  RName(x) => match list.index_of(from, x) {
+    some(i) => list.get(to, i) ?? r,
+    none => r,
+  },
+  RApp(f, a) => RApp(substitute(f, from, to), substitute(a, from, to)),
+  RLam(x, ty, b) => RLam(x, substitute(ty, from, to), substitute(b, keep_from(from, to, x), keep_to(from, to, x))),
+  RPi(x, ty, b) => RPi(x, substitute(ty, from, to), substitute(b, keep_from(from, to, x), keep_to(from, to, x))),
+  RBracket(b) => RBracket(substitute(b, from, to)),
+  other => other,
+}
+
+local fn keep_from(from: List[String], to: List[Raw], x: String) -> List[String] =
+  list.zip(from, to) |> list.filter(((f, _)) => f != x) |> list.map(((f, _)) => f)
+
+local fn keep_to(from: List[String], to: List[Raw], x: String) -> List[Raw] =
+  list.zip(from, to) |> list.filter(((f, _)) => f != x) |> list.map(((_, t)) => t)
 
 // ── Renaming ────────────────────────────────────────────────────────
 

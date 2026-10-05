@@ -62,6 +62,19 @@ type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
 
 def pair: Vec(Nat, two) = Vec.vcons(one, Nat.zero, Vec.vcons(Nat.zero, one, Vec.vnil))
 
+// Records, like Almide's: fields, `p.x`, `Point { x: ..., y: ... }`.
+type Point = { x: Nat, y: Nat }
+
+def swap(p: Point) -> Point = Point { x: p.y, y: p.x }
+def corner: Point = Point { x: Nat.zero, y: two }
+
+theorem swap_corner: Eq(Nat, swap(corner).x, two) = Eq.refl
+
+// A field's type may depend on an earlier field.
+type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }
+
+def sized: Sigma(Nat, (n: Nat) => Vec(Nat, n)) = Sigma { fst: two, snd: pair }
+
 // Propositions: Or eliminates only into Prop, And and False anywhere.
 type Or(a: Sort(0), b: Sort(0)): Sort(0) =
   | inl(h: a)

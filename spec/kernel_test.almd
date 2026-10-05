@@ -442,7 +442,7 @@ test "implicit arguments and universe levels are inferred" {
 
 test "inference never makes a false statement true" {
   assert(rejects_with(LISTS + "theorem bad: Eq(_, length(xs), Nat.zero) = Eq.refl", "type mismatch"))
-  assert(rejects_with(LISTS + "def bad: List(Nat) = List.cons(Nat.zero, List.cons(Type, List.nil))", "type mismatch"))
+  assert(rejects_with(LISTS + "def bad: List(Nat) = List.cons(Nat.zero, List.cons(Type, List.nil))", "expected"))
 }
 
 test "what cannot be inferred is reported, not guessed" {
@@ -491,4 +491,30 @@ test "every constructor needs an arm, each at most one" {
   assert(rejects_with(NAT + "def f(n: Nat) -> Nat = match n {\n  zero => n,\n}", "no arm for"))
   assert(rejects_with(NAT + "def f(n: Nat) -> Nat = match n {\n  zero => n,\n  zero => n,\n  succ(k) => k,\n}", "two arms"))
   assert(accepts(NAT + "def pred(n: Nat) -> Nat = match n {\n  succ(k) => k,\n  _ => Nat.zero,\n}"))
+}
+
+// ── Records ─────────────────────────────────────────────────────────
+
+let RECORDS = NAT + """
+  type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+    | refl: Eq(A, a, a)
+  type Point = { x: Nat, y: Nat }
+  def swap(p: Point) -> Point = Point { x: p.y, y: p.x }
+  def p1: Point = Point { y: Nat.succ(Nat.zero), x: Nat.zero }
+  type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }
+  """
+
+test "records: values, fields, and projections that compute" {
+  assert(accepts(RECORDS + "theorem sx: Eq(Nat, swap(p1).x, Nat.succ(Nat.zero)) = Eq.refl"))
+  assert(rejects_with(RECORDS + "theorem sx: Eq(Nat, swap(p1).x, Nat.zero) = Eq.refl", "mismatch"))
+  assert(rejects_with(RECORDS + "def q: Point = Point { x: Nat.zero }", "every field"))
+  assert(rejects_with(RECORDS + "def q: Point = Point { x: Nat.zero, y: Nat.zero, z: Nat.zero }", "no field z"))
+}
+
+test "records: a field's type may depend on earlier fields" {
+  assert(accepts(RECORDS + """
+    type Vec(n: Nat): Type = | mkv
+    def second(s: Sigma(Nat, (n: Nat) => Vec(n))) -> Vec(s.fst) = s.snd
+    def sized: Sigma(Nat, (n: Nat) => Vec(n)) = Sigma { fst: Nat.zero, snd: Vec.mkv }
+    """))
 }
