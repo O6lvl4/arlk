@@ -19,6 +19,11 @@ jobs:
       ALMIDE_VERSION: v0.64.0
       ALMIDE_SHA256: bb43c9f033277bdd98621f44b1c381c334c799fb6d46163feaad71ff7f4ae1fd
       RUST_VERSION: 1.96.1
+      # Source tests run on WASM, as on a developer machine with wasmtime;
+      # without it `almide test` falls back to a native build that miscompiles
+      # recursive variants imported from another module (almide/almide#3422).
+      WASMTIME_VERSION: v47.0.2
+      WASMTIME_SHA256: 9ec85751649139711b6a5061c4f48a41412bf9b1ab98a08b9924ca73f22ca575
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +41,13 @@ jobs:
           tar xzf almide.tar.gz -C "$HOME/.local/bin" --strip-components=1
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/almide" --version
+
+      - name: Install wasmtime ${{ env.WASMTIME_VERSION }} (checksum pinned)
+        run: |
+          curl -fsSL -o wasmtime.tar.xz "https://github.com/bytecodealliance/wasmtime/releases/download/${WASMTIME_VERSION}/wasmtime-${WASMTIME_VERSION}-x86_64-linux.tar.xz"
+          echo "${WASMTIME_SHA256}  wasmtime.tar.xz" | sha256sum -c -
+          tar xJf wasmtime.tar.xz -C "$HOME/.local/bin" --strip-components=1 "wasmtime-${WASMTIME_VERSION}-x86_64-linux/wasmtime"
+          "$HOME/.local/bin/wasmtime" --version
 
       - name: Check
         run: tools/ci.sh

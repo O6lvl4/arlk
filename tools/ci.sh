@@ -58,6 +58,7 @@ must_reject() { # name secs want cmd...
   echo "revision: $(git rev-parse HEAD 2>/dev/null || echo unknown)"
   echo "almide:   $(almide --version)"
   echo "rustc:    $(rustc --version 2>/dev/null || echo none)"
+  echo "wasmtime: $(wasmtime --version 2>/dev/null || echo none)"
   echo "os:       $(uname -sm)"
 } | tee "$LOGS/versions.txt"
 
