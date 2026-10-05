@@ -150,7 +150,10 @@ effect fn run_absorb(path: String, out: String?) -> Unit = {
 }
 
 // `$[ file $]` includes another file (relative to the including one),
-// each file once, as Metamath specifies.
+// each file once, as Metamath specifies. `$[` inside a comment `$( ... $)`
+// is text, not an include. One pass over the comment-separated pieces:
+// cutting the rest of the file at every comment made this quadratic (the
+// whole set.mm has tens of thousands of comments).
 effect fn with_includes(path: String, mut seen: List[String]) -> String = {
   if list.contains(seen, path) then "" else {
     list.push(seen, path)
@@ -160,26 +163,38 @@ effect fn with_includes(path: String, mut seen: List[String]) -> String = {
       none => "",
     }
     var out: List[String] = []
-    var rest = src
-    var going = true
-    // `$[` inside a comment `$( ... $)` is text, not an include.
-    while going {
-      let inc = string.index_of(rest, "$[") ?? -1
-      let com = string.index_of(rest, "$(") ?? -1
-      if inc < 0 then {
-        list.push(out, rest)
-        going = false
-      } else if com >= 0 and com < inc then {
-        let end = string.index_of(string.drop(rest, com), "$)") ?? (string.len(rest) - com)
-        list.push(out, string.take(rest, com + end + 2))
-        rest = string.drop(rest, com + end + 2)
-      } else {
-        list.push(out, string.take(rest, inc))
-        let after = string.drop(rest, inc + 2)
-        let close = string.index_of(after, "$]") ?? string.len(after)
-        let name = string.trim(string.take(after, close))
-        list.push(out, with_includes(dir + name, seen)!)
-        rest = string.drop(after, close + 2)
+    var first = true
+    for part in string.split(src, "$(") {
+      if first then {
+        list.push(out, expand_includes(dir, part, seen)!)
+        first = false
+      } else match string.split_once(part, "$)") {
+        some((comment, after)) => {
+          list.push(out, "$(" + comment + "$)")
+          list.push(out, expand_includes(dir, after, seen)!)
+        },
+        none => list.push(out, "$(" + part),
+      }
+    }
+    list.join(out, "")
+  }
+}
+
+// Text outside comments, with its includes expanded.
+effect fn expand_includes(dir: String, text: String, mut seen: List[String]) -> String = {
+  if not string.contains(text, "$[") then text else {
+    var out: List[String] = []
+    var first = true
+    for part in string.split(text, "$[") {
+      if first then {
+        list.push(out, part)
+        first = false
+      } else match string.split_once(part, "$]") {
+        some((name, after)) => {
+          list.push(out, with_includes(dir + string.trim(name), seen)!)
+          list.push(out, after)
+        },
+        none => list.push(out, with_includes(dir + string.trim(part), seen)!),
       }
     }
     list.join(out, "")

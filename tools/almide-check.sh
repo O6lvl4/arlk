@@ -9,9 +9,10 @@
 #
 #   tools/almide-check.sh ARLK WORKDIR
 set -uo pipefail
-arlk="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"; work="$2"
+arlk="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
+# Absolute: the replays run from another directory.
+rm -rf "$2"; mkdir -p "$2"; work="$(cd "$2" && pwd)"
 cd "$(dirname "$0")/.."
-rm -rf "$work"; mkdir -p "$work"
 fails=0
 expect() { # name status cmd...
   local name="$1" want="$2"; shift 2
