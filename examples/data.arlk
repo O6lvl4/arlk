@@ -1,3 +1,8 @@
+// Inductive types, defined and checked by Arlk itself: the recursors and
+// their computation rules are generated, then checked by the kernel.
+// Implicit parameters (in [...], like Almide's generics) and universe
+// levels are inferred.
+
 room data
 
 type Nat: Type =
@@ -5,39 +10,57 @@ type Nat: Type =
   | succ(n: Nat)
 
 def add(m: Nat, n: Nat) -> Nat =
-  Nat.rec[1]((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
+  Nat.rec((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
 
-eval add(Nat.succ(Nat.zero), Nat.succ(Nat.succ(Nat.zero)))
+def one: Nat = Nat.succ(Nat.zero)
+def two: Nat = Nat.succ(one)
+
+eval add(one, two)
 
 type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
-  | refl: Eq[u](A, a, a)
+  | refl: Eq(A, a, a)
 
-def two: Nat = Nat.succ(Nat.succ(Nat.zero))
-theorem one_plus_one: Eq[1](Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), two) = Eq.refl[1](Nat, two)
+// The kernel computes 1 + 1, so reflexivity proves it equals 2.
+theorem one_plus_one: Eq(Nat, add(one, one), two) = Eq.refl
 
 type List[u](A: Type(u)): Type(u) =
   | nil
-  | cons(head: A, tail: List[u](A))
+  | cons(head: A, tail: List(A))
 
-def length[u](A: Type(u), xs: List[u](A)) -> Nat =
-  List.rec[1, u](A, (l: List[u](A)) => Nat, Nat.zero, (h: A, t: List[u](A), r: Nat) => Nat.succ(r), xs)
+def length[u, A: Type(u)](xs: List(A)) -> Nat =
+  List.rec((l: List(A)) => Nat, Nat.zero, (h: A, t: List(A), r: Nat) => Nat.succ(r), xs)
 
-eval length[0](Nat, List.cons[0](Nat, Nat.zero, List.cons[0](Nat, Nat.zero, List.nil[0](Nat))))
+def map[u, v, A: Type(u), B: Type(v)](f: A -> B, xs: List(A)) -> List(B) =
+  List.rec((l: List(A)) => List(B), List.nil, (h: A, t: List(A), r: List(B)) => List.cons(f(h), r), xs)
 
+def numbers: List(Nat) = List.cons(Nat.zero, List.cons(one, List.nil))
+
+eval map(Nat.succ, numbers)
+theorem map_keeps_length: Eq(_, length(map(Nat.succ, numbers)), length(numbers)) = Eq.refl
+
+// Families indexed by a value: vectors know their length.
 type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
-  | vnil: Vec[u](A, Nat.zero)
-  | vcons(n: Nat, x: A, xs: Vec[u](A, n)): Vec[u](A, Nat.succ(n))
+  | vnil: Vec(A, Nat.zero)
+  | vcons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
 
+def pair: Vec(Nat, two) = Vec.vcons(one, Nat.zero, Vec.vcons(Nat.zero, one, Vec.vnil))
+
+// Propositions: Or eliminates only into Prop, And and False anywhere.
 type Or(a: Sort(0), b: Sort(0)): Sort(0) =
   | inl(h: a)
   | inr(h: b)
 
-type False: Sort(0) =
-
 type And(a: Sort(0), b: Sort(0)): Sort(0) =
   | intro(left: a, right: b)
 
-type Exists[u](A: Sort(u), p: A -> Sort(0)): Sort(0) =
-  | intro(w: A, h: p(w))
+type False: Sort(0) =
 
-axioms one_plus_one
+theorem and_swap(a: Sort(0), b: Sort(0), h: And(a, b)) -> And(b, a) =
+  And.rec((x: And(a, b)) => And(b, a), (l: a, r: b) => And.intro(r, l), h)
+
+theorem or_swap(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Or(b, a) =
+  Or.rec((x: Or(a, b)) => Or(b, a), (l: a) => Or.inr(l), (r: b) => Or.inl(r), h)
+
+def explode[u](A: Sort(u), h: False) -> A = False.rec((x: False) => A, h)
+
+axioms map_keeps_length

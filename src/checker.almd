@@ -3,14 +3,10 @@
 // adds to an environment has been checked by the kernel (kernel.almd).
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
-import self.syntax.{Raw, Decl, Located, Inductive}
-import self.kernel.{Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all}
+import self.syntax.{Raw, Decl, Located, Inductive, Sig}
+import self.kernel.{Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
-
-local fn index_in(scope: List[String], x: String, i: Int) -> Int? = match scope {
-  [] => none,
-  [y, ..rest] => if y == x and x != "_" then some(i) else index_in(rest, x, i + 1),
-}
+import self.elab
 
 // Named surface terms → de Bruijn terms. `scope` is innermost first; `lv`
 // holds the universe parameters in scope. A bracket is transparent here;
@@ -33,6 +29,14 @@ fn resolve(env: Env, lv: List[String], scope: List[String], r: Raw) -> Term! = m
     }
     ok(Const(c, levels))
   },
+  RExplicit(x, ls) => {
+    let c = resolve_const(env, x)!
+    var levels: List[Level] = []
+    for l in ls {
+      list.push(levels, level_of(lv, l)!)
+    }
+    ok(Const(c, levels))
+  },
   RType => ok(type0()),
   RSort => err("Sort needs a level: Sort(0) is Prop, Sort(1) is Type"),
   RApp(RSort, l) => ok(Sort(level_of(lv, l)!)),
@@ -42,31 +46,6 @@ fn resolve(env: Env, lv: List[String], scope: List[String], r: Raw) -> Term! = m
   RPi(x, ty, b) => ok(Pi(x, resolve(env, lv, scope, ty)!, resolve(env, lv, [x] + scope, b)!)),
   RBracket(inner) => resolve(env, lv, scope, inner),
 }
-
-local fn is_numeral(x: String) -> Bool = x != "" and list.all(string.chars(x), (c) => string.is_digit(c))
-
-// A level written as a term: `2`, `u`, `u + 1`, `max(u, v)`, `imax(u, v)`.
-fn level_of(lv: List[String], r: Raw) -> Level! = match r {
-  RName(x) =>
-    if is_numeral(x) then ok(level_of_nat(int.parse(x) ?? 0))
-    else if list.contains(lv, x) then ok(LParam(x))
-    else err("unknown universe level ${x} (declare it: name[${x}])"),
-  RApp(RApp(RName(op), a), b) => {
-    let la = level_of(lv, a)!
-    match op {
-      "+" => match b {
-        RName(k) => if is_numeral(k) then ok(add_levels(la, int.parse(k) ?? 0)) else err("a level adds a number: u + 1"),
-        _ => err("a level adds a number: u + 1"),
-      },
-      "max" => ok(LMax(la, level_of(lv, b)!)),
-      "imax" => ok(LIMax(la, level_of(lv, b)!)),
-      _ => err("not a universe level: ${op}(...)"),
-    }
-  },
-  _ => err("not a universe level"),
-}
-
-local fn add_levels(l: Level, k: Int) -> Level = if k <= 0 then l else LSucc(add_levels(l, k - 1))
 
 local fn has_bracket(r: Raw) -> Bool = match r {
   RBracket(_) => true,
@@ -87,17 +66,17 @@ local fn no_brackets(rs: List[Raw]) -> Unit! = {
 // `commit` then updates the environment in place, because a functional
 // `map.set` copies the whole map on every declaration (almide/almide#3404).
 type Change =
-  | Declare(String, List[String], Entry, Term, Term?)
+  | Declare(String, List[String], Int, Entry, Term, Term?)
   | EnterRoom(String, List[String])
   | AddRule(Rule)
   | AddIrrelevant(Rule)
   | NoChange
 
-local fn declare(env: Env, name: String, lv: List[String], kind: String, ty: Term, body: Term?) -> Change! = {
-  let q = env.room + "." + name
+local fn declare(env: Env, sig: Sig, kind: String, ty: Term, body: Term?) -> Change! = {
+  let q = env.room + "." + sig.name
   guard not map.contains(env.entries, q) else err("${q} is already declared")
-  guard list.len(list.unique(lv)) == list.len(lv) else err("${name} lists a universe parameter twice")
-  ok(Declare(q, lv, Entry { room: env.room, kind: kind, height: list.len(env.order) }, ty, body))
+  guard list.len(list.unique(sig.levels)) == list.len(sig.levels) else err("${sig.name} lists a universe parameter twice")
+  ok(Declare(q, sig.levels, sig.implicits, Entry { room: env.room, kind: kind, height: list.len(env.order) }, ty, body))
 }
 
 local fn enter_room(env: Env, name: String, uses: List[String]) -> Change! = {
@@ -109,9 +88,10 @@ local fn enter_room(env: Env, name: String, uses: List[String]) -> Change! = {
 }
 
 local fn commit(mut env: Env, c: Change) -> Unit = match c {
-  Declare(q, lv, entry, ty, body) => {
+  Declare(q, lv, imps, entry, ty, body) => {
     map.insert(env.entries, q, entry)
     if list.is_empty(lv) then () else map.insert(env.lparams, q, lv)
+    if imps == 0 then () else map.insert(env.implicits, q, imps)
     map.insert(env.types, q, ty)
     match body {
       some(b) => map.insert(env.bodies, q, b),
@@ -163,6 +143,7 @@ local fn resolve_pat(env: Env, lv: List[String], scope: List[String], r: Raw) ->
       none => pat_symbol(env, lv, scope, x, args),
     },
     RInst(x, _) => pat_symbol(env, lv, scope, x, args),
+    RExplicit(x, _) => pat_symbol(env, lv, scope, x, args),
     _ => err("patterns are built from symbols, rule variables and {brackets}"),
   }
 }
@@ -211,6 +192,7 @@ local fn rule_head(env: Env, lhs_raw: Raw) -> (String, List[String])! = {
   let (head_raw, _) = raw_spine(lhs_raw, [])
   match head_raw {
     RName(x) => ok((resolve_const(env, x)!, [])),
+    RExplicit(x, ls) => rule_head(env, RInst(x, ls)),
     RInst(x, ls) => {
       var names: List[String] = []
       for l in ls {
@@ -339,6 +321,7 @@ local fn rollback(mut env: Env, start: Int, nrules: Int) -> Unit = {
     map.delete(env.bodies, q)
     map.delete(env.defs, q)
     map.delete(env.lparams, q)
+    map.delete(env.implicits, q)
     map.delete(env.rws, q)
   }
   env.order = list.take(env.order, start)
@@ -500,34 +483,40 @@ local fn positive(env: Env, ctx: Ctx, q: String, np: Int, depth0: Int, dom: Term
 // of copying it (it is not changed here).
 local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.decl {
   DRoom(name, uses) => ok((enter_room(env, name, uses)!, [])),
-  DSymbol(name, lv, ty_raw) => {
-    no_brackets([ty_raw])!
-    let ty = resolve(env, lv, [], ty_raw)!
+  DSymbol(sig) => {
+    no_brackets([sig.ty])!
+    let ty = surface_type(env, sig.levels, sig.ty)!
     var bu = budget()
     expect_sort(env, [], ty, bu)!
-    ok((declare(env, name, lv, "symbol", ty, none)!, []))
+    ok((declare(env, sig, "symbol", ty, none)!, []))
   },
-  DDef(name, lv, ty_raw, body_raw) => {
-    let (ty, body) = typed_body(env, lv, ty_raw, body_raw)!
-    ok((declare(env, name, lv, "def", ty, some(body))!, []))
+  DDef(sig, body_raw) => {
+    let (ty, body) = typed_body(env, sig.levels, sig.ty, body_raw)!
+    ok((declare(env, sig, "def", ty, some(body))!, []))
   },
-  DTheorem(name, lv, ty_raw, body_raw) => {
-    let (ty, body) = typed_body(env, lv, ty_raw, body_raw)!
-    let c = declare(env, name, lv, "theorem", ty, some(body))!
-    ok((c, ["✓ theorem ${env.room}.${name}: ${show(env, [], ty)}"]))
+  DTheorem(sig, body_raw) => {
+    let (ty, body) = typed_body(env, sig.levels, sig.ty, body_raw)!
+    let c = declare(env, sig, "theorem", ty, some(body))!
+    ok((c, ["✓ theorem ${env.room}.${sig.name}: ${show(env, [], ty)}"]))
   },
   DRule(vars, lhs, rhs) => ok((add_rule(env, vars, lhs, rhs, d.line)!, [])),
   DIrrelevant(vars, ty) => ok((add_irrelevant(env, vars, ty, d.line)!, [])),
   DCheck(e_raw) => {
     no_brackets([e_raw])!
-    let e = resolve(env, [], [], e_raw)!
+    let e = if needs_elab(env, e_raw) then {
+      let (t, _) = elab.elab_infer(env, [], e_raw)!
+      t
+    } else resolve(env, [], [], e_raw)!
     var bu = budget()
     let ty = infer(env, [], e, bu)!
     ok((NoChange, ["${show(env, [], e)}: ${show(env, [], ty)}"]))
   },
   DEval(e_raw) => {
     no_brackets([e_raw])!
-    let e = resolve(env, [], [], e_raw)!
+    let e = if needs_elab(env, e_raw) then {
+      let (t, _) = elab.elab_infer(env, [], e_raw)!
+      t
+    } else resolve(env, [], [], e_raw)!
     var bu = budget()
     infer(env, [], e, bu)!
     let v = nf(env, [], e, bu)
@@ -541,12 +530,52 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   DInductive(_) => err("a type declaration is processed by `process`"),
 }
 
+// Surface syntax that uses implicit arguments, inferred universe levels or
+// `_` goes through the elaborator; everything else (absorbed libraries,
+// hand-written kernel terms) is resolved directly.
+local fn needs_elab(env: Env, r: Raw) -> Bool =
+  if map.is_empty(env.implicits) and map.is_empty(env.lparams) then has_hole(r)
+  else uses_inference(env, r)
+
+local fn has_hole(r: Raw) -> Bool = match r {
+  RName(x) => x == "_",
+  RApp(f, a) => has_hole(f) or has_hole(a),
+  RLam(_, ty, b) => has_hole(ty) or has_hole(b),
+  RPi(_, ty, b) => has_hole(ty) or has_hole(b),
+  _ => false,
+}
+
+local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
+  RName(x) => x == "_" or match resolve_const(env, x) {
+    ok(c) => map.contains(env.implicits, c) or map.contains(env.lparams, c),
+    err(_) => false,
+  },
+  RInst(x, _) => match resolve_const(env, x) {
+    ok(c) => map.contains(env.implicits, c),
+    err(_) => false,
+  },
+  RExplicit(x, ls) => list.is_empty(ls) and match resolve_const(env, x) {
+    ok(c) => map.contains(env.lparams, c),
+    err(_) => false,
+  },
+  RApp(f, a) => uses_inference(env, f) or uses_inference(env, a),
+  RLam(_, ty, b) => uses_inference(env, ty) or uses_inference(env, b),
+  RPi(_, ty, b) => uses_inference(env, ty) or uses_inference(env, b),
+  _ => false,
+}
+
+local fn surface_type(env: Env, lv: List[String], r: Raw) -> Term! =
+  if needs_elab(env, r) then elab.elab_type(env, lv, r) else resolve(env, lv, [], r)
+
+local fn surface_term(env: Env, lv: List[String], r: Raw, ty: Term) -> Term! =
+  if needs_elab(env, r) then elab.elab_term(env, lv, r, ty) else resolve(env, lv, [], r)
+
 local fn typed_body(env: Env, lv: List[String], ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
   no_brackets([ty_raw, body_raw])!
-  let ty = resolve(env, lv, [], ty_raw)!
+  let ty = surface_type(env, lv, ty_raw)!
   var bu = budget()
   expect_sort(env, [], ty, bu)!
-  let body = resolve(env, lv, [], body_raw)!
+  let body = surface_term(env, lv, body_raw, ty)!
   check(env, [], body, ty, bu)!
   ok((ty, body))
 }

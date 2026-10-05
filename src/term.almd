@@ -6,13 +6,16 @@
 // Sort(u + 1) is `Type(u)`. A constant carries the universe levels it is
 // used at (`List.map[u, v]`); most constants have none.
 // Binder names are kept only for printing; the kernel never looks at them.
-type Term = | Sort(Level) | Var(Int) | Const(String, List[Level]) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term)
+// `Meta(n)` is a hole the elaborator is still solving (applied to the
+// variables in scope where it was made). The kernel never accepts one.
+type Term = | Sort(Level) | Var(Int) | Const(String, List[Level]) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term) | Meta(Int)
 
 // ── Universe levels ─────────────────────────────────────────────────
 
 // Levels as in Lean's kernel: imax(u, v) is 0 when v is 0 and max(u, v)
 // otherwise, which is the level of a function type from Sort(u) to Sort(v).
-type Level = | LZero | LSucc(Level) | LMax(Level, Level) | LIMax(Level, Level) | LParam(String)
+// `LMeta(n)` is a level the elaborator is still inferring.
+type Level = | LZero | LSucc(Level) | LMax(Level, Level) | LIMax(Level, Level) | LParam(String) | LMeta(Int)
 
 fn level_of_nat(n: Int) -> Level = if n <= 0 then LZero else LSucc(level_of_nat(n - 1))
 
@@ -25,6 +28,7 @@ fn level_subst(l: Level, names: List[String], vals: List[Level]) -> Level = matc
     some(i) => list.get(vals, i) ?? l,
     none => l,
   },
+  LMeta(_) => l,
 }
 
 fn level_params(l: Level) -> List[String] = match l {
@@ -33,6 +37,7 @@ fn level_params(l: Level) -> List[String] = match l {
   LMax(a, b) => level_params(a) + level_params(b),
   LIMax(a, b) => level_params(a) + level_params(b),
   LParam(p) => [p],
+  LMeta(_) => [],
 }
 
 // Parameters in the second argument of an imax: the deciding procedure
@@ -43,6 +48,7 @@ local fn imax_params(l: Level) -> List[String] = match l {
   LMax(a, b) => imax_params(a) + imax_params(b),
   LIMax(a, b) => imax_params(a) + level_params(b) + imax_params(b),
   LParam(_) => [],
+  LMeta(_) => [],
 }
 
 // A level without imax, as `max` of terms `p + k` (p = "" for a constant k).
@@ -52,6 +58,8 @@ local fn terms(l: Level) -> List[(String, Int)] = match l {
   LMax(a, b) => terms(a) + terms(b),
   LIMax(a, b) => terms(a) + terms(b),
   LParam(p) => [(p, 0)],
+  // An unsolved level behaves like an unknown parameter.
+  LMeta(n) => [("?" + int.to_string(n), 0)],
 }
 
 local fn is_zero(l: Level) -> Bool = list.all(terms(l), ((p, k)) => p == "" and k == 0)
@@ -66,7 +74,7 @@ local fn drop_imax(l: Level) -> Level = match l {
     let b2 = drop_imax(b)
     if is_zero(b2) then LZero else LMax(drop_imax(a), b2)
   },
-  LParam(p) => l,
+  other => other,
 }
 
 // a ≤ b for every value of the parameters, without imax: each term of a
@@ -137,6 +145,25 @@ fn inst_levels(t: Term, names: List[String], vals: List[Level]) -> Term =
     Pi(x, ty, b) => Pi(x, inst_levels(ty, names, vals), inst_levels(b, names, vals)),
     other => other,
   }
+
+fn level_has_meta(l: Level) -> Bool = match l {
+  LMeta(_) => true,
+  LSucc(a) => level_has_meta(a),
+  LMax(a, b) => level_has_meta(a) or level_has_meta(b),
+  LIMax(a, b) => level_has_meta(a) or level_has_meta(b),
+  _ => false,
+}
+
+// Does t still contain a hole (a term or level the elaborator has not solved)?
+fn has_meta(t: Term) -> Bool = match t {
+  Meta(_) => true,
+  Sort(l) => level_has_meta(l),
+  Const(_, ls) => list.any(ls, (l) => level_has_meta(l)),
+  App(f, a) => has_meta(f) or has_meta(a),
+  Lam(_, ty, b) => has_meta(ty) or has_meta(b),
+  Pi(_, ty, b) => has_meta(ty) or has_meta(b),
+  Var(_) => false,
+}
 
 // `Type`: Sort(1).
 fn type0() -> Term = Sort(LSucc(LZero))

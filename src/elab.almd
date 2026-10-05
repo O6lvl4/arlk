@@ -1,0 +1,540 @@
+// The elaborator: surface terms with implicit arguments, inferred universe
+// levels and `_` holes, turned into complete kernel terms.
+//
+//   def length[u, A: Type(u)](xs: List(A)) -> Nat = ...
+//   length(List.cons(Nat.zero, List.nil))
+//
+// becomes `length[0](Nat, List.cons[0](Nat, Nat.zero, List.nil[0](Nat)))`:
+// the level 0 and the type Nat are found by unification. Holes are
+// metavariables applied to the variables in scope where they were made, so
+// a solution may mention those variables; `?m x y =?= t` with distinct
+// variables is solved by `?m := (x, y) => t` (Miller's pattern fragment).
+//
+// Nothing here is trusted. The output has no holes left and goes to the
+// kernel like any hand-written term; a wrong solution is a type error.
+
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta}
+import self.syntax.{Raw}
+import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of}
+import self.kernel
+
+// `typed`: holes for implicit arguments with the type their solution must
+// have, checked once solved (that is how levels like the u in `id[u]` are
+// found from the argument's type).
+type ElabState = {
+  metas: Map[Int, Term],
+  lmetas: Map[Int, Level],
+  next: Int,
+  bu: Budget,
+  typed: List[(Ctx, Term, Term)],
+}
+
+fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], next: 0, bu: budget(), typed: [] }
+
+// ── Holes ───────────────────────────────────────────────────────────
+
+local fn new_meta(mut st: ElabState, ctx: Ctx) -> Term = {
+  let n = st.next
+  st.next = n + 1
+  let k = list.len(ctx)
+  apply(Meta(n), list.map(0..<k, (j) => Var(k - 1 - j)))
+}
+
+local fn new_level(mut st: ElabState) -> Level = {
+  let n = st.next
+  st.next = n + 1
+  LMeta(n)
+}
+
+// Replace solved holes by their solutions (and compute the applications
+// this creates).
+fn zonk(st: ElabState, t: Term) -> Term = match t {
+  Meta(n) => match map.get(st.metas, n) {
+    some(v) => zonk(st, v),
+    none => t,
+  },
+  App(_, _) => {
+    let (h, args) = spine(t)
+    let zargs = args |> list.map((a) => zonk(st, a))
+    match h {
+      Meta(n) => match map.get(st.metas, n) {
+        some(v) => zonk(st, beta(v, zargs)),
+        none => apply(h, zargs),
+      },
+      _ => apply(zonk(st, h), zargs),
+    }
+  },
+  Sort(l) => Sort(zonk_level(st, l)),
+  Const(c, ls) => Const(c, ls |> list.map((l) => zonk_level(st, l))),
+  Lam(x, ty, b) => Lam(x, zonk(st, ty), zonk(st, b)),
+  Pi(x, ty, b) => Pi(x, zonk(st, ty), zonk(st, b)),
+  Var(_) => t,
+}
+
+local fn beta(f: Term, args: List[Term]) -> Term = match args {
+  [] => f,
+  [a, ..rest] => match f {
+    Lam(_, _, b) => beta(subst(b, a), rest),
+    _ => apply(f, args),
+  },
+}
+
+fn zonk_level(st: ElabState, l: Level) -> Level = match l {
+  LMeta(n) => match map.get(st.lmetas, n) {
+    some(v) => zonk_level(st, v),
+    none => l,
+  },
+  LSucc(a) => LSucc(zonk_level(st, a)),
+  LMax(a, b) => LMax(zonk_level(st, a), zonk_level(st, b)),
+  LIMax(a, b) => LIMax(zonk_level(st, a), zonk_level(st, b)),
+  other => other,
+}
+
+// ── Unification ─────────────────────────────────────────────────────
+
+local fn level_mentions(l: Level, n: Int) -> Bool = match l {
+  LMeta(m) => m == n,
+  LSucc(a) => level_mentions(a, n),
+  LMax(a, b) => level_mentions(a, n) or level_mentions(b, n),
+  LIMax(a, b) => level_mentions(a, n) or level_mentions(b, n),
+  _ => false,
+}
+
+fn unify_level(mut st: ElabState, a: Level, b: Level) -> Bool = {
+  let x = zonk_level(st, a)
+  let y = zonk_level(st, b)
+  if x == y then true
+  else match x {
+    LMeta(n) => if level_mentions(y, n) then false else {
+      map.insert(st.lmetas, n, y)
+      true
+    },
+    _ => match y {
+      LMeta(n) => if level_mentions(x, n) then false else {
+        map.insert(st.lmetas, n, x)
+        true
+      },
+      _ =>
+        if not level_has_meta(x) and not level_has_meta(y) then level_eq(x, y)
+        else match x {
+          LSucc(p) => match y {
+            LSucc(q) => unify_level(st, p, q),
+            _ => false,
+          },
+          LMax(p1, p2) => match y {
+            LMax(q1, q2) => unify_level(st, p1, q1) and unify_level(st, p2, q2),
+            _ => false,
+          },
+          LIMax(p1, p2) => match y {
+            LIMax(q1, q2) => unify_level(st, p1, q1) and unify_level(st, p2, q2),
+            _ => false,
+          },
+          _ => false,
+        },
+    },
+  }
+}
+
+// The distinct bound variables a hole is applied to, if that is all it is applied to.
+local fn pattern_args(args: List[Term]) -> List[Int]? = {
+  var out: List[Int] = []
+  var good = true
+  for a in args {
+    match a {
+      Var(i) => if list.contains(out, i) then {
+        good = false
+      } else list.push(out, i),
+      _ => {
+        good = false
+      },
+    }
+  }
+  if good then some(out) else none
+}
+
+local fn mentions_meta(t: Term, n: Int) -> Bool = match t {
+  Meta(m) => m == n,
+  App(f, a) => mentions_meta(f, n) or mentions_meta(a, n),
+  Lam(_, ty, b) => mentions_meta(ty, n) or mentions_meta(b, n),
+  Pi(_, ty, b) => mentions_meta(ty, n) or mentions_meta(b, n),
+  _ => false,
+}
+
+// Rewrite t (seen `depth` binders deep) so that free variable vars[j]
+// becomes the j-th of k new outer binders; none if another variable occurs.
+local fn abstract(t: Term, vars: List[Int], depth: Int) -> Term? = {
+  let k = list.len(vars)
+  match t {
+    Var(i) =>
+      if i < depth then some(t)
+      else match list.index_of(vars, i - depth) {
+        some(j) => some(Var(depth + (k - 1 - j))),
+        none => none,
+      },
+    App(f, a) => match abstract(f, vars, depth) {
+      some(f2) => match abstract(a, vars, depth) {
+        some(a2) => some(App(f2, a2)),
+        none => none,
+      },
+      none => none,
+    },
+    Lam(x, ty, b) => match abstract(ty, vars, depth) {
+      some(ty2) => match abstract(b, vars, depth + 1) {
+        some(b2) => some(Lam(x, ty2, b2)),
+        none => none,
+      },
+      none => none,
+    },
+    Pi(x, ty, b) => match abstract(ty, vars, depth) {
+      some(ty2) => match abstract(b, vars, depth + 1) {
+        some(b2) => some(Pi(x, ty2, b2)),
+        none => none,
+      },
+      none => none,
+    },
+    other => some(other),
+  }
+}
+
+// `?n x1 .. xk =?= t`: ?n := (x1, .., xk) => t, when the xi are distinct
+// variables, t mentions no others and does not mention ?n.
+local fn try_solve(mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
+  let (h, args) = spine(a)
+  match h {
+    Meta(n) =>
+      if map.contains(st.metas, n) or mentions_meta(b, n) then false
+      else match pattern_args(args) {
+        some(vars) => match abstract(b, vars, 0) {
+          some(body) => {
+            let sol = list.fold(list.reverse(vars), body, (acc, i) => Lam(name_of(ctx, i), type0(), acc))
+            map.insert(st.metas, n, sol)
+            true
+          },
+          none => false,
+        },
+        none => false,
+      },
+    _ => false,
+  }
+}
+
+local fn name_of(ctx: Ctx, i: Int) -> String = match list.get(ctx, i) {
+  some((x, _)) => x,
+  none => "x",
+}
+
+local fn is_meta_app(t: Term) -> Bool = {
+  let (h, _) = spine(t)
+  match h {
+    Meta(_) => true,
+    _ => false,
+  }
+}
+
+fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
+  let x = zonk(st, a)
+  let y = zonk(st, b)
+  if x == y then true
+  else if try_solve(st, ctx, x, y) or try_solve(st, ctx, y, x) then true
+  else if st.bu.exhausted then false
+  else {
+    let wx = whnf_core(env, ctx, x, st.bu)
+    let wy = whnf_core(env, ctx, y, st.bu)
+    if (wx != x or wy != y) and (is_meta_app(wx) or is_meta_app(wy)) then unify(env, st, ctx, wx, wy)
+    else unify_whnf(env, st, ctx, wx, wy)
+  }
+}
+
+local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
+  if x == y then true
+  else match x {
+    Sort(l1) => match y {
+      Sort(l2) => unify_level(st, l1, l2),
+      _ => unify_delta(env, st, ctx, x, y),
+    },
+    Pi(n1, t1, b1) => match y {
+      Pi(_, t2, b2) => unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2),
+      _ => unify_delta(env, st, ctx, x, y),
+    },
+    Lam(n1, t1, b1) => match y {
+      Lam(_, t2, b2) => unify(env, st, ctx, t1, t2) and unify(env, st, [(n1, t1)] + ctx, b1, b2),
+      _ => unify(env, st, [(n1, t1)] + ctx, b1, App(shift(y, 1, 0), Var(0))),
+    },
+    _ => match y {
+      Lam(n2, t2, b2) => unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2),
+      _ => unify_spines(env, st, ctx, x, y) or unify_delta(env, st, ctx, x, y),
+    },
+  }
+
+local fn unify_spines(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
+  let (hx, xs) = spine(x)
+  let (hy, ys) = spine(y)
+  let heads = match hx {
+    Const(c, ls) => match hy {
+      Const(d, ms) => c == d and list.len(ls) == list.len(ms) and unify_levels(st, ls, ms),
+      _ => false,
+    },
+    Var(i) => match hy {
+      Var(j) => i == j,
+      _ => false,
+    },
+    _ => false,
+  }
+  heads and list.len(xs) == list.len(ys) and unify_all(env, st, ctx, xs, ys)
+}
+
+local fn unify_levels(mut st: ElabState, ls: List[Level], ms: List[Level]) -> Bool = {
+  var good = true
+  for (l, m) in list.zip(ls, ms) {
+    if good then {
+      good = unify_level(st, l, m)
+    } else ()
+  }
+  good
+}
+
+local fn unify_all(env: Env, mut st: ElabState, ctx: Ctx, xs: List[Term], ys: List[Term]) -> Bool = {
+  var good = true
+  for (a, b) in list.zip(xs, ys) {
+    if good then {
+      good = unify(env, st, ctx, a, b)
+    } else ()
+  }
+  good
+}
+
+// Unfold the definition defined later (or both), then try again.
+local fn unify_delta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
+  match def_height(env, x) {
+    some(hx) => match def_height(env, y) {
+      some(hy) =>
+        if hx > hy then unify(env, st, ctx, unfold_head(env, x), y)
+        else if hy > hx then unify(env, st, ctx, x, unfold_head(env, y))
+        else {
+          let ux = unfold_head(env, x)
+          let uy = unfold_head(env, y)
+          unify(env, st, ctx, ux, uy)
+        },
+      none => unify(env, st, ctx, unfold_head(env, x), y),
+    },
+    none => match def_height(env, y) {
+      some(_) => unify(env, st, ctx, x, unfold_head(env, y)),
+      none => false,
+    },
+  }
+
+// ── Elaboration ─────────────────────────────────────────────────────
+
+// What the elaborator needs alongside the state: the environment, the
+// universe parameters in scope.
+type Scope = { env: Env, lv: List[String] }
+
+local fn names(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
+
+local fn reduce_type(sc: Scope, mut st: ElabState, ctx: Ctx, ty: Term) -> Term = {
+  let z = zonk(st, ty)
+  whnf(sc.env, ctx, z, st.bu)
+}
+
+// A constant at fresh levels, applied to holes for its implicit parameters.
+local fn constant(sc: Scope, mut st: ElabState, ctx: Ctx, c: String, given: List[Level]?, implicit: Bool) -> (Term, Term)! = {
+  let ps = map.get(sc.env.lparams, c) ?? []
+  // A loop, not `list.map` with a lambda: almide/almide#3410.
+  var fresh: List[Level] = []
+  for _p in ps {
+    list.push(fresh, new_level(st))
+  }
+  let ls = match given {
+    some(g) => g,
+    none => fresh,
+  }
+  guard list.len(ls) == list.len(ps) else err("${c} takes ${int.to_string(list.len(ps))} universe levels, given ${int.to_string(list.len(ls))}")
+  let ty0 = match map.get(sc.env.types, c) {
+    some(t) => inst_levels(t, ps, ls),
+    none => type0(),
+  }
+  var t = Const(c, ls)
+  var ty = ty0
+  var k = if implicit then map.get(sc.env.implicits, c) ?? 0 else 0
+  while k > 0 {
+    match reduce_type(sc, st, ctx, ty) {
+      Pi(_, dom, cod) => {
+        let m = new_meta(st, ctx)
+        list.push(st.typed, (ctx, m, dom))
+        t = App(t, m)
+        ty = subst(cod, m)
+        k = k - 1
+      },
+      _ => {
+        k = 0
+      },
+    }
+  }
+  ok((t, ty))
+}
+
+fn infer(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Term)! = match r {
+  RName("_") => {
+    let ty = new_meta(st, ctx)
+    ok((new_meta(st, ctx), ty))
+  },
+  RName(x) => match index_in(names(ctx), x, 0) {
+    some(i) => match list.get(ctx, i) {
+      some((_, ty)) => ok((Var(i), shift(ty, i + 1, 0))),
+      none => err("unbound ${x}"),
+    },
+    none => constant(sc, st, ctx, resolve_const(sc.env, x)!, none, true),
+  },
+  RInst(x, lraws) => {
+    var ls: List[Level] = []
+    for l in lraws {
+      list.push(ls, level_of(sc.lv, l)!)
+    }
+    constant(sc, st, ctx, resolve_const(sc.env, x)!, some(ls), true)
+  },
+  RExplicit(x, lraws) => {
+    var ls: List[Level] = []
+    for l in lraws {
+      list.push(ls, level_of(sc.lv, l)!)
+    }
+    let c = resolve_const(sc.env, x)!
+    let given = if list.is_empty(ls) and not list.is_empty(map.get(sc.env.lparams, c) ?? []) then none else some(ls)
+    constant(sc, st, ctx, c, given, false)
+  },
+  RType => ok((type0(), Sort(LSucc(LSucc(LZero))))),
+  RSort => err("Sort needs a level: Sort(0) is Prop, Sort(1) is Type"),
+  RApp(RSort, l) => {
+    let lv = level_of(sc.lv, l)!
+    ok((Sort(lv), Sort(LSucc(lv))))
+  },
+  RApp(RType, l) => {
+    let lv = LSucc(level_of(sc.lv, l)!)
+    ok((Sort(lv), Sort(LSucc(lv))))
+  },
+  RApp(f, a) => {
+    let (tf, ty) = infer(sc, st, ctx, f)!
+    match reduce_type(sc, st, ctx, ty) {
+      Pi(_, dom, cod) => {
+        let ta = check(sc, st, ctx, a, dom)!
+        ok((App(tf, ta), subst(cod, ta)))
+      },
+      other => {
+        guard not st.bu.exhausted else err(exhausted_error())
+        err("${show(sc.env, ctx, zonk(st, tf))} is applied to an argument, but its type is ${show(sc.env, ctx, zonk(st, other))}")
+      },
+    }
+  },
+  RLam(x, ty, b) => {
+    let (tty, _) = sort_of(sc, st, ctx, ty)!
+    let (tb, bty) = infer(sc, st, [(x, tty)] + ctx, b)!
+    ok((Lam(x, tty, tb), Pi(x, tty, bty)))
+  },
+  RPi(x, ty, b) => {
+    let (tty, u) = sort_of(sc, st, ctx, ty)!
+    let (tb, v) = sort_of(sc, st, [(x, tty)] + ctx, b)!
+    ok((Pi(x, tty, tb), Sort(LIMax(u, v))))
+  },
+  RBracket(_) => err("brackets {...} are only allowed in the left-hand side of a rule"),
+}
+
+// A type, and the level of the universe it lives in.
+fn sort_of(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Level)! = {
+  let (t, ty) = infer(sc, st, ctx, r)!
+  match reduce_type(sc, st, ctx, ty) {
+    Sort(l) => ok((t, l)),
+    other => {
+      let l = new_level(st)
+      guard unify(sc.env, st, ctx, other, Sort(l)) else err("${show(sc.env, ctx, zonk(st, t))} is not a type (its type is ${show(sc.env, ctx, zonk(st, other))})")
+      ok((t, l))
+    },
+  }
+}
+
+fn check(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = match r {
+  RName("_") => {
+    let m = new_meta(st, ctx)
+    list.push(st.typed, (ctx, m, expected))
+    ok(m)
+  },
+  RLam(x, ty, b) => match reduce_type(sc, st, ctx, expected) {
+    Pi(_, dom, cod) => {
+      let (tty, _) = sort_of(sc, st, ctx, ty)!
+      guard unify(sc.env, st, ctx, tty, dom) else err("the parameter ${x}: ${show(sc.env, ctx, zonk(st, tty))} does not match the expected ${show(sc.env, ctx, zonk(st, dom))}")
+      let tb = check(sc, st, [(x, tty)] + ctx, b, cod)!
+      ok(Lam(x, tty, tb))
+    },
+    _ => infer_then_unify(sc, st, ctx, r, expected),
+  },
+  _ => infer_then_unify(sc, st, ctx, r, expected),
+}
+
+local fn infer_then_unify(sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
+  let (t, ty) = infer(sc, st, ctx, r)!
+  let same = unify(sc.env, st, ctx, ty, expected)
+  guard not st.bu.exhausted else err(exhausted_error())
+  guard same else err("type mismatch for ${show(sc.env, ctx, zonk(st, t))}\n    expected: ${show(sc.env, ctx, zonk(st, expected))}\n    found:    ${show(sc.env, ctx, zonk(st, ty))}")
+  ok(t)
+}
+
+// ── Entry points ────────────────────────────────────────────────────
+
+// Check solved implicit arguments against their types until nothing more
+// is learned.
+local fn settle(sc: Scope, mut st: ElabState) -> Unit! = {
+  var waiting = st.typed
+  var progress = true
+  var failure = ""
+  while progress and failure == "" {
+    progress = false
+    var later: List[(Ctx, Term, Term)] = []
+    for (ctx, m, dom) in waiting {
+      let zm = zonk(st, m)
+      let zctx = ctx |> list.map(((x, ty)) => (x, zonk(st, ty)))
+      if failure != "" or has_meta(zm) or list.any(zctx, ((_, ty)) => has_meta(ty)) then list.push(later, (ctx, m, dom))
+      else match kernel.infer(sc.env, zctx, zm, st.bu) {
+        ok(ty) => if unify(sc.env, st, ctx, ty, dom) then {
+          progress = true
+        } else {
+          failure = "the inferred argument ${show(sc.env, zctx, zm)} has type ${show(sc.env, zctx, ty)}, but ${show(sc.env, zctx, zonk(st, dom))} was expected"
+        },
+        err(e) => {
+          failure = e
+        },
+      }
+    }
+    waiting = later
+  }
+  guard failure == "" else err(failure)
+  ok(())
+}
+
+local fn complete(sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {
+  settle(sc, st)!
+  let z = zonk(st, t)
+  guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(sc.env, [], z)} (write the missing arguments, or the universe levels in [...])")
+  ok(z)
+}
+
+// A closed type, as written with holes and implicit arguments.
+fn elab_type(env: Env, lv: List[String], r: Raw) -> Term! = {
+  let sc = Scope { env: env, lv: lv }
+  var st = state()
+  let (t, _) = sort_of(sc, st, [], r)!
+  complete(sc, st, t, "this type")
+}
+
+// A closed term of the given (complete) type.
+fn elab_term(env: Env, lv: List[String], r: Raw, expected: Term) -> Term! = {
+  let sc = Scope { env: env, lv: lv }
+  var st = state()
+  let t = check(sc, st, [], r, expected)!
+  complete(sc, st, t, "this term")
+}
+
+// A closed term and its type, for `check` and `eval`.
+fn elab_infer(env: Env, lv: List[String], r: Raw) -> (Term, Term)! = {
+  let sc = Scope { env: env, lv: lv }
+  var st = state()
+  let (t, ty) = infer(sc, st, [], r)!
+  ok((complete(sc, st, t, "this term")!, complete(sc, st, ty, "its type")!))
+}

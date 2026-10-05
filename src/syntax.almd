@@ -27,6 +27,9 @@ type Raw =
   | RType
   | RSort
   | RInst(String, List[Raw])
+  // Generated code only: a constant at the given levels with every
+  // argument explicit (no implicit arguments inserted), like Lean's `@c`.
+  | RExplicit(String, List[Raw])
   | RApp(Raw, Raw)
   | RLam(String, Raw, Raw)
   | RPi(String, Raw, Raw)
@@ -34,9 +37,9 @@ type Raw =
 
 type Decl =
   | DRoom(String, List[String])
-  | DSymbol(String, List[String], Raw)
-  | DDef(String, List[String], Raw, Raw)
-  | DTheorem(String, List[String], Raw, Raw)
+  | DSymbol(Sig)
+  | DDef(Sig, Raw)
+  | DTheorem(Sig, Raw)
   | DRule(List[(String, Raw)], Raw, Raw)
   | DIrrelevant(List[(String, Raw)], Raw)
   | DCheck(Raw)
@@ -53,6 +56,11 @@ type Inductive = { name: String, levels: List[String], params: List[(String, Raw
 type Constructor = { name: String, args: List[(String, Raw)], result: Raw? }
 
 type Located = { line: Int, decl: Decl }
+
+// A declared name: its universe parameters, how many of its leading
+// parameters are implicit (written in `[...]`, inferred at each use), and
+// its full type.
+type Sig = { name: String, levels: List[String], implicits: Int, ty: Raw }
 
 let KEYWORDS = [
   "room",
@@ -316,16 +324,31 @@ local fn level_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)
   }
 }
 
-// `[u, v]` after a declaration's name: its universe parameters.
-local fn level_params(ts: List[Token], p: Int) -> (List[String], Int)! =
-  if is_sym(ts, p, "[") then param_names(ts, p + 1, []) else ok(([], p))
+// `[u, v, A: Type(u)]` after a declaration's name, Almide's generics: bare
+// names are universe parameters, typed entries are implicit parameters.
+local fn level_params(ts: List[Token], p: Int) -> (List[String], Int)! = {
+  let (ls, imps, p1) = generics(ts, p)!
+  guard list.is_empty(imps) else err(fail_at(ts, p, "only universe parameters are allowed here"))
+  ok((ls, p1))
+}
 
-local fn param_names(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int)! = {
+local fn generics(ts: List[Token], p: Int) -> (List[String], List[(String, Raw)], Int)! =
+  if is_sym(ts, p, "[") then generic_items(ts, p + 1, [], []) else ok(([], [], p))
+
+local fn generic_item(ts: List[Token], p: Int, p1: Int, x: String, ls: List[String], imps: List[(String, Raw)]) -> (List[String], List[(String, Raw)], Int)! =
+  if is_sym(ts, p1, ":") then {
+    let (ty, q) = term(ts, p1 + 1)!
+    ok((ls, imps + [(x, ty)], q))
+  } else if list.is_empty(imps) then ok((ls + [x], imps, p1))
+  else err(fail_at(ts, p, "universe parameters come before implicit parameters"))
+
+local fn generic_items(ts: List[Token], p: Int, ls: List[String], imps: List[(String, Raw)]) -> (List[String], List[(String, Raw)], Int)! = {
   let (x, p1) = ident(ts, p)!
-  if is_sym(ts, p1, ",") then param_names(ts, p1 + 1, acc + [x])
+  let (ls2, imps2, p2) = generic_item(ts, p, p1, x, ls, imps)!
+  if is_sym(ts, p2, ",") then generic_items(ts, p2 + 1, ls2, imps2)
   else {
-    let p2 = expect(ts, p1, "]")!
-    ok((acc + [x], p2))
+    let p3 = expect(ts, p2, "]")!
+    ok((ls2, imps2, p3))
   }
 }
 
@@ -348,21 +371,24 @@ local fn room_uses(ts: List[Token], p: Int, acc: List[String]) -> (List[String],
 
 // `name[u](x: A, ...) -> T` or `name[u]: T`: the universe parameters, the
 // declared type with the parameters bound around it, and the parameters.
-type Signature = { name: String, levels: List[String], params: List[(String, Raw)], ty: Raw }
+// `params` are the implicit ones and then the explicit ones: a body binds both.
+type Signature = { sig: Sig, params: List[(String, Raw)] }
 
 local fn signature(ts: List[Token], p: Int) -> (Signature, Int)! = {
   let (name, p0) = ident(ts, p)!
-  let (levels, p1) = level_params(ts, p0)!
+  let (levels, imps, p1) = generics(ts, p0)!
   if is_sym(ts, p1, "(") then {
     let (its, p2) = items(ts, p1 + 1, [])!
-    let params = binders_of(ts, p1, its)!
+    let params = imps + binders_of(ts, p1, its)!
     let p3 = expect(ts, p2, "->")!
     let (ret, p4) = term(ts, p3)!
-    ok((Signature { name: name, levels: levels, params: params, ty: wrap_pis(params, ret) }, p4))
+    let sig = Sig { name: name, levels: levels, implicits: list.len(imps), ty: wrap_pis(params, ret) }
+    ok((Signature { sig: sig, params: params }, p4))
   } else {
     let p2 = expect(ts, p1, ":")!
     let (ty, p3) = term(ts, p2)!
-    ok((Signature { name: name, levels: levels, params: [], ty: ty }, p3))
+    let sig = Sig { name: name, levels: levels, implicits: list.len(imps), ty: wrap_pis(imps, ty) }
+    ok((Signature { sig: sig, params: imps }, p3))
   }
 }
 
@@ -415,14 +441,14 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
     },
     "symbol" => {
       let (sg, p1) = signature(ts, p + 1)!
-      ok((DSymbol(sg.name, sg.levels, sg.ty), p1))
+      ok((DSymbol(sg.sig), p1))
     },
     "def" | "theorem" => {
       let (sg, p1) = signature(ts, p + 1)!
       let p2 = expect(ts, p1, "=")!
       let (body, p3) = term(ts, p2)!
       let value = wrap_lams(sg.params, body)
-      if t.text == "def" then ok((DDef(sg.name, sg.levels, sg.ty, value), p3)) else ok((DTheorem(sg.name, sg.levels, sg.ty, value), p3))
+      if t.text == "def" then ok((DDef(sg.sig, value), p3)) else ok((DTheorem(sg.sig, value), p3))
     },
     "rule" => {
       let (lhs, p1) = term(ts, p + 1)!
@@ -499,7 +525,7 @@ test "calls apply each argument in turn" {
 }
 
 test "arrows associate to the right and bind looser than calls" {
-  assert_eq(first_decl("symbol f: A(B) -> C -> D"), DSymbol("f", [], RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D")))))
+  assert_eq(first_decl("symbol f: A(B) -> C -> D"), DSymbol(Sig { name: "f", levels: [], implicits: 0, ty: RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D"))) }))
 }
 
 test "a parameter list makes a function type or a function" {
@@ -509,7 +535,7 @@ test "a parameter list makes a function type or a function" {
 
 test "a declaration with parameters binds them in its type and its body" {
   let d = first_decl("def id(a: A) -> A = a")
-  assert_eq(d, DDef("id", [], RPi("a", RName("A"), RName("A")), RLam("a", RName("A"), RName("a"))))
+  assert_eq(d, DDef(Sig { name: "id", levels: [], implicits: 0, ty: RPi("a", RName("A"), RName("A")) }, RLam("a", RName("A"), RName("a"))))
 }
 
 test "rules take their variables from a where clause" {

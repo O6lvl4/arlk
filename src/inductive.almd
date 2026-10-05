@@ -21,7 +21,7 @@
 // levels, which universes it may eliminate into); kernel.almd checks that
 // before anything is added, and passes the outcome in as a `Plan`.
 
-import self.syntax.{Raw, Decl, Inductive, Constructor}
+import self.syntax.{Raw, Decl, Inductive, Constructor, Sig}
 
 // `large`: the motive may land in any universe (else only in Prop).
 // `k`: a proposition with one constructor and no arguments (like Eq):
@@ -51,9 +51,9 @@ local fn names(bs: List[(String, Raw)]) -> List[Raw] = bs |> list.map(((x, _)) =
 fn fresh(x: String, taken: List[String]) -> String =
   if list.contains(taken, x) then fresh(x + "'", taken) else x
 
-// A constant of the declaration at its own universe parameters.
-local fn at_levels(ind: Inductive, name: String) -> Raw =
-  if list.is_empty(ind.levels) then RName(name) else RInst(name, ind.levels |> list.map((l) => RName(l)))
+// A constant of the declaration at its own universe parameters, with every
+// argument explicit (the generated code passes the parameters itself).
+local fn at_levels(ind: Inductive, name: String) -> Raw = RExplicit(name, ind.levels |> list.map((l) => RName(l)))
 
 fn ctor_name(ind: Inductive, c: Constructor) -> String = ind.name + "." + c.name
 
@@ -65,6 +65,7 @@ fn is_self(ind: Inductive, r: Raw) -> Bool = {
   match h {
     RName(x) => x == ind.name,
     RInst(x, _) => x == ind.name,
+    RExplicit(x, _) => x == ind.name,
     _ => false,
   }
 }
@@ -130,7 +131,7 @@ local fn rec_levels(ind: Inductive, n: Names, plan: Plan) -> List[String] =
 
 local fn rec_head(ind: Inductive, n: Names, plan: Plan) -> Raw = {
   let ls = rec_levels(ind, n, plan)
-  if list.is_empty(ls) then RName(rec_name(ind)) else RInst(rec_name(ind), ls |> list.map((l) => RName(l)))
+  RExplicit(rec_name(ind), ls |> list.map((l) => RName(l)))
 }
 
 // motive: (indices, t: T(params, indices)) -> Sort(v), or Sort(0).
@@ -202,17 +203,51 @@ local fn k_rule(ind: Inductive, n: Names, plan: Plan, c: Constructor, minor: Str
 
 // The type former alone: declared first, so that the constructors can be
 // checked against it.
-fn type_former(ind: Inductive) -> Decl = DSymbol(ind.name, ind.levels, pis(ind.params, ind.arity))
+fn type_former(ind: Inductive) -> Decl = DSymbol(Sig { name: ind.name, levels: ind.levels, implicits: 0, ty: pis(ind.params, ind.arity) })
 
-// The constructors, checked against the type former.
-fn constructors(ind: Inductive) -> List[Decl] =
-  ind.ctors |> list.map((c) => DSymbol(ctor_name(ind, c), ind.levels, pis(ind.params + c.args, result_of(ind, c))))
+// The type's own name, written without levels inside its declaration
+// (`tail: List(A)`), stands for the type at its own universe parameters:
+// generated rules are not elaborated, so the levels are filled in here.
+fn own_levels(ind: Inductive) -> Inductive =
+  if list.is_empty(ind.levels) then ind
+  else {
+    let fill = (r: Raw) => self_levels(ind, r)
+    {
+      ...ind,
+      arity: fill(ind.arity),
+      ctors: ind.ctors |> list.map((c) => {
+        ...c,
+        args: c.args |> list.map(((x, ty)) => (x, fill(ty))),
+        result: match c.result {
+          some(r) => some(fill(r)),
+          none => none,
+        },
+      }),
+    }
+  }
+
+local fn self_levels(ind: Inductive, r: Raw) -> Raw = match r {
+  RName(x) => if x == ind.name then at_levels(ind, x) else r,
+  RApp(f, a) => RApp(self_levels(ind, f), self_levels(ind, a)),
+  RLam(x, ty, b) => RLam(x, self_levels(ind, ty), if x == ind.name then b else self_levels(ind, b)),
+  RPi(x, ty, b) => RPi(x, self_levels(ind, ty), if x == ind.name then b else self_levels(ind, b)),
+  RBracket(b) => RBracket(self_levels(ind, b)),
+  other => other,
+}
+
+// The constructors, checked against the type former. The parameters are
+// implicit: `List.cons(x, xs)` infers the element type.
+fn constructors(ind0: Inductive) -> List[Decl] = {
+  let ind = own_levels(ind0)
+  ind.ctors |> list.map((c) => DSymbol(Sig { name: ctor_name(ind, c), levels: ind.levels, implicits: list.len(ind.params), ty: pis(ind.params + c.args, result_of(ind, c)) }))
+}
 
 // The recursor and its rules, once the type is known to be admissible.
-fn eliminator(ind: Inductive, plan: Plan) -> List[Decl] = {
+fn eliminator(ind0: Inductive, plan: Plan) -> List[Decl] = {
+  let ind = own_levels(ind0)
   let n = generated_names(ind)
   var out: List[Decl] = []
-  list.push(out, DSymbol(rec_name(ind), rec_levels(ind, n, plan), rec_type(ind, n, plan)))
+  list.push(out, DSymbol(Sig { name: rec_name(ind), levels: rec_levels(ind, n, plan), implicits: list.len(ind.params), ty: rec_type(ind, n, plan) }))
   for (c, minor) in list.zip(ind.ctors, n.minors) {
     list.push(out, if plan.k then k_rule(ind, n, plan, c, minor) else iota(ind, n, plan, c, minor))
   }

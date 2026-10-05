@@ -27,6 +27,7 @@ local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = m
   },
   Lam(_, _, _) => paren(prec > 0, lambdas(room, names, t, [])),
   Pi(_, _, _) => paren(prec > 0, pis(room, names, t, [], false)),
+  Meta(n) => "?" + int.to_string(n),
 }
 
 // Sort(1) is `Type`, Sort(u + 1) is `Type(u)`.
@@ -46,6 +47,7 @@ fn level(l: Level) -> String = {
         LParam(p) => p,
         LMax(a, c) => "max(" + level(a) + ", " + level(c) + ")",
         LIMax(a, c) => "imax(" + level(a) + ", " + level(c) + ")",
+        LMeta(n) => "?u" + int.to_string(n),
         _ => "?",
       }
       if k == 0 then b else b + " + " + int.to_string(k)

@@ -363,12 +363,12 @@ test "an inductive type gets a recursor that computes" {
       | refl: Eq[u](A, a, a)
     def add(m: Nat, n: Nat) -> Nat = Nat.rec[1]((k: Nat) => Nat, m, (k: Nat, r: Nat) => Nat.succ(r), n)
     theorem two: Eq[1](Nat, add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)), Nat.succ(Nat.succ(Nat.zero))) =
-      Eq.refl[1](Nat, Nat.succ(Nat.succ(Nat.zero)))
+      Eq.refl
     """))
   assert(rejects_with(NAT + """
     type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
       | refl: Eq[u](A, a, a)
-    theorem wrong: Eq[1](Nat, Nat.zero, Nat.succ(Nat.zero)) = Eq.refl[1](Nat, Nat.zero)
+    theorem wrong: Eq[1](Nat, Nat.zero, Nat.succ(Nat.zero)) = Eq.refl
     """, "type mismatch"))
 }
 
@@ -413,6 +413,38 @@ test "propositions eliminate into Type only when they are subsingletons" {
       | intro(l: a, r: b)
     """
   // And may compute a Nat from a proof; Or may not (it would reveal which side holds).
-  assert(accepts(base + "def f(a: Sort(0), b: Sort(0), h: And(a, b)) -> Nat = And.rec[1](a, b, (x: And(a, b)) => Nat, (l: a, r: b) => Nat.zero, h)"))
-  assert(rejects_with(base + "def f(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Nat = Or.rec[1](a, b, (x: Or(a, b)) => Nat, (l: a) => Nat.zero, (r: b) => Nat.zero, h)", "universe levels"))
+  assert(accepts(base + "def f(a: Sort(0), b: Sort(0), h: And(a, b)) -> Nat = And.rec((x: And(a, b)) => Nat, (l: a, r: b) => Nat.zero, h)"))
+  // Or's recursor has no universe parameter: its motive must land in Prop.
+  assert(rejects_with(base + "def f(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Nat = Or.rec[1]((x: Or(a, b)) => Nat, (l: a) => Nat.zero, (r: b) => Nat.zero, h)", "universe levels"))
+  assert(rejects_with(base + "def f(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Nat = Or.rec((x: Or(a, b)) => Nat, (l: a) => Nat.zero, (r: b) => Nat.zero, h)", "mismatch"))
+}
+
+// ── Elaboration: implicit arguments, inferred levels, holes ─────────
+
+let LISTS = NAT + """
+  type List[u](A: Type(u)): Type(u) =
+    | nil
+    | cons(head: A, tail: List(A))
+  type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+    | refl: Eq(A, a, a)
+  def length[u, A: Type(u)](xs: List(A)) -> Nat =
+    List.rec((l: List(A)) => Nat, Nat.zero, (h: A, t: List(A), r: Nat) => Nat.succ(r), xs)
+  def id[u, A: Sort(u)](x: A) -> A = x
+  def two: Nat = Nat.succ(Nat.succ(Nat.zero))
+  def xs: List(Nat) = List.cons(Nat.zero, List.cons(two, List.nil))
+  """
+
+test "implicit arguments and universe levels are inferred" {
+  assert(accepts(LISTS + "theorem len: Eq(Nat, length(xs), two) = Eq.refl"))
+  assert(accepts(LISTS + "theorem len: Eq(_, length(xs), id(two)) = Eq.refl"))
+  assert(accepts(LISTS + "def t: Type = id(Nat)"))
+}
+
+test "inference never makes a false statement true" {
+  assert(rejects_with(LISTS + "theorem bad: Eq(_, length(xs), Nat.zero) = Eq.refl", "type mismatch"))
+  assert(rejects_with(LISTS + "def bad: List(Nat) = List.cons(Nat.zero, List.cons(Type, List.nil))", "type mismatch"))
+}
+
+test "what cannot be inferred is reported, not guessed" {
+  assert(rejects_with(LISTS + "def e: Nat = length(List.nil)", "cannot infer"))
 }
