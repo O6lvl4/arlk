@@ -119,3 +119,11 @@ claim, the same dependencies and assumptions, the same checker semantics. They d
 *fidelity*: that an absorbed library encodes its source logic faithfully, or that a statement means
 what its author intended (part 5). A bundle whose hashes all match can still be about the wrong
 statement; reading the claim and its assumption inventory is still the reader's job.
+
+## 8. Almide programs
+
+A result about an Almide program ([docs/ALMIDE_SUBSET.md](ALMIDE_SUBSET.md)) rests, beyond parts
+1–3, on the translator [src/almide_src.almd](../src/almide_src.almd): that it reads the subset as
+Almide does and maps each construct to its meaning in [lib/almide.arlk](../lib/almide.arlk). The
+model records the program's SHA-256 and bytes, and `absorb-almide --verify` re-derives it. Such a
+result is about the program's meaning in the subset's semantics, not about compiled code.

@@ -1,0 +1,33 @@
+// The meaning of the Almide subset's built-ins (docs/ALMIDE_SUBSET.md).
+//
+// `arlk absorb-almide` turns a pure Almide program into definitions over
+// this room. Each built-in the subset allows is defined here, once:
+//
+//   List[A], [], [a, b], [h, ..t]   List(A) with nil and cons
+//   xs + ys on lists                append(xs, ys)
+//   Bool, true, false               Bool with tt and ff
+//   if c then a else b              ite(c, a, b)
+//
+// Nothing here is a symbol: these are inductive types and definitions,
+// checked like any other. Machine integers, strings and effects are not in
+// the subset, so they have no meaning here.
+
+room almide
+
+type List[u](A: Type(u)): Type(u) =
+  | nil
+  | cons(head: A, tail: List(A))
+
+type Bool: Type =
+  | tt
+  | ff
+
+def append[u, A: Type(u)](xs: List(A), ys: List(A)) -> List(A) = match xs {
+  nil => ys,
+  cons(h, t) => List.cons(h, append(t, ys)),
+}
+
+def ite[u, A: Type(u)](c: Bool, a: A, b: A) -> A = match c {
+  tt => a,
+  ff => b,
+}

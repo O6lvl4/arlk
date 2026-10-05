@@ -16,6 +16,7 @@ import self.absorb
 import self.metamath
 import self.hol
 import self.bundle
+import self.almide_src
 
 let USAGE = """
   usage:
@@ -32,6 +33,10 @@ let USAGE = """
     arlk replay DIR [--expect ID] [--revalidate]
                                          check a bundle again from its files alone
                                          (exit 3 integrity, 4 identity, 5 version, 6 missing, 7 budget)
+    arlk absorb-almide PROGRAM.almd [-o OUT] [--verify MODEL.arlk]
+                                         turn the pure functions of an Almide program (the
+                                         subset in docs/ALMIDE_SUBSET.md) into Arlk; --verify
+                                         checks that MODEL is exactly that translation
     arlk absorb-hol ARTICLE.art... [-o OUT]
                                          turn OpenTheory articles (HOL), in order, into Arlk source
   """
@@ -39,12 +44,13 @@ let USAGE = """
 effect fn main() -> Unit = {
   let args = process.args()
   let upto = flag(args, "--upto")
-  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect"))
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect") and some(a) != flag(args, "--verify"))
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
     some("bundle") if list.len(files) >= 2 => run_bundle(list.first(files) ?? "", list.drop(files, 1), flag(args, "-o") ?? "bundle")!,
     some("replay") if not list.is_empty(files) => run_replay(list.first(files) ?? "", flag(args, "--expect"), list.contains(args, "--revalidate"))!,
+    some("absorb-almide") if not list.is_empty(files) => run_absorb_almide(list.first(files) ?? "", flag(args, "-o"), flag(args, "--verify"))!,
     some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     _ => {
@@ -353,6 +359,36 @@ effect fn run_replay(dir: String, expect: String?, revalidate: Bool) -> Unit = {
       for a in f.assumptions {
         println(a)
       }
+    },
+  }
+}
+
+// The model of an Almide program (#16): written to OUT, or compared with
+// an existing model byte for byte (a model that no longer matches its
+// source is stale, and a proof about it is not a proof about the source).
+effect fn run_absorb_almide(path: String, out: String?, verify: String?) -> Unit = {
+  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match almide_src.translate(src, path) {
+    err(e) => {
+      println("✗ ${e}")
+      process.exit(1)
+    },
+    ok(text) => match verify {
+      some(model) => {
+        let have = fs.read_text(model) |> result.map_err((e) => "reading ${model}: ${e}")!
+        if have == text then println("✓ ${model} is the translation of ${path} (sha256 ${hash.sha256_hex(src)})")
+        else {
+          println("✗ ${model} is not the translation of ${path} as it is now (stale model): absorb it again")
+          process.exit(1)
+        }
+      },
+      none => match out {
+        some(o) => {
+          fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+          println("wrote ${o}")
+        },
+        none => println(text),
+      },
     },
   }
 }

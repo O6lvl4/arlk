@@ -52,8 +52,10 @@ fn facts(env: Env, q: String) -> Facts = {
   for n in list.sort(list.unique(names)) {
     list.push(deps, (n, decl_hash(env, n)))
   }
+  // Rules by their text: the rules a type declaration generates share
+  // one id (its line).
   for r in d.rules {
-    list.push(deps, ("rule " + r.id, hash.sha256_hex(r.text)))
+    list.push(deps, ("rule " + r.id + " " + r.text, hash.sha256_hex(r.text)))
   }
   let assumptions = checker.axioms_report(env, q)
   let id = hash.sha256_hex(list.join([q, statement] + (deps |> list.map(((n, h)) => n + " " + h)) + assumptions, "\n"))

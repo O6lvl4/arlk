@@ -507,6 +507,7 @@ almide build src/main.almd -o arlk
 ./arlk check absorbed/metamath/set_prop.arlk
 ./arlk absorb-mm set.mm --upto stoic4b -o out.arlk
 ./arlk bundle CLAIM FILE... -o DIR && ./arlk replay DIR
+./arlk absorb-almide examples/almide/reverse.almd --verify examples/almide/reverse.arlk
 ./arlk check lib/hol.arlk
 tools/opentheory/fetch.sh base-1.221 otlib > order.txt && ./arlk absorb-hol $(cat order.txt) -o base.arlk
 tools/check-absorbed.sh
@@ -514,6 +515,36 @@ tools/check-absorbed.sh
 almide test            # kernel and absorb tests (spec/): good proofs pass, bad ones are rejected
 almide test src/       # unit tests of term, syntax, pretty, absorb
 ```
+
+## Almide programs, verified
+
+Arlk is written in Almide, and it can reason about Almide programs. `arlk absorb-almide` reads a
+program in a small pure subset of Almide (variant types, lists, `match`, structural recursion; no
+machine integers: [docs/ALMIDE_SUBSET.md](docs/ALMIDE_SUBSET.md)) and writes its functions as Arlk
+definitions, with the program's SHA-256 and bytes in the header and a source-line trace on each
+definition. Anything outside the subset is refused where it is written.
+
+```almide
+fn reverse[A](xs: List[A]) -> List[A] = match xs {     // examples/almide/reverse.almd
+  [] => [],
+  [h, ..t] => reverse(t) + [h],
+}
+```
+
+```
+$ arlk absorb-almide examples/almide/reverse.almd -o examples/almide/reverse.arlk
+$ arlk check lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
+✓ theorem reverse_proof.reverse_length: (A: Type, xs: almide.List[0](A)) -> Eq[1](Nat, length(A, almide_reverse.reverse(A, xs)), length(A, xs))
+axioms reverse_proof.reverse_length
+  symbols: (none)
+```
+
+`reverse` terminates on every list (Arlk accepted its definition, and accepts only structural
+recursion) and keeps its length, with no assumptions at all. A version that drops elements makes
+the model stale (`absorb-almide --verify`) and the proof fail; CI checks both, and compares the
+model with the compiled program on an example. This is a theorem about the program's meaning in the
+subset's semantics, not about the executable the compiler builds; that needs a preservation proof
+for the compiler, which is later work.
 
 ## Proof bundles: a result that travels
 

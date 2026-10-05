@@ -1,0 +1,645 @@
+// arlk absorb-almide: the pure functions of an Almide program, as Arlk
+// definitions over lib/almide.arlk (#16).
+//
+// The subset (docs/ALMIDE_SUBSET.md): variant types declared in the file,
+// List[A] and Bool, and pure first-order functions whose body is an
+// expression over variables, calls of functions of this file, constructors,
+// list literals, `+` on lists, `if`, and `match` (as a function's body or
+// an arm's body) with constructor, list and wildcard patterns. A function
+// means the Arlk function its definition gives: Arlk accepts it only if
+// its recursion is structural, so every accepted function is total.
+//
+// Everything else is refused where it is written (`file:line:col`):
+// integers and strings (no machine arithmetic is modelled), effects,
+// mutation, loops, closures, imports, records. `effect fn` and `test`
+// blocks are outside the model; they are listed, not translated.
+//
+// The output starts with the source file's SHA-256 and the source itself,
+// byte for byte, and each definition names the lines it comes from. This
+// translator is part of what a result about the program rests on: that
+// it parses the subset as Almide does, and maps each construct to its
+// definition in lib/almide.arlk (docs/TRUST.md, part 8).
+
+import hash
+
+let SUBSET = "arlk-almide-1"
+let ALMIDE = "almide 0.64.0"
+
+type Tok = { kind: String, text: String, line: Int, col: Int }
+
+type AlPat =
+  | APWild
+  | APVar(String)
+  | APCon(String, List[AlPat])
+  | APNil
+  | APCons(AlPat, AlPat)
+  | APBool(Bool)
+
+type AlExpr =
+  | AEVar(String)
+  | AECall(String, List[AlExpr])
+  | AEList(List[AlExpr])
+  | AEAppend(AlExpr, AlExpr)
+  | AEIf(AlExpr, AlExpr, AlExpr)
+  | AEBool(Bool)
+  | AEMatch(String, List[(AlPat, AlExpr)])
+
+type AlTy =
+  | ATName(String, List[AlTy])
+
+type Variant = { name: String, args: List[AlTy] }
+type TypeDecl = { name: String, params: List[String], variants: List[Variant], first: Int, last: Int }
+type FnDecl = { name: String, generics: List[String], params: List[(String, AlTy)], ret: AlTy, body: AlExpr, first: Int, last: Int }
+
+type Prog = { types: List[TypeDecl], fns: List[FnDecl], skipped: List[String] }
+
+// ── Lexer ───────────────────────────────────────────────────────────
+
+let KEYWORDS = ["fn", "effect", "type", "test", "match", "if", "then", "else", "let", "var", "import", "true", "false", "local", "pub", "for", "while", "do", "guard", "return"]
+
+local fn at(cs: List[String], i: Int) -> String = list.get(cs, i) ?? ""
+
+local fn ident_char(c: String) -> Bool = c != "" and (string.is_alphanumeric(c) or c == "_")
+
+// The end of a string literal starting at i (just after its opening
+// quote), skipping escapes and `${...}` interpolations (which may hold
+// strings themselves).
+local fn string_end(cs: List[String], start: Int) -> Int = {
+  var i = start
+  var going = true
+  while going and i < list.len(cs) {
+    let c = at(cs, i)
+    if c == "\\" then {
+      i = i + 2
+    } else if c == "\"" then {
+      i = i + 1
+      going = false
+    } else if c == "$" and at(cs, i + 1) == "{" then {
+      var depth = 1
+      i = i + 2
+      while depth > 0 and i < list.len(cs) {
+        let d = at(cs, i)
+        if d == "\"" then {
+          i = string_end(cs, i + 1)
+        } else {
+          if d == "{" then depth = depth + 1 else if d == "}" then depth = depth - 1 else ()
+          i = i + 1
+        }
+      }
+    } else {
+      i = i + 1
+    }
+  }
+  i
+}
+
+fn lex(src: String, file: String) -> List[Tok]! = {
+  let cs = string.chars(src)
+  let n = list.len(cs)
+  var out: List[Tok] = []
+  var i = 0
+  var line = 1
+  var col = 1
+  var failure = ""
+  while i < n and failure == "" {
+    let c = at(cs, i)
+    let start_line = line
+    let start_col = col
+    var j = i
+    if c == "\n" then {
+      line = line + 1
+      col = 0
+      j = i + 1
+    } else if string.is_whitespace(c) then {
+      j = i + 1
+    } else if c == "/" and at(cs, i + 1) == "/" then {
+      j = i
+      while j < n and at(cs, j) != "\n" {
+        j = j + 1
+      }
+    } else if c == "\"" then {
+      if at(cs, i + 1) == "\"" and at(cs, i + 2) == "\"" then {
+        j = i + 3
+        while j < n and not (at(cs, j) == "\"" and at(cs, j + 1) == "\"" and at(cs, j + 2) == "\"") {
+          if at(cs, j) == "\n" then {
+            line = line + 1
+            col = 0
+          } else ()
+          j = j + 1
+        }
+        j = j + 3
+      } else {
+        j = string_end(cs, i + 1)
+      }
+      list.push(out, Tok { kind: "str", text: "\"...\"", line: start_line, col: start_col })
+    } else if string.is_digit(c) then {
+      while j < n and (string.is_alphanumeric(at(cs, j)) or at(cs, j) == "_" or at(cs, j) == ".") {
+        j = j + 1
+      }
+      list.push(out, Tok { kind: "num", text: list.join(list.take(list.drop(cs, i), j - i), ""), line: start_line, col: start_col })
+    } else if ident_char(c) then {
+      while j < n and ident_char(at(cs, j)) {
+        j = j + 1
+      }
+      let text = list.join(list.take(list.drop(cs, i), j - i), "")
+      list.push(out, Tok { kind: if list.contains(KEYWORDS, text) then "kw" else "id", text: text, line: start_line, col: start_col })
+    } else {
+      let two = c + at(cs, i + 1)
+      let sym = if two == "=>" or two == "->" or two == ".." or two == "|>" or two == "==" or two == "!=" or two == "<=" or two == ">=" or two == "&&" or two == "||" then two else c
+      j = i + string.len(sym)
+      list.push(out, Tok { kind: "sym", text: sym, line: start_line, col: start_col })
+    }
+    col = col + (j - i)
+    i = j
+  }
+  guard failure == "" else err(failure)
+  list.push(out, Tok { kind: "eof", text: "end of file", line: line, col: col })
+  ok(out)
+}
+
+// ── Parser ──────────────────────────────────────────────────────────
+
+type Parser = { toks: List[Tok], file: String }
+
+local fn tk(ps: Parser, p: Int) -> Tok = list.get(ps.toks, p) ?? Tok { kind: "eof", text: "end of file", line: 0, col: 0 }
+
+local fn here(ps: Parser, p: Int) -> String = {
+  let t = tk(ps, p)
+  "${ps.file}:${int.to_string(t.line)}:${int.to_string(t.col)}"
+}
+
+local fn is(ps: Parser, p: Int, text: String) -> Bool = {
+  let t = tk(ps, p)
+  t.text == text and (t.kind == "sym" or t.kind == "kw")
+}
+
+local fn expect(ps: Parser, p: Int, text: String) -> Int! =
+  if is(ps, p, text) then ok(p + 1) else err("${here(ps, p)}: expected `${text}`, found `${tk(ps, p).text}`")
+
+local fn ident(ps: Parser, p: Int) -> (String, Int)! = {
+  let t = tk(ps, p)
+  if t.kind == "id" then ok((t.text, p + 1)) else err("${here(ps, p)}: expected a name, found `${t.text}`")
+}
+
+// Why a construct is outside the subset, where it is written.
+local fn unsupported(ps: Parser, p: Int, what: String) -> String =
+  "${here(ps, p)}: ${what} is not in the Almide subset Arlk models (docs/ALMIDE_SUBSET.md)"
+
+fn parse(src: String, file: String) -> Prog! = {
+  let ps = Parser { toks: lex(src, file)!, file: file }
+  var types: List[TypeDecl] = []
+  var fns: List[FnDecl] = []
+  var skipped: List[String] = []
+  var p = 0
+  var failure = ""
+  while failure == "" and tk(ps, p).kind != "eof" {
+    let t = tk(ps, p)
+    if is(ps, p, "type") then match type_decl(ps, p + 1) {
+      ok((d, p1)) => {
+        list.push(types, d)
+        p = p1
+      },
+      err(e) => {
+        failure = e
+      },
+    } else if is(ps, p, "fn") or (is(ps, p, "local") and is(ps, p + 1, "fn")) then match fn_decl(ps, if is(ps, p, "local") then p + 2 else p + 1) {
+      ok((d, p1)) => {
+        list.push(fns, d)
+        p = p1
+      },
+      err(e) => {
+        failure = e
+      },
+    } else if is(ps, p, "effect") or is(ps, p, "test") or (is(ps, p, "local") and is(ps, p + 1, "effect")) then {
+      // Outside the model: skipped to the next declaration at column 1.
+      let name = if is(ps, p, "test") then "test " + tk(ps, p + 1).text else tk(ps, if is(ps, p, "local") then p + 3 else p + 2).text
+      list.push(skipped, name)
+      p = skip_decl(ps, p + 1)
+    } else if is(ps, p, "import") then {
+      failure = unsupported(ps, p, "an import")
+    } else {
+      failure = unsupported(ps, p, "`${t.text}` at the top level")
+    }
+  }
+  guard failure == "" else err(failure)
+  ok(Prog { types: types, fns: fns, skipped: skipped })
+}
+
+local fn skip_decl(ps: Parser, p: Int) -> Int = {
+  var q = p
+  var depth = 0
+  var going = true
+  while going {
+    let t = tk(ps, q)
+    if t.kind == "eof" then going = false
+    else if depth == 0 and t.col == 1 and t.kind == "kw" and list.contains(["fn", "effect", "type", "test", "local", "pub", "import"], t.text) then going = false
+    else {
+      if t.kind == "sym" and (t.text == "{" or t.text == "(" or t.text == "[") then depth = depth + 1
+      else if t.kind == "sym" and (t.text == "}" or t.text == ")" or t.text == "]") then depth = depth - 1
+      else ()
+      q = q + 1
+    }
+  }
+  q
+}
+
+local fn generics(ps: Parser, p: Int) -> (List[String], Int)! =
+  if not is(ps, p, "[") then ok(([], p))
+  else {
+    var names: List[String] = []
+    var q = p + 1
+    var going = true
+    while going {
+      let (x, q1) = ident(ps, q)!
+      list.push(names, x)
+      if is(ps, q1, ",") then {
+        q = q1 + 1
+      } else {
+        q = expect(ps, q1, "]")!
+        going = false
+      }
+    }
+    ok((names, q))
+  }
+
+local fn type_decl(ps: Parser, p: Int) -> (TypeDecl, Int)! = {
+  let first = tk(ps, p).line
+  let (name, p1) = ident(ps, p)!
+  let (params, p2) = generics(ps, p1)!
+  var q = expect(ps, p2, "=")!
+  guard not is(ps, q, "{") else err(unsupported(ps, q, "a record type"))
+  var variants: List[Variant] = []
+  while is(ps, q, "|") {
+    let (c, q1) = ident(ps, q + 1)!
+    var args: List[AlTy] = []
+    var q2 = q1
+    if is(ps, q1, "(") then {
+      q2 = q1 + 1
+      var going = true
+      while going {
+        guard not (tk(ps, q2).kind == "id" and is(ps, q2 + 1, ":")) else err(unsupported(ps, q2, "a named variant field"))
+        let (ty, q3) = typ(ps, q2, params)!
+        list.push(args, ty)
+        if is(ps, q3, ",") then {
+          q2 = q3 + 1
+        } else {
+          q2 = expect(ps, q3, ")")!
+          going = false
+        }
+      }
+    } else ()
+    list.push(variants, Variant { name: c, args: args })
+    q = q2
+  }
+  guard not list.is_empty(variants) else err("${here(ps, q)}: expected `| Constructor` in type ${name}")
+  ok((TypeDecl { name: name, params: params, variants: variants, first: first, last: tk(ps, q - 1).line }, q))
+}
+
+local fn typ(ps: Parser, p: Int, generic: List[String]) -> (AlTy, Int)! = {
+  guard not is(ps, p, "(") else err(unsupported(ps, p, "a function or tuple type"))
+  let (name, p1) = ident(ps, p)!
+  guard not list.contains(["Int", "Float", "String", "Bytes", "Map", "Set", "Unit"], name) else err(unsupported(ps, p, "the type ${name} (machine numbers, strings and effects are not modelled; declare a datatype such as `type Nat = | Zero | Succ(Nat)`)"))
+  let (args, p2) = (if is(ps, p1, "[") then {
+    var out: List[AlTy] = []
+    var q = p1 + 1
+    var going = true
+    while going {
+      let (t, q1) = typ(ps, q, generic)!
+      list.push(out, t)
+      if is(ps, q1, ",") then {
+        q = q1 + 1
+      } else {
+        q = expect(ps, q1, "]")!
+        going = false
+      }
+    }
+    ok((out, q))
+  } else ok(([], p1)))!
+  guard not is(ps, p2, "?") else err(unsupported(ps, p2, "an option type"))
+  ok((ATName(name, args), p2))
+}
+
+local fn fn_decl(ps: Parser, p: Int) -> (FnDecl, Int)! = {
+  let first = tk(ps, p).line
+  let (name, p1) = ident(ps, p)!
+  let (gens, p2) = generics(ps, p1)!
+  var q = expect(ps, p2, "(")!
+  var params: List[(String, AlTy)] = []
+  if is(ps, q, ")") then {
+    q = q + 1
+  } else {
+    var going = true
+    while going {
+      guard not is(ps, q, "mut") else err(unsupported(ps, q, "a `mut` parameter"))
+      let (x, q1) = ident(ps, q)!
+      let q2 = expect(ps, q1, ":")!
+      let (ty, q3) = typ(ps, q2, gens)!
+      list.push(params, (x, ty))
+      if is(ps, q3, ",") then {
+        q = q3 + 1
+      } else {
+        q = expect(ps, q3, ")")!
+        going = false
+      }
+    }
+  }
+  let q4 = expect(ps, q, "->")!
+  let (ret, q5) = typ(ps, q4, gens)!
+  guard not is(ps, q5, "!") else err(unsupported(ps, q5, "a fallible result (`T!`)"))
+  let q6 = expect(ps, q5, "=")!
+  let (body, q7) = expr(ps, q6)!
+  ok((FnDecl { name: name, generics: gens, params: params, ret: ret, body: body, first: first, last: tk(ps, q7 - 1).line }, q7))
+}
+
+local fn expr(ps: Parser, p: Int) -> (AlExpr, Int)! = {
+  let (a, p1) = primary(ps, p)!
+  var acc = a
+  var q = p1
+  while is(ps, q, "+") {
+    let (b, q1) = primary(ps, q + 1)!
+    acc = AEAppend(acc, b)
+    q = q1
+  }
+  let t = tk(ps, q)
+  guard not (t.kind == "sym" and list.contains(["-", "*", "/", "%", "|>", "==", "!=", "<", ">", "<=", ">=", "&&", "||", "?", "!", "."], t.text)) else err(unsupported(ps, q, "the operator `${t.text}`"))
+  guard not (t.kind == "kw" and (t.text == "and" or t.text == "or")) else err(unsupported(ps, q, "`${t.text}`"))
+  ok((acc, q))
+}
+
+local fn args(ps: Parser, p: Int) -> (List[AlExpr], Int)! = {
+  var out: List[AlExpr] = []
+  var q = p
+  if is(ps, q, ")") then ok((out, q + 1))
+  else {
+    var going = true
+    while going {
+      let (e, q1) = expr(ps, q)!
+      list.push(out, e)
+      if is(ps, q1, ",") then {
+        q = q1 + 1
+      } else {
+        q = expect(ps, q1, ")")!
+        going = false
+      }
+    }
+    ok((out, q))
+  }
+}
+
+local fn primary(ps: Parser, p: Int) -> (AlExpr, Int)! = {
+  let t = tk(ps, p)
+  if t.kind == "num" then err(unsupported(ps, p, "the number ${t.text} (machine integers are not modelled)"))
+  else if t.kind == "str" then err(unsupported(ps, p, "a string"))
+  else if is(ps, p, "true") then ok((AEBool(true), p + 1))
+  else if is(ps, p, "false") then ok((AEBool(false), p + 1))
+  else if is(ps, p, "(") then {
+    let (e, p1) = expr(ps, p + 1)!
+    let p2 = expect(ps, p1, ")")!
+    ok((e, p2))
+  }
+  else if is(ps, p, "[") then {
+    var items: List[AlExpr] = []
+    var q = p + 1
+    if is(ps, q, "]") then ok((AEList(items), q + 1))
+    else {
+      var going = true
+      while going {
+        let (e, q1) = expr(ps, q)!
+        list.push(items, e)
+        if is(ps, q1, ",") then {
+          q = q1 + 1
+        } else {
+          q = expect(ps, q1, "]")!
+          going = false
+        }
+      }
+      ok((AEList(items), q))
+    }
+  }
+  else if is(ps, p, "if") then {
+    let (c, p1) = expr(ps, p + 1)!
+    let p2 = expect(ps, p1, "then")!
+    let (a, p3) = expr(ps, p2)!
+    let p4 = expect(ps, p3, "else")!
+    let (b, p5) = expr(ps, p4)!
+    ok((AEIf(c, a, b), p5))
+  }
+  else if is(ps, p, "match") then {
+    let (x, p1) = ident(ps, p + 1)!
+    var q = expect(ps, p1, "{")!
+    var arms: List[(AlPat, AlExpr)] = []
+    while not is(ps, q, "}") {
+      let (pat, q1) = pattern(ps, q)!
+      guard not is(ps, q1, "if") else err(unsupported(ps, q1, "a guard in a match arm"))
+      let q2 = expect(ps, q1, "=>")!
+      let (e, q3) = expr(ps, q2)!
+      list.push(arms, (pat, e))
+      q = if is(ps, q3, ",") then q3 + 1 else q3
+    }
+    ok((AEMatch(x, arms), q + 1))
+  }
+  else if is(ps, p, "{") then err(unsupported(ps, p, "a block (`{ let ... }`)"))
+  else if t.kind == "id" then {
+    if is(ps, p + 1, "(") then {
+      let (xs, p1) = args(ps, p + 2)!
+      ok((AECall(t.text, xs), p1))
+    } else ok((AEVar(t.text), p + 1))
+  }
+  else err(unsupported(ps, p, "`${t.text}`"))
+}
+
+local fn pattern(ps: Parser, p: Int) -> (AlPat, Int)! = {
+  let t = tk(ps, p)
+  if is(ps, p, "true") then ok((APBool(true), p + 1))
+  else if is(ps, p, "false") then ok((APBool(false), p + 1))
+  else if is(ps, p, "[") then {
+    if is(ps, p + 1, "]") then ok((APNil, p + 2))
+    else {
+      var heads: List[AlPat] = []
+      var q = p + 1
+      var tail = APNil
+      var going = true
+      while going {
+        if is(ps, q, "..") then {
+          let (x, q1) = ident(ps, q + 1)!
+          tail = if x == "_" then APWild else APVar(x)
+          q = expect(ps, q1, "]")!
+          going = false
+        } else {
+          let (h, q1) = pattern(ps, q)!
+          list.push(heads, h)
+          if is(ps, q1, ",") then {
+            q = q1 + 1
+          } else {
+            q = expect(ps, q1, "]")!
+            going = false
+          }
+        }
+      }
+      ok((list.fold(list.reverse(heads), tail, (acc, h) => APCons(h, acc)), q))
+    }
+  }
+  else if t.kind == "num" or t.kind == "str" then err(unsupported(ps, p, "a literal pattern"))
+  else if t.kind == "id" then {
+    if t.text == "_" then ok((APWild, p + 1))
+    else if is(ps, p + 1, "(") then {
+      var subs: List[AlPat] = []
+      var q = p + 2
+      var going = true
+      while going {
+        let (s, q1) = pattern(ps, q)!
+        list.push(subs, s)
+        if is(ps, q1, ",") then {
+          q = q1 + 1
+        } else {
+          q = expect(ps, q1, ")")!
+          going = false
+        }
+      }
+      ok((APCon(t.text, subs), q))
+    }
+    else if string.is_upper(string.take(t.text, 1)) then ok((APCon(t.text, []), p + 1))
+    else ok((APVar(t.text), p + 1))
+  }
+  else err("${here(ps, p)}: expected a pattern, found `${t.text}`")
+}
+
+// ── Emission ────────────────────────────────────────────────────────
+
+let ARLK_KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type", "Sort", "type", "match", "view", "translate", "let", "search", "views", "routes"]
+
+local fn name_of(x: String) -> String = if list.contains(ARLK_KEYWORDS, x) then x + "'" else x
+
+local fn ty_text(t: AlTy) -> String = match t {
+  ATName(n, args) => {
+    let base = if n == "List" then "List" else if n == "Bool" then "Bool" else name_of(n)
+    if list.is_empty(args) then base else base + "(" + list.join(args |> list.map((a) => ty_text(a)), ", ") + ")"
+  },
+}
+
+type Names = { ctors: Map[String, String], fns: List[String], file: String }
+
+local fn pat_text(p: AlPat) -> String = match p {
+  APWild => "_",
+  APVar(x) => name_of(x),
+  APCon(c, subs) => if list.is_empty(subs) then c else c + "(" + list.join(subs |> list.map((s) => pat_text(s)), ", ") + ")",
+  APNil => "nil",
+  APCons(h, t) => "cons(" + pat_text(h) + ", " + pat_text(t) + ")",
+  APBool(b) => if b then "tt" else "ff",
+}
+
+local fn expr_text(ns: Names, e: AlExpr, indent: String, body_position: Bool, fname: String) -> String! = match e {
+  AEVar(x) => ok(match map.get(ns.ctors, x) {
+    some(ty) => name_of(ty) + "." + x,
+    none => name_of(x),
+  }),
+  AEBool(b) => ok(if b then "Bool.tt" else "Bool.ff"),
+  AECall(f, xs) => {
+    var shown: List[String] = []
+    for x in xs {
+      list.push(shown, expr_text(ns, x, indent, false, fname)!)
+    }
+    match map.get(ns.ctors, f) {
+      some(ty) => ok(name_of(ty) + "." + f + "(" + list.join(shown, ", ") + ")"),
+      none => {
+        guard list.contains(ns.fns, f) else err("${ns.file}: in ${fname}: ${f} is not a function of this file (only this file's pure functions are in the model)")
+        ok(name_of(f) + "(" + list.join(shown, ", ") + ")")
+      },
+    }
+  },
+  AEList(xs) => {
+    var out = "List.nil"
+    for x in list.reverse(xs) {
+      out = "List.cons(" + expr_text(ns, x, indent, false, fname)! + ", " + out + ")"
+    }
+    ok(out)
+  },
+  AEAppend(a, b) => ok("append(" + expr_text(ns, a, indent, false, fname)! + ", " + expr_text(ns, b, indent, false, fname)! + ")"),
+  AEIf(c, a, b) => ok("ite(" + expr_text(ns, c, indent, false, fname)! + ", " + expr_text(ns, a, indent, false, fname)! + ", " + expr_text(ns, b, indent, false, fname)! + ")"),
+  AEMatch(x, arms) => {
+    guard body_position else err("${ns.file}: in ${fname}: a match must be a function's body or an arm's body in the subset")
+    var lines: List[String] = ["match " + name_of(x) + " {"]
+    for (p, b) in arms {
+      list.push(lines, indent + "  " + pat_text(p) + " => " + expr_text(ns, b, indent + "  ", true, fname)! + ",")
+    }
+    list.push(lines, indent + "}")
+    ok(list.join(lines, "\n"))
+  },
+}
+
+fn room_name(file: String) -> String = {
+  let base = list.last(string.split(file, "/")) ?? file
+  let stem = string.strip_suffix(base, ".almd") ?? base
+  "almide_" + list.join(string.chars(stem) |> list.map((c) => if string.is_alphanumeric(c) then c else "_"), "")
+}
+
+// The Arlk text for an Almide source: header with the source's hash and
+// the source itself, then one definition per type and pure function.
+fn translate(src: String, file: String) -> String! = {
+  let prog = parse(src, file)!
+  var ctors: Map[String, String] = [:]
+  for t in prog.types {
+    for v in t.variants {
+      map.insert(ctors, v.name, t.name)
+    }
+  }
+  let ns = Names { ctors: ctors, fns: prog.fns |> list.map((f) => f.name), file: file }
+  let base = list.last(string.split(file, "/")) ?? file
+  var out: List[String] = [
+    "// Generated by `arlk absorb-almide` from ${base}: do not edit.",
+    "// almide-source: ${base}",
+    "// almide-source-sha256: ${hash.sha256_hex(src)}",
+    "// almide-subset: ${SUBSET} (docs/ALMIDE_SUBSET.md), ${ALMIDE}",
+    "// not modelled (effects and tests): ${if list.is_empty(prog.skipped) then "(none)" else list.join(prog.skipped, ", ")}",
+    "//",
+    "// The source, byte for byte:",
+  ]
+  for l in string.split(src, "\n") {
+    list.push(out, "//| " + l)
+  }
+  list.push(out, "")
+  list.push(out, "room ${room_name(file)} uses almide")
+  for t in prog.types {
+    list.push(out, "")
+    list.push(out, "// ${base}:${int.to_string(t.first)}-${int.to_string(t.last)}  type ${t.name}")
+    let params = if list.is_empty(t.params) then "" else "(" + list.join(t.params |> list.map((a) => name_of(a) + ": Type"), ", ") + ")"
+    list.push(out, "type ${name_of(t.name)}${params}: Type =")
+    for v in t.variants {
+      let fields = if list.is_empty(v.args) then "" else "(" + list.join(list.enumerate(v.args) |> list.map(((i, a)) => "a" + int.to_string(i + 1) + ": " + ty_text(a)), ", ") + ")"
+      list.push(out, "  | ${v.name}${fields}")
+    }
+  }
+  for f in prog.fns {
+    list.push(out, "")
+    list.push(out, "// ${base}:${int.to_string(f.first)}-${int.to_string(f.last)}  fn ${f.name}")
+    let gens = if list.is_empty(f.generics) then "" else "[" + list.join(f.generics |> list.map((a) => name_of(a) + ": Type"), ", ") + "]"
+    let params = list.join(f.params |> list.map(((x, t)) => name_of(x) + ": " + ty_text(t)), ", ")
+    let body = expr_text(ns, f.body, "", true, f.name)!
+    list.push(out, "def ${name_of(f.name)}${gens}(${params}) -> ${ty_text(f.ret)} = ${body}")
+  }
+  ok(list.join(out, "\n") + "\n")
+}
+
+test "reverse, from Almide's text" {
+  let src = "type C =\n  | R\n  | G\n\nfn reverse[A](xs: List[A]) -> List[A] = match xs {\n  [] => [],\n  [h, ..t] => reverse(t) + [h],\n}\n\neffect fn main() -> Unit = {\n  println(\"${1}\")\n}\n"
+  match translate(src, "r.almd") {
+    ok(text) => {
+      assert(string.contains(text, "def reverse[A: Type](xs: List(A)) -> List(A) = match xs {"))
+      assert(string.contains(text, "  cons(h, t) => append(reverse(t), List.cons(h, List.nil)),"))
+      assert(string.contains(text, "// not modelled (effects and tests): main"))
+      assert(string.contains(text, "type C: Type ="))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}
+
+test "integers and blocks are refused where they are written" {
+  match translate("fn f(n: Int) -> Int = n\n", "a.almd") {
+    ok(_) => assert(false),
+    err(e) => assert(string.contains(e, "a.almd:1:9: the type Int")),
+  }
+  match translate("type N =\n  | Z\nfn f(n: N) -> N = {\n  let m = n\n  m\n}\n", "b.almd") {
+    ok(_) => assert(false),
+    err(e) => assert(string.contains(e, "b.almd:3:19: a block")),
+  }
+}

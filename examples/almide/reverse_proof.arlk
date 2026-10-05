@@ -1,0 +1,55 @@
+// What is proved about examples/almide/reverse.almd, an Almide program.
+//
+// examples/almide/reverse.arlk is generated from the program's exact bytes
+// by `arlk absorb-almide` (its header records their SHA-256), and
+// `arlk absorb-almide reverse.almd --verify reverse.arlk` checks that it
+// still is. What follows is about the program's meaning in the subset's
+// semantics (docs/ALMIDE_SUBSET.md): the Arlk function each of its pure
+// functions denotes.
+//
+//   - reverse terminates on every finite list: its definition is accepted,
+//     and Arlk accepts only structural recursion, so it is total;
+//   - reverse keeps the length of every list (reverse_length below).
+//
+// It is not a claim about the executable the Almide compiler builds: that
+// needs a proof that compilation preserves this semantics, which is later
+// work (docs/ALMIDE_SUBSET.md). Lengths are natural numbers (Nat below), not
+// machine integers.
+//
+//   arlk check lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
+
+room reverse_proof uses almide, almide_reverse
+
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+
+def length[A: Type](xs: List(A)) -> Nat = match xs {
+  nil => Nat.zero,
+  cons(h, t) => Nat.succ(length(t)),
+}
+
+theorem cong_succ(m: Nat, n: Nat, h: Eq(Nat, m, n)) -> Eq(Nat, Nat.succ(m), Nat.succ(n)) =
+  Eq.rec((n': Nat, e: Eq(Nat, m, n')) => Eq(Nat, Nat.succ(m), Nat.succ(n')), Eq.refl, n, h)
+
+theorem trans(a: Nat, b: Nat, c: Nat, h1: Eq(Nat, a, b), h2: Eq(Nat, b, c)) -> Eq(Nat, a, c) =
+  Eq.rec((c': Nat, e: Eq(Nat, b, c')) => Eq(Nat, a, c'), h1, c, h2)
+
+// Appending one element adds one to the length (`xs + [x]`).
+theorem length_snoc[A: Type](xs: List(A), x: A) -> Eq(Nat, length(append(xs, List.cons(x, List.nil))), Nat.succ(length(xs))) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => cong_succ(length(append(t, List.cons(x, List.nil))), Nat.succ(length(t)), length_snoc(t, x)),
+}
+
+// The property: for every list, reverse keeps its length.
+theorem reverse_length[A: Type](xs: List(A)) -> Eq(Nat, length(reverse(xs)), length(xs)) = match xs {
+  nil => Eq.refl,
+  cons(h, t) => trans(length(append(reverse(t), List.cons(h, List.nil))), Nat.succ(length(reverse(t))), Nat.succ(length(t)),
+    length_snoc(reverse(t), h),
+    cong_succ(length(reverse(t)), length(t), reverse_length(t))),
+}
+
+axioms reverse_length
