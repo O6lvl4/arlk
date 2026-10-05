@@ -1,6 +1,6 @@
 arlk-project: 1
 name: client-b
-requires: std 1.0.0 7b4d9055bbc4936b68c477885742453eecf924238bdeb740cc06fc60c0ac67b0 ../../../packages/std.arlkpkg
+requires: std 1.0.0 c27f3a85462efa5689efb0d8f68a8e740fec414f447e06079cc69d1825564db6 ../../../packages/std.arlkpkg
 requires: views-abc 1.0.0 ed3e827661ca2abc2b6519b42477e25f5cb1302106185c23e2a46e8061db3d9d ../../../packages/views-abc.arlkpkg
 source: main.arlk
 claim: client_b.agree_snoc

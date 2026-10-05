@@ -1,0 +1,134 @@
+// Well-founded recursion: functions that do not recurse on a smaller
+// part of their argument, but on a smaller value by some well-founded
+// relation (Lean's `termination_by`, Rocq's `Program Fixpoint`, Agda's
+// sized or accessibility-based recursion).
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk \
+//     lib/almide.arlk lib/std/list.arlk examples/std/wf.arlk
+//
+// `decreasing x by W` names the parameter and the proof W that its
+// relation is well-founded; each recursive call passes, last, a proof that
+// its x is smaller. The definition becomes `wf.fix` (lib/std/wf.arlk,
+// defined from Acc's recursor), and `f.unfold` is proved for it. Closed
+// calls compute in the kernel, so `Eq.refl` checks results.
+
+room wfdemo uses eq, logic, nat, wf, almide, list
+
+// Division by repeated subtraction: n - d < n when 0 < d ≤ n.
+def div(n: Nat, d: Nat) -> Nat decreasing n by lt_wf = match d {
+  zero => Nat.zero,
+  succ(k) => match le_dec(Nat.succ(k), n) {
+    yes(h) => Nat.succ(div(sub(n, Nat.succ(k)), Nat.succ(k), sub_lt(n, k, le_trans(succ_le_succ(le_zero(k)), h)))),
+    no(h) => Nat.zero,
+  },
+}
+
+def n1: Nat = Nat.succ(Nat.zero)
+def n2: Nat = Nat.succ(n1)
+def n3: Nat = Nat.succ(n2)
+def n4: Nat = Nat.succ(n3)
+def n7: Nat = add(n4, n3)
+def n8: Nat = add(n4, n4)
+def n12: Nat = add(n8, n4)
+
+theorem seven_div_two: Eq(Nat, div(n7, n2), n3) = Eq.refl
+
+// The remainder, `mod(n, k)` = n mod (k + 1), written with `cases_dec` so
+// that proofs can take its branches apart after unfolding it.
+def mod(n: Nat, k: Nat) -> Nat decreasing n by lt_wf =
+  cases_dec(le_dec(Nat.succ(k), n),
+    (h: Le(Nat.succ(k), n)) => mod(sub(n, Nat.succ(k)), k, sub_lt(n, k, le_trans(succ_le_succ(le_zero(k)), h))),
+    (h: Le(Nat.succ(k), n) -> False) => n)
+
+theorem dec_yes[P: Sort(0)](c: Dec(P), h: P) -> Eq(Dec(P), c, Dec.yes(h)) = match c {
+  yes(h2) => Eq.refl,
+  no(h2) => absurd(Eq(Dec(P), Dec.no(h2), Dec.yes(h)), h2(h)),
+}
+theorem dec_no[P: Sort(0)](c: Dec(P), h: P -> False) -> Eq(Dec(P), c, Dec.no(h)) = match c {
+  yes(h2) => absurd(Eq(Dec(P), Dec.yes(h2), Dec.no(h)), h(h2)),
+  no(h2) => Eq.refl,
+}
+
+theorem mod_yes(n: Nat, k: Nat, h: Le(Nat.succ(k), n)) -> Eq(Nat, mod(n, k), mod(sub(n, Nat.succ(k)), k)) =
+  trans(mod.unfold(n, k), cong((c: Dec(Le(Nat.succ(k), n))) => cases_dec(c,
+    (h: Le(Nat.succ(k), n)) => mod(sub(n, Nat.succ(k)), k),
+    (h: Le(Nat.succ(k), n) -> False) => n), dec_yes(le_dec(Nat.succ(k), n), h)))
+
+theorem mod_no(n: Nat, k: Nat, h: Le(Nat.succ(k), n) -> False) -> Eq(Nat, mod(n, k), n) =
+  trans(mod.unfold(n, k), cong((c: Dec(Le(Nat.succ(k), n))) => cases_dec(c,
+    (h: Le(Nat.succ(k), n)) => mod(sub(n, Nat.succ(k)), k),
+    (h: Le(Nat.succ(k), n) -> False) => n), dec_no(le_dec(Nat.succ(k), n), h)))
+
+// Proof by well-founded induction: a theorem may be `decreasing` too.
+theorem mod_lt(n: Nat, k: Nat) -> Lt(mod(n, k), Nat.succ(k)) decreasing n by lt_wf = match le_dec(Nat.succ(k), n) {
+  yes(h) => subst((m: Nat) => Lt(m, Nat.succ(k)), symm(mod_yes(n, k, h)),
+    mod_lt(sub(n, Nat.succ(k)), k, sub_lt(n, k, le_trans(succ_le_succ(le_zero(k)), h)))),
+  no(h) => subst((m: Nat) => Lt(m, Nat.succ(k)), symm(mod_no(n, k, h)), lt_of_not_le(Nat.succ(k), n, h)),
+}
+
+// Euclid: the remainder is smaller than the divisor.
+def gcd(a: Nat, b: Nat) -> Nat decreasing b by lt_wf = match b {
+  zero => a,
+  succ(k) => gcd(Nat.succ(k), mod(a, k), mod_lt(a, k)),
+}
+
+theorem gcd_12_8: Eq(Nat, gcd(n12, n8), n4) = Eq.refl
+
+// ── Merge sort ──────────────────────────────────────────────────────
+
+// Every other element, starting with the first (tt) or the second (ff).
+def alt[u, A: Type(u)](xs: List(A), take: Bool) -> List(A) = match xs {
+  nil => List.nil,
+  cons(a, rest) => match take {
+    tt => List.cons(a, alt(rest, Bool.ff)),
+    ff => alt(rest, Bool.tt),
+  },
+}
+
+theorem alt_le[u, A: Type(u)](xs: List(A), take: Bool) -> Le(length(alt(xs, take)), length(xs)) = match xs {
+  nil => Le.refl,
+  cons(a, rest) => match take {
+    tt => succ_le_succ(alt_le(rest, Bool.ff)),
+    ff => Le.step(length(rest), alt_le(rest, Bool.tt)),
+  },
+}
+
+// Each half of a list of two or more is shorter.
+theorem alt_shorter[u, A: Type(u)](a: A, b: A, t: List(A), take: Bool) -> Lt(length(alt(List.cons(a, List.cons(b, t)), take)), length(List.cons(a, List.cons(b, t)))) = match take {
+  tt => succ_le_succ(succ_le_succ(alt_le(t, Bool.tt))),
+  ff => succ_le_succ(succ_le_succ(alt_le(t, Bool.ff))),
+}
+
+// Merging sorted lists: structural, through a helper that recurses on the
+// second list with the merge of the first list's tail at hand.
+def merge_into(a: Nat, rest: List(Nat), merge_rest: List(Nat) -> List(Nat), ys: List(Nat)) -> List(Nat) = match ys {
+  nil => List.cons(a, rest),
+  cons(b, bs) => cases_dec(le_dec(a, b),
+    (h: Le(a, b)) => List.cons(a, merge_rest(List.cons(b, bs))),
+    (h: Le(a, b) -> False) => List.cons(b, merge_into(a, rest, merge_rest, bs))),
+}
+
+def merge(xs: List(Nat), ys: List(Nat)) -> List(Nat) = match xs {
+  nil => ys,
+  cons(a, rest) => merge_into(a, rest, (zs: List(Nat)) => merge(rest, zs), ys),
+}
+
+// Merge sort: the halves are shorter, so the recursion is well-founded on
+// the length.
+def msort(xs: List(Nat)) -> List(Nat) decreasing xs by measure_wf((l: List(Nat)) => length(l)) = match xs {
+  nil => List.nil,
+  cons(a, rest) => match rest {
+    nil => List.cons(a, List.nil),
+    cons(b, t) => merge(
+      msort(alt(List.cons(a, List.cons(b, t)), Bool.tt), alt_shorter(a, b, t, Bool.tt)),
+      msort(alt(List.cons(a, List.cons(b, t)), Bool.ff), alt_shorter(a, b, t, Bool.ff))),
+  },
+}
+
+theorem sorted: Eq(List(Nat), msort(List.cons(n3, List.cons(n1, List.cons(n2, List.cons(Nat.zero, List.nil))))),
+  List.cons(Nat.zero, List.cons(n1, List.cons(n2, List.cons(n3, List.nil))))) = Eq.refl
+
+// Nothing assumed: the proofs rest on the inductive types alone.
+axioms gcd
+axioms msort
+axioms mod_lt

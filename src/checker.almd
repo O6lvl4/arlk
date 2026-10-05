@@ -4,6 +4,7 @@
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
+import self.syntax
 import self.kernel.{IndInfo, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
@@ -368,6 +369,8 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
   },
   // A definition matching on one type of a mutual group: through the
   // group's family, like a group of functions (one function here).
+  DDef(sig, body) if wf_marked(sig, body) => add_wf_def(env, d.line, d.decl),
+  DTheorem(sig, body) if wf_marked(sig, body) => add_wf_def(env, d.line, d.decl),
   DDef(sig, body) if matches_mutual(env, sig, body) => process(env, { ...d, decl: DMutualDefs([d.decl]) }),
   DTheorem(sig, body) if matches_mutual(env, sig, body) => process(env, { ...d, decl: DMutualDefs([d.decl]) }),
   _ => {
@@ -406,6 +409,158 @@ local fn add_mutual_defs(mut env: Env, line: Int, group: List[Decl]) -> List[Str
     some(DTheorem(sig, body)) if nested_kind(env, sig, body) != none => add_nested_defs(env, line, group),
     _ => add_family_defs(env, line, group),
   }
+
+// ── Well-founded recursion ──────────────────────────────────────────
+//
+//   def div(n: Nat, d: Nat) -> Nat decreasing n by lt_wf = ... div(m, d, h) ...
+//
+// W (`lt_wf`) proves a relation R well-founded on n's type; each recursive
+// call passes, last, a proof `R(m, n)` that its n is smaller. This becomes
+//
+//   def div.step(n, d, rec: (y: Nat, r: Lt(y, n), d: Nat) -> Nat) -> Nat = ... rec(m, h, d) ...
+//   def div(n, d) = wf.fix(W, (n) => (d: Nat) -> Nat, (n, rec) => (d) => div.step(n, d, rec), n)(d)
+//   theorem div.unfold(n, d): div(n, d) = div.step(n, d, (y, r, d) => div(y, d))
+//
+// all ordinary declarations, checked as usual (lib/std/wf.arlk defines
+// fix by the recursor of Acc). Nothing here is trusted. The other
+// parameters may change in recursive calls.
+
+local fn wf_marked(sig: Sig, body: Raw) -> Bool = {
+  let (_, _, b) = def_parts(sig, body)
+  let (h, args) = inductive.raw_spine(b)
+  h == RName(syntax.WF_MARK) and list.len(args) == 3
+}
+
+local fn add_wf_def(mut env: Env, line: Int, decl: Decl) -> List[String]! = {
+  let (sig, body, is_thm) = match decl {
+    DTheorem(sg, b) => (sg, b, true),
+    DDef(sg, b) => (sg, b, false),
+    _ => (Sig { name: "", levels: [], implicits: 0, ty: RType }, RType, false),
+  }
+  let (params, ret, marked) = def_parts(sig, body)
+  let (_, margs) = inductive.raw_spine(marked)
+  let x = match list.first(margs) {
+    some(RName(v)) => v,
+    _ => "",
+  }
+  let w = list.get(margs, 1) ?? RType
+  let body0 = list.get(margs, 2) ?? RType
+  let pnames = params |> list.map(((p, _)) => p)
+  let k = match list.index_of(pnames, x) {
+    some(i) => ok(i),
+    none => err("${sig.name}: decreasing ${x}: ${x} is not a parameter"),
+  }!
+  guard k >= sig.implicits else err("${sig.name}: decreasing ${x}: an implicit parameter cannot be the decreasing one")
+  let xty = match list.get(params, k) {
+    some((_, t)) => t,
+    none => RType,
+  }
+  guard not list.any(inductive.raw_spine(xty).1, (a) => list.any(list.drop(pnames, sig.implicits), (p) => mentions(a, p))) else err("${sig.name}: the type of ${x} may depend only on implicit parameters")
+  // R, from W's type: WellFounded(A, R), that is (x: A) -> Acc(A, R, x).
+  let (_, wty) = elab.elab_infer(env, sig.levels, w)!
+  var bu = budget()
+  let rel_opt: Option[Term] = match whnf(env, [], wty, bu) {
+    Pi(_, _, b) => {
+      let (_, aargs) = spine(whnf(env, [("x", type0())], b, bu))
+      match list.get(aargs, 1) {
+        some(r) => if occurs(r, 0) then none else some(shift(r, -1, 0)),
+        none => none,
+      }
+    },
+    _ => none,
+  }
+  guard rel_opt != none else err("${sig.name}: decreasing ${x} by W: W must prove a relation well-founded (WellFounded(A, R)), not ${show(env, [], wty)}")
+  let rel = rel_opt ?? type0()
+  let r_raw = term_raw(rel, [])
+  let implicit_ps = list.take(params, sig.implicits)
+  let explicit_ps = list.drop(params, sig.implicits)
+  let others = explicit_ps |> list.filter(((p, _)) => p != x)
+  let taken = pnames + inductive_names(ret) + inductive_names(body0) + [sig.name]
+  let y = inductive.fresh(x + "'", taken)
+  let rn = inductive.fresh("r", taken + [y])
+  let rec = inductive.fresh("rec", taken + [y, rn])
+  let at_y = (t: Raw) => inductive.substitute(t, [x], [RName(y)])
+  let others_y = others |> list.map(((p, t)) => (p, at_y(t)))
+  let rec_ty = RPi(y, xty, RPi(rn, RApp(RApp(r_raw, RName(y)), RName(x)), pis_raw(others_y, at_y(ret))))
+  let pos = k - sig.implicits
+  let body1 = wf_calls(body0, sig.name, list.len(explicit_ps), pos, rec)!
+  let step_name = sig.name + ".step"
+  let step_sig = Sig { name: step_name, levels: sig.levels, implicits: sig.implicits, ty: pis_raw(params + [(rec, rec_ty)], ret) }
+  let step = DDef(step_sig, lams_raw(params + [(rec, rec_ty)], body1))
+  // fix(W, C, F, x)(others)
+  let motive = RLam(x, xty, pis_raw(others, ret))
+  let step_call = inductive.raw_apply(RName(step_name), explicit_ps |> list.map(((p, _)) => RName(p)))
+  let f_fn = RLam(x, xty, RLam(rec, rec_ty, lams_raw(others, RApp(step_call, RName(rec)))))
+  let fixed = inductive.raw_apply(RName("wf.fix"), [w, motive, f_fn, RName(x)] + (others |> list.map(((p, _)) => RName(p))))
+  let main = if is_thm then DTheorem(sig, lams_raw(params, fixed)) else DDef(sig, lams_raw(params, fixed))
+  var lines: List[String] = []
+  lines = lines + process(env, Located { line: line, decl: step })!
+  lines = lines + process(env, Located { line: line, decl: main })!
+  // The unfolding law, when Eq is at hand (lib/std/eq.arlk).
+  if not is_thm and map.contains(env.entries, "eq.cong") and map.contains(env.entries, "wf.fix_eq") then {
+    let call = (args: List[Raw]) => inductive.raw_apply(RName(sig.name), args)
+    let again = RLam(y, xty, RLam(rn, RApp(RApp(r_raw, RName(y)), RName(x)), lams_raw(others, call(explicit_ps |> list.map(((p, _)) => if p == x then RName(y) else RName(p))))))
+    let lhs = call(explicit_ps |> list.map(((p, _)) => RName(p)))
+    let rhs = RApp(step_call, again)
+    let g = inductive.fresh("g", taken + [y, rn, rec])
+    let cfun = RLam(g, pis_raw(others, ret), inductive.raw_apply(RName(g), others |> list.map(((p, _)) => RName(p))))
+    let proof = inductive.raw_apply(RName("eq.cong"), [cfun, inductive.raw_apply(RName("wf.fix_eq"), [w, motive, f_fn, RName(x)])])
+    let usig = Sig { name: sig.name + ".unfold", levels: sig.levels, implicits: sig.implicits, ty: pis_raw(params, inductive.raw_apply(RName("eq.Eq"), [ret, lhs, rhs])) }
+    lines = lines + process(env, Located { line: line, decl: DTheorem(usig, lams_raw(params, proof)) })!
+  } else ()
+  ok(lines)
+}
+
+local fn pis_raw(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+local fn lams_raw(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
+
+local fn mentions(r: Raw, x: String) -> Bool = list.contains(inductive_names(r), x)
+
+// Every name a raw term mentions (bound or free; for freshness).
+local fn inductive_names(r: Raw) -> List[String] = match r {
+  RName(n) => [n],
+  RApp(f, a) => inductive_names(f) + inductive_names(a),
+  RLam(n, t, b) => [n] + inductive_names(t) + inductive_names(b),
+  RPi(n, t, b) => [n] + inductive_names(t) + inductive_names(b),
+  RMatch(e, arms) => inductive_names(e) + (arms |> list.flat_map((a) => inductive_names(a.body))),
+  RBracket(b) => inductive_names(b),
+  _ => [],
+}
+
+// Each recursive call `f(a1, ..., an, proof)` becomes `rec(a_pos, proof,
+// the other arguments)`; any other mention of f is not well-founded
+// recursion.
+local fn wf_calls(r: Raw, f: String, n: Int, pos: Int, rec: String) -> Raw! = {
+  let (h, args) = inductive.raw_spine(r)
+  match h {
+    RName(g) if g == f => {
+      guard list.len(args) == n + 1 else err("a recursive call to ${f} passes its ${int.to_string(n)} arguments and then a proof that the decreasing one is smaller")
+      var out: List[Raw] = []
+      for a in args {
+        list.push(out, wf_calls(a, f, n, pos, rec)!)
+      }
+      let rest = list.enumerate(list.take(out, n)) |> list.filter(((i, _)) => i != pos) |> list.map(((_, a)) => a)
+      ok(inductive.raw_apply(RName(rec), [list.get(out, pos) ?? RType, list.get(out, n) ?? RType] + rest))
+    },
+    _ => match r {
+      RApp(a, b) => ok(RApp(wf_calls(a, f, n, pos, rec)!, wf_calls(b, f, n, pos, rec)!)),
+      RLam(x, t, b) => ok(RLam(x, wf_calls(t, f, n, pos, rec)!, if x == f then b else wf_calls(b, f, n, pos, rec)!)),
+      RPi(x, t, b) => ok(RPi(x, wf_calls(t, f, n, pos, rec)!, if x == f then b else wf_calls(b, f, n, pos, rec)!)),
+      RMatch(e, arms) => {
+        var arms2: List[syntax.Arm] = []
+        for a in arms {
+          list.push(arms2, { ...a, body: wf_calls(a.body, f, n, pos, rec)! })
+        }
+        ok(RMatch(wf_calls(e, f, n, pos, rec)!, arms2))
+      },
+      RName(g) if g == f => err("${f} is used other than in a full recursive call; well-founded recursion passes all arguments and a proof"),
+      other => ok(other),
+    },
+  }
+}
 
 // A definition's parameters, its result type and the body under them.
 local fn def_parts(sig: Sig, body: Raw) -> (List[(String, Raw)], Raw, Raw) = {
@@ -1781,7 +1936,11 @@ local fn compile_match(env: Env, sig: Sig, body: Raw) -> Raw! = {
       let compiled = patterns.compile(d, x, arms, target, (n) => target_named(env, n))!
       ok(list.fold(list.reverse(params), compiled, (acc, (p, pty)) => RLam(p, pty, acc)))
     },
-    RMatch(_, _) => err("match on a parameter of ${sig.name} (by name)"),
+    RMatch(_, _) => {
+      let d = patterns.Def { name: sig.name, implicits: sig.implicits, params: params, ret: ty }
+      let compiled = patterns.compile_on(d, b, (n) => target_named(env, n))!
+      ok(list.fold(list.reverse(params), compiled, (acc, (p, pty)) => RLam(p, pty, acc)))
+    },
     _ => ok(body),
   }
 }
@@ -1803,7 +1962,19 @@ local fn match_target(env: Env, dom: Raw) -> patterns.Target! = {
 
 // An inductive type by its name as written (or its full name), as the
 // match compiler needs it.
-local fn target_named(env: Env, name: String) -> patterns.Target? = {
+local fn target_named(env: Env, name: String) -> patterns.Target? =
+  if string.starts_with(name, "=") then {
+    // `=f`: the type a call of f returns.
+    match resolve_const(env, string.drop(name, 1)) {
+      ok(f) => match result_head(map.get(env.types, f) ?? type0()) {
+        some(t) => target_named(env, t),
+        none => none,
+      },
+      err(_) => none,
+    }
+  } else target_type(env, name)
+
+local fn target_type(env: Env, name: String) -> patterns.Target? = {
   let q = if map.contains(env.inductives, name) then name else match resolve_const(env, name) {
     ok(c) => c,
     err(_) => "",

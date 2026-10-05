@@ -1,4 +1,5 @@
 // The kernel must accept good proofs and, more importantly, reject bad ones.
+import fs
 import self.syntax
 import self.kernel
 import self.checker
@@ -1404,4 +1405,78 @@ def tsums(l: List(Tree(Nat))) -> Nat = match l {
 theorem s: Eq(Nat, tsum(Tree.node(Nat.succ(Nat.zero), List.cons(Tree.node(Nat.succ(Nat.zero), List.nil), List.nil))), Nat.succ(Nat.succ(Nat.zero))) = Eq.refl
 """
   assert_eq(run(src), none)
+}
+
+// ── Well-founded recursion ─────────────────────────────────────────
+
+// The native library (eq, logic, nat, wf) under the source.
+effect fn run_wf(src: String) -> String? = {
+  let std = ["lib/std/eq.arlk", "lib/std/logic.arlk", "lib/std/nat.arlk", "lib/std/wf.arlk"] |> list.map((f) => fs.read_text(f) ?? "")
+  match syntax.parse(list.join(std, "\n") + "\n" + src) {
+    err(e) => some("parse: " + e),
+    ok(ds) => checker.check_all(kernel.empty(), ds).error,
+  }
+}
+
+let WF_DIV = """
+room wft uses eq, logic, nat, wf
+def div(n: Nat, d: Nat) -> Nat decreasing n by lt_wf = match d {
+  zero => Nat.zero,
+  succ(k) => match le_dec(Nat.succ(k), n) {
+    yes(h) => Nat.succ(div(sub(n, Nat.succ(k)), Nat.succ(k), sub_lt(n, k, le_trans(succ_le_succ(le_zero(k)), h)))),
+    no(h) => Nat.zero,
+  },
+}
+def two: Nat = Nat.succ(Nat.succ(Nat.zero))
+def seven: Nat = add(two, add(two, Nat.succ(two)))
+"""
+
+test "well-founded recursion computes, and its unfolding law is proved" {
+  assert_eq(run_wf(WF_DIV + """
+theorem seven_div_two: Eq(Nat, div(seven, two), Nat.succ(two)) = Eq.refl
+theorem one_step(n: Nat, d: Nat) -> Eq(Nat, div(n, d), div.step(n, d, (m: Nat, r: Lt(m, n), e: Nat) => div(m, e))) = div.unfold(n, d)
+""")!, none)
+}
+
+test "a wrong result of well-founded recursion is rejected" {
+  assert(match run_wf(WF_DIV + "theorem wrong: Eq(Nat, div(seven, two), two) = Eq.refl\n")! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}
+
+test "a recursive call must prove that it decreases" {
+  let missing = "room wft uses eq, logic, nat, wf\ndef f(n: Nat) -> Nat decreasing n by lt_wf = f(n)\n"
+  assert(match run_wf(missing)! {
+    some(e) => string.contains(e, "a proof that the decreasing one is smaller"),
+    none => false,
+  })
+  let bogus = "room wft uses eq, logic, nat, wf\ndef f(n: Nat) -> Nat decreasing n by lt_wf = f(n, Le.refl)\n"
+  assert(match run_wf(bogus)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+  let not_wf = "room wft uses eq, logic, nat, wf\ndef f(n: Nat) -> Nat decreasing n by Nat.zero = Nat.zero\n"
+  assert(match run_wf(not_wf)! {
+    some(e) => string.contains(e, "WellFounded"),
+    none => false,
+  })
+}
+
+test "a match on a call splits its value, and inner splits refine later parameters" {
+  assert_eq(run_wf("""
+room wft uses eq, logic, nat, wf
+def is_le(m: Nat, n: Nat) -> Nat = match le_dec(m, n) {
+  yes(h) => Nat.succ(Nat.zero),
+  no(h) => Nat.zero,
+}
+theorem zero_le: Eq(Nat, is_le(Nat.zero, Nat.succ(Nat.zero)), Nat.succ(Nat.zero)) = Eq.refl
+def pick(m: Nat, h: Lt(Nat.zero, m)) -> Nat = match m {
+  zero => absurd(Nat, not_lt_zero(Nat.zero, h)),
+  succ(k) => match k {
+    zero => Nat.zero,
+    succ(j) => j,
+  },
+}
+""")!, none)
 }

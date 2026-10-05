@@ -412,13 +412,22 @@ local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x0: Term, y0: Term) -
             y = uy
           },
         none => {
+          // Two proofs of one proposition are equal (the kernel's proof
+          // irrelevance), once neither has holes left.
           answer = attempt_eta(env, st, ctx, x, y) or attempt_eta(env, st, ctx, y, x)
+            or (not has_meta(x) and not has_meta(y) and proofs_agree(env, st, ctx, x, y))
           going = false
         },
       },
     }
   }
   answer
+}
+
+// The context's types may still name solved holes: the kernel sees them filled.
+local fn proofs_agree(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool = {
+  let zctx = ctx |> list.map(((n, ty)) => (n, zonk(st, ty)))
+  not list.any(zctx, ((_, ty)) => has_meta(ty)) and kernel.irrelevant_eq(env, zctx, x, y, st.bu)
 }
 
 // What the shapes decide without unfolding: some(answer), or none when

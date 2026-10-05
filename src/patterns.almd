@@ -66,6 +66,9 @@ type Comp = {
   kind: Int,
   siblings: List[(String, Int)],
   fkinds: List[Int],
+  // The parameters after the matched one, with their types as refined so
+  // far: an inner split generalises them too, so their types follow it.
+  others: List[(String, Raw)],
 }
 
 local fn raw_apply(h: Raw, args: List[Raw]) -> Raw = list.fold(args, h, (acc, a) => RApp(acc, a))
@@ -175,7 +178,7 @@ fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) 
   let motive = lams(index_params, RLam(scrut, hole(), pis(others, d.ret)))
   // Each arm is a row with one column, the matched parameter.
   let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
-  let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [], kind: kind, siblings: siblings, fkinds: [] }
+  let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [], kind: kind, siblings: siblings, fkinds: [], others: [] }
   var minors: List[Raw] = []
   for ci in t.ctors {
     let taken = pnames + other_names + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s)))))
@@ -187,7 +190,9 @@ fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) 
     }
     let rows2 = specialise(rows, 0, ci, fields, scrut, t)!
     guard not list.is_empty(rows2) else err("the match on ${scrut} has no arm for ${ci.name}")
-    let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads), fkinds: ci.kinds }
+    let built = raw_apply(RName(ci.name), fields |> list.map((f) => RName(f)))
+    let others2 = others |> list.map(((x, ty)) => (x, if t.indices == 0 then replace(ty, scrut, built) else ty))
+    let cx2 = { ...cx, vars: fields, ihs: ihs, heads: list.zip(fields, ci.heads), fkinds: ci.kinds, others: others2 }
     // The arm's type is the definition's at this constructor; an inner
     // match takes its motive from it (#19). For an indexed family the
     // constructor's indices are not written here, so its type stays as
@@ -343,6 +348,7 @@ local fn split_on(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], co
   }!
   guard t.indices == 0 else err("an inner match on ${v}, of an indexed family, is not supported yet")
   let taken = cols + names_in(ret) + (rows |> list.flat_map(((subs, b)) => names_in(b) + (subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars + (cx.ihs |> list.map(((_, n)) => n))
+  let gen = cx.others |> list.filter(((x, ty)) => x != v and list.contains(names_in(ty), v))
   var minors: List[Raw] = []
   for ci in t.ctors {
     let fields = field_names(rows, col, ci, taken)
@@ -355,12 +361,17 @@ local fn split_on(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], co
       list.push(unused, fresh("_ih", taken + fields + unused))
     }
     let cols2 = list.take(cols, col) + fields + list.drop(cols, col + 1)
-    let cx2 = { ...cx, heads: cx.heads + list.zip(fields, ci.heads) }
-    let ret2 = replace(ret, v, raw_apply(RName(ci.name), fields |> list.map((f) => RName(f))))
+    let built = raw_apply(RName(ci.name), fields |> list.map((f) => RName(f)))
+    let others2 = cx.others |> list.map(((x, ty)) => (x, if list.any(gen, ((g, _)) => g == x) then replace(ty, v, built) else ty))
+    let cx2 = { ...cx, heads: cx.heads + list.zip(fields, ci.heads), others: others2 }
+    let ret2 = replace(ret, v, built)
     let body = matrix(cx2, cols2, rows2, look, ret2)!
-    list.push(minors, lams(fields + unused, body))
+    list.push(minors, lams(fields + unused + (gen |> list.map(((x, _)) => x)), body))
   }
-  ok(raw_apply(RName(t.rec), [RLam(v, hole(), ret)] + minors + [RName(v)]))
+  // The parameters after the matched one whose types mention v are
+  // generalised (and passed back in), so the split refines their types.
+  let call = raw_apply(RName(t.rec), [RLam(v, hole(), pis(gen, ret))] + minors + [RName(v)])
+  ok(raw_apply(call, gen |> list.map(((x, _)) => RName(x))))
 }
 
 // An arm's body: itself a match on a variable in scope, or a term whose
@@ -370,8 +381,31 @@ local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> R
     let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
     matrix(cx, [v], rows, look, ret)
   },
+  // `match f(a) { ... }`: on a value computed here, named by a fresh
+  // variable. Its type is found from the head function's result type
+  // (`look("=f")`); the split cannot refine the result type by it.
+  RMatch(e, arms) => {
+    let (h, _) = raw_spine(e)
+    let fname = match h {
+      RName(n) => n,
+      RInst(n, _) => n,
+      RExplicit(n, _) => n,
+      _ => "",
+    }
+    guard fname != "" else err("match on an expression: write a call (`match f(x) { ... }`) or a variable")
+    let taken = names_in(e) + names_in(ret) + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars
+    let v = fresh("value", taken)
+    let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
+    let cx2 = { ...cx, heads: cx.heads + [(v, "=" + fname)] }
+    let inner = matrix(cx2, [v], rows, look, ret)!
+    ok(RApp(RLam(v, hole(), inner), recursive_calls(cx, e)!))
+  },
   _ => recursive_calls(cx, body),
 }
+
+// A definition whose body is a match on an expression (no recursion).
+fn compile_on(d: Def, body: Raw, look: (String) -> Target?) -> Raw! =
+  arm_body(Comp { d: d, k: -1, index_params: [], vars: [], ihs: [], heads: [], kind: 0, siblings: [], fkinds: [], others: [] }, body, look, d.ret)
 
 // Replace each recursive call `d(..., v, others...)`, where v is a
 // recursive argument the arm bound, by its induction hypothesis applied to

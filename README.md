@@ -261,6 +261,29 @@ not a proposition, and it can be nested only in types without indices, at argume
 only on its parameters. Unlike mutual types this is new theory, so it is part of the trusted base
 ([docs/TRUST.md](docs/TRUST.md)). See [examples/nested.arlk](examples/nested.arlk).
 
+**Well-founded recursion.** A function may recurse on a value that is smaller by a well-founded
+relation rather than structurally (Lean's `termination_by`):
+
+```
+def div(n: Nat, d: Nat) -> Nat decreasing n by lt_wf = match d {
+  zero => Nat.zero,
+  succ(k) => match le_dec(Nat.succ(k), n) {
+    yes(h) => Nat.succ(div(sub(n, Nat.succ(k)), Nat.succ(k), sub_lt(n, k, ...))),
+    no(h) => Nat.zero,
+  },
+}
+```
+
+`decreasing n by W` names the parameter and a proof W that its relation is well-founded
+(`lt_wf` for `<`, `measure_wf(f)` for any measure into Nat); each recursive call passes, last, a
+proof that its n is smaller, and a call without one is rejected. The definition becomes `fix` from
+[lib/std/wf.arlk](lib/std/wf.arlk), defined from the recursor of `Acc` (nothing assumed), and its
+unfolding law `div.unfold` is proved for it. The accessibility proofs build `Acc.intro` without
+looking at the proofs of `<` they are given, so closed calls compute in the kernel: `div(7, 2) = 3`
+and `gcd(12, 8) = 4` are checked by `Eq.refl`, and so is a merge sort on a list. Theorems can be
+`decreasing` too (well-founded induction). A `match` may split the value of a call (`match
+le_dec(m, n) { ... }`). See [examples/std/wf.arlk](examples/std/wf.arlk).
+
 Next on this road: unification of indices and course-of-values recursion in `match`, nested types,
 and reading Lean and Rocq libraries directly into these native features instead of through the
 `core` encoding.
@@ -576,8 +599,9 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 ## The native standard library
 
 [lib/std](lib/std) holds equality (`refl`, `symm`, `trans`, `cong`, `subst`), propositions and
-evidence types, naturals with addition's laws, and lists (the List of Almide's model, with length
-and append's laws), all proved from inductive types alone: no symbol, rule or axiom. A native client
+evidence types, naturals with addition's laws, lists (the List of Almide's model, with length
+and append's laws), and well-founded recursion (`Acc`, `WellFounded`, `fix` and its unfolding law,
+`<` on Nat, measures), all proved from inductive types alone: no symbol, rule or axiom. A native client
 loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](docs/STDLIB.md).
 
 ```

@@ -80,6 +80,12 @@ functions becomes, are ordinary definitions, checked by part 1. A wrong encoding
 it cannot make a false theorem true. Functions over a nested type (`add_nested_defs`) are compiled to
 applications of its recursors, likewise checked by part 1.
 
+Well-founded recursion (`decreasing x by W`, `checker.add_wf_def`) adds nothing: a definition
+becomes a `step` definition and an application of `fix`, which [lib/std/wf.arlk](../lib/std/wf.arlk)
+defines from the recursor of `Acc`; both, and the unfolding law, are checked by part 1. The
+elaborator also accepts two proofs of one proposition as equal (`elab.proofs_agree`, asking the
+kernel's `irrelevant_eq`), which only helps it find terms the kernel then checks.
+
 ## 4a. Proof search — not trusted
 
 `search` ([src/search.almd](../src/search.almd)) only proposes a term; the declaration is then

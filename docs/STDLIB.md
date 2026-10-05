@@ -18,6 +18,7 @@ Files are loaded in order, each after what it uses. Load only what a client need
 | `nat` | `lib/std/nat.arlk` | `eq` |
 | `almide` | `lib/almide.arlk` | — |
 | `list` | `lib/std/list.arlk` | `eq`, `nat`, `almide` |
+| `wf` | `lib/std/wf.arlk` | `eq`, `logic`, `nat` |
 
 ```
 arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
@@ -72,6 +73,24 @@ program and a native proof use the same `List`, and the subset's semantics
 | `length_snoc(xs, x)` | `length(append(xs, [x])) = succ(length(xs))` |
 | `length_map(f, xs)` | `length(map(f, xs)) = length(xs)` |
 
+**logic** also has `Dec(P)` (`yes(h)`, `no(h)`: a decision, as data) and `cases_dec(c, yes, no)`,
+a branch on it that stays visible after unfolding, so proofs can take it apart.
+
+**wf**: `Acc[u](A, R): (x: A) -> Sort(0)` (`intro(x, h)`), `WellFounded(A, R)`, `fix(W, C, F, x)`
+(recursion along `Acc`'s recursor), `Le(n): (m: Nat) -> Sort(0)` (`refl`, `step`), `Lt(m, n)`,
+`InvLt(f)` (`f(a) < f(b)`), `sub`, `le_dec`. `decreasing x by W` (see the README) compiles to `fix`.
+Everything a computation passes through is a def, so closed calls compute.
+
+| Name | Statement |
+|---|---|
+| `fix_eq(W, C, F, x)` | `fix(W, C, F, x) = F(x, (y, r) => fix(W, C, F, y))` |
+| `lt_wf` | `WellFounded(Nat, Lt)` |
+| `measure_wf(f)` | `WellFounded(A, InvLt(f))` |
+| `le_trans(h, k)`, `succ_le_succ(h)`, `le_of_succ_le_succ(h)`, `le_zero(n)` | the order laws |
+| `not_lt_zero(m, h)` | `Lt(m, zero) -> False` |
+| `sub_lt(m, k, h)` | `Lt(zero, m) -> Lt(sub(m, succ(k)), m)` |
+| `le_or_gt(m, n)`, `lt_of_not_le(m, n, h)` | `Or(Le(m, n), Lt(n, m))`; `Not(Le(m, n)) -> Lt(n, m)` |
+
 ## Clients
 
 - [examples/std/reverse.arlk](../examples/std/reverse.arlk): two reverses (by `append`, and with an
@@ -83,13 +102,17 @@ program and a native proof use the same `List`, and the subset's semantics
   Almide program ([examples/almide](../examples/almide)) is the native `rev` on every list, so the
   native length proof is a proof about the program, and the library's lemmas apply to the model
   with no conversion.
+- [examples/std/wf.arlk](../examples/std/wf.arlk): well-founded recursion. Division, remainder
+  (with `mod_lt` proved by well-founded induction), Euclid's gcd, and a merge sort on the length,
+  each computed by the kernel on closed inputs (`div(7, 2) = 3`, `gcd(12, 8) = 4`, a sorted list).
 
 [tools/std-check.sh](../tools/std-check.sh), run by CI, checks the library and the clients, confirms
 that no symbol or rule is involved, and checks that semantic mutations are rejected for the right
 reason: a reverse that drops elements, a false length law, a corrupted proof step, an accumulator
 that drops elements, a sort that puts the larger element first (rejected in the order proof), a sort
 that drops insertions with the order proof taken out (rejected in exactly the multiplicity proof),
-and a false `add_zero` in the library. It also prints lexical token counts (client and library
+a false `add_zero` in the library, and for well-founded recursion a wrong quotient, a recursive call
+without its proof of decrease, and a call on a list that is not shorter. It also prints lexical token counts (client and library
 apart, by [tools/tokens.py](../tools/tokens.py)) and fresh-process check times, which are advisory.
 
 ## Measured

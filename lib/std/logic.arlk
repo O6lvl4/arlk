@@ -58,3 +58,17 @@ type Sum[u, v](A: Type(u), B: Type(v)): Type(max(u, v)) =
 
 def elim_empty[u](A: Sort(u), h: Empty) -> A = Empty.rec((x: Empty) => A, h)
 
+
+// A decision: a proof of a proposition or of its negation, as data a
+// program can branch on (`match le_dec(m, n) { yes(h) => ..., no(h) => ... }`).
+type Dec(P: Sort(0)): Type =
+  | yes(h: P)
+  | no(h: P -> False)
+
+// Branching on a decision, with the evidence in each branch. Unlike a
+// `match` on the decision, a call of `cases_dec` stays visible after
+// unfolding, so `cases_yes`/`cases_no` can take it apart in proofs.
+def cases_dec[u, P: Sort(0), C: Sort(u)](c: Dec(P), yes: P -> C, no: (P -> False) -> C) -> C = match c {
+  yes(h) => yes(h),
+  no(h) => no(h),
+}

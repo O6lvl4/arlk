@@ -217,6 +217,14 @@ local fn is_sym(ts: List[Token], p: Int, s: String) -> Bool = {
   t.kind == "sym" and t.text == s
 }
 
+// The head a `decreasing` clause wraps a body in; no written name can be it.
+let WF_MARK = "%decreasing"
+
+local fn is_word(ts: List[Token], p: Int, k: String) -> Bool = {
+  let t = tok(ts, p)
+  t.kind != "kw" and t.text == k
+}
+
 local fn is_kw(ts: List[Token], p: Int, k: String) -> Bool = {
   let t = tok(ts, p)
   t.kind == "kw" and t.text == k
@@ -675,13 +683,26 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       ok((DSymbol(sg.sig), p1))
     },
     "def" | "theorem" => {
-      let (sg, p1) = signature(ts, p + 1)!
+      let (sg, p0) = signature(ts, p + 1)!
+      // `decreasing x by W`: well-founded recursion on the parameter x,
+      // W proving its type's relation well-founded (checker.add_wf_def).
+      // The words are not reserved; the clause marks the body.
+      let (dec, p1) = (if is_word(ts, p0, "decreasing") then {
+        let (x, q1) = ident(ts, p0 + 1)!
+        guard is_word(ts, q1, "by") else err(fail_at(ts, q1, "decreasing ${x} by W: expected `by`"))
+        let (w, q2) = term(ts, q1 + 1)!
+        ok((some((x, w)), q2))
+      } else ok((none, p0)))!
       let p2 = expect(ts, p1, "=")!
       guard not is_kw(ts, p2, "search") else {
         let (names, depth, p3) = search_spec(ts, p2 + 1)!
         ok((DSearch(sg.sig, t.text, names, depth), p3))
       }
-      let (body, p3) = term(ts, p2)!
+      let (body0, p3) = term(ts, p2)!
+      let body = match dec {
+        some((x, w)) => RApp(RApp(RApp(RName(WF_MARK), RName(x)), w), body0),
+        none => body0,
+      }
       let value = wrap_lams(sg.params, body)
       if t.text == "def" then ok((DDef(sg.sig, value), p3)) else ok((DTheorem(sg.sig, value), p3))
     },

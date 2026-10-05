@@ -1,0 +1,152 @@
+// Well-founded recursion, natively: accessibility, well-founded relations,
+// the fixpoint and its unfolding law, and `<` on Nat.
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk YOUR.arlk
+//
+// A definition `def f(x: A, ...) -> B decreasing x by W = ...` recurses on
+// x through a relation R that W proves well-founded: each recursive call
+// passes, as its last argument, a proof that its x is R-smaller. It
+// becomes `fix(W, ...)`, defined below by the recursor of Acc; nothing is
+// assumed. The unfolding law `fix_eq` holds by proof irrelevance (two
+// proofs of `Acc(A, R, y)` are equal), as in Lean.
+//
+// Everything a computation passes through is a def, not a theorem, so a
+// closed call computes in the kernel (`div(7, 2)` reduces to 3): the
+// accessibility proof for Nat builds `Acc.intro` without looking at the
+// proofs of `<` it is given.
+
+room wf uses eq, logic, nat
+
+type Acc[u](A: Sort(u), R: A -> A -> Sort(0)): (x: A) -> Sort(0) =
+  | intro(x: A, h: (y: A, r: R(y, x)) -> Acc(A, R, y)): Acc(A, R, x)
+
+def WellFounded[u](A: Sort(u), R: A -> A -> Sort(0)) -> Sort(0) = (x: A) -> Acc(A, R, x)
+
+// Recursion along an accessibility proof.
+def fix_acc[u, v, A: Sort(u), R: A -> A -> Sort(0)](C: A -> Sort(v), F: (x: A, rec: (y: A, r: R(y, x)) -> C(y)) -> C(x), x: A, a: Acc(A, R, x)) -> C(x) =
+  Acc.rec((x': A, t: Acc(A, R, x')) => C(x'),
+    (x': A, h: (y: A, r: R(y, x')) -> Acc(A, R, y), ih: (y: A, r: R(y, x')) -> C(y)) => F(x', ih), x, a)
+
+def fix[u, v, A: Sort(u), R: A -> A -> Sort(0)](W: WellFounded(A, R), C: A -> Sort(v), F: (x: A, rec: (y: A, r: R(y, x)) -> C(y)) -> C(x), x: A) -> C(x) =
+  fix_acc(C, F, x, W(x))
+
+// The unfolding law: one step of the recursion.
+theorem fix_eq[u, v, A: Sort(u), R: A -> A -> Sort(0)](W: WellFounded(A, R), C: A -> Sort(v), F: (x: A, rec: (y: A, r: R(y, x)) -> C(y)) -> C(x), x: A) -> Eq(C(x), fix(W, C, F, x), F(x, (y: A, r: R(y, x)) => fix(W, C, F, y))) =
+  Acc.rec((x': A, t: Acc(A, R, x')) => Eq(C(x'), fix_acc(C, F, x', t), F(x', (y: A, r: R(y, x')) => fix(W, C, F, y))),
+    (x': A, h: (y: A, r: R(y, x')) -> Acc(A, R, y), ih: (y: A, r: R(y, x')) -> Eq(C(y), fix_acc(C, F, y, h(y, r)), F(y, (z: A, s: R(z, y)) => fix(W, C, F, z)))) => Eq.refl,
+    x, W(x))
+
+// ≤ and < on Nat.
+type Le(n: Nat): (m: Nat) -> Sort(0) =
+  | refl: Le(n, n)
+  | step(m: Nat, h: Le(n, m)): Le(n, Nat.succ(m))
+
+def Lt(m: Nat, n: Nat) -> Sort(0) = Le(Nat.succ(m), n)
+
+def le_trans[a: Nat, b: Nat, c: Nat](h: Le(a, b), k: Le(b, c)) -> Le(a, c) =
+  Le.rec((c': Nat, e: Le(b, c')) => Le(a, c'), h, (m: Nat, e: Le(b, m), ih: Le(a, m)) => Le.step(m, ih), c, k)
+
+def le_succ_self(n: Nat) -> Le(n, Nat.succ(n)) = Le.step(n, Le.refl)
+
+def pred_le(n: Nat) -> Le(pred(n), n) = match n {
+  zero => Le.refl,
+  succ(k) => le_succ_self(k),
+}
+
+def le_pred_mono[a: Nat, b: Nat](h: Le(a, b)) -> Le(pred(a), pred(b)) =
+  Le.rec((b': Nat, e: Le(a, b')) => Le(pred(a), pred(b')), Le.refl,
+    (m: Nat, e: Le(a, m), ih: Le(pred(a), pred(m))) => le_trans(ih, pred_le(m)), b, h)
+
+def le_of_succ_le_succ[a: Nat, b: Nat](h: Le(Nat.succ(a), Nat.succ(b))) -> Le(a, b) = le_pred_mono(h)
+
+def IsSucc(n: Nat) -> Sort(0) = match n {
+  zero => False,
+  succ(k) => True,
+}
+
+theorem not_lt_zero(m: Nat, h: Lt(m, Nat.zero)) -> False =
+  Le.rec((k: Nat, e: Le(Nat.succ(m), k)) => IsSucc(k), True.intro, (k: Nat, e: Le(Nat.succ(m), k), ih: IsSucc(k)) => True.intro, Nat.zero, h)
+
+def le_zero(n: Nat) -> Le(Nat.zero, n) = match n {
+  zero => Le.refl,
+  succ(k) => Le.step(k, le_zero(k)),
+}
+
+def succ_le_succ[a: Nat, b: Nat](h: Le(a, b)) -> Le(Nat.succ(a), Nat.succ(b)) =
+  Le.rec((b': Nat, e: Le(a, b')) => Le(Nat.succ(a), Nat.succ(b')), Le.refl,
+    (m: Nat, e: Le(a, m), ih: Le(Nat.succ(a), Nat.succ(m))) => Le.step(Nat.succ(m), ih), b, h)
+
+// Everything below n is accessible. The result is `Acc.intro` at once,
+// whatever the proof h is, so recursion through it computes.
+def acc_below(n: Nat, m: Nat, h: Lt(m, n)) -> Acc(Nat, Lt, m) = match n {
+  zero => absurd(Acc(Nat, Lt, m), not_lt_zero(m, h)),
+  succ(k) => Acc.intro(m, (j: Nat, r: Lt(j, m)) => acc_below(k, j, le_trans(r, le_of_succ_le_succ(h)))),
+}
+
+def lt_wf: WellFounded(Nat, Lt) = (n: Nat) => Acc.intro(n, (m: Nat, h: Lt(m, n)) => acc_below(n, m, h))
+
+// A measure: x is smaller than y when f(x) < f(y). Built like lt_wf, so it
+// computes too.
+def InvLt[u, A: Sort(u)](f: A -> Nat, a: A, b: A) -> Sort(0) = Lt(f(a), f(b))
+
+def measure_acc[u, A: Sort(u)](f: A -> Nat, n: Nat, x: A, h: Lt(f(x), n)) -> Acc(A, InvLt(f), x) = match n {
+  zero => absurd(Acc(A, InvLt(f), x), not_lt_zero(f(x), h)),
+  succ(k) => Acc.intro(x, (y: A, r: InvLt(f, y, x)) => measure_acc(f, k, y, le_trans(r, le_of_succ_le_succ(h)))),
+}
+
+def measure_wf[u, A: Sort(u)](f: A -> Nat) -> WellFounded(A, InvLt(f)) =
+  (x: A) => Acc.intro(x, (y: A, r: InvLt(f, y, x)) => measure_acc(f, f(x), y, r))
+
+// Subtraction, and the fact that recursion on it needs.
+def sub(m: Nat, n: Nat) -> Nat = match n {
+  zero => m,
+  succ(k) => pred(sub(m, k)),
+}
+
+def sub_le(m: Nat, n: Nat) -> Le(sub(m, n), m) = match n {
+  zero => Le.refl,
+  succ(k) => le_trans(pred_le(sub(m, k)), sub_le(m, k)),
+}
+
+def sub_le_pred(j: Nat, k: Nat) -> Le(pred(sub(Nat.succ(j), k)), j) = le_pred_mono(sub_le(Nat.succ(j), k))
+
+// m - (k + 1) < m when 0 < m.
+def sub_lt(m: Nat, k: Nat, h: Lt(Nat.zero, m)) -> Lt(sub(m, Nat.succ(k)), m) = match m {
+  zero => absurd(Lt(sub(Nat.zero, Nat.succ(k)), Nat.zero), not_lt_zero(Nat.zero, h)),
+  succ(j) => succ_le_succ(sub_le_pred(j, k)),
+}
+
+// Deciding ≤.
+def le_dec_step(a: Nat, b: Nat, d: Dec(Le(a, b))) -> Dec(Le(Nat.succ(a), Nat.succ(b))) = match d {
+  yes(h) => Dec.yes(succ_le_succ(h)),
+  no(h) => Dec.no((k: Le(Nat.succ(a), Nat.succ(b))) => h(le_of_succ_le_succ(k))),
+}
+
+def le_dec(m: Nat, n: Nat) -> Dec(Le(m, n)) = match m {
+  zero => Dec.yes(le_zero(n)),
+  succ(a) => match n {
+    zero => Dec.no((h: Le(Nat.succ(a), Nat.zero)) => not_lt_zero(a, h)),
+    succ(b) => le_dec_step(a, b, le_dec(a, b)),
+  },
+}
+
+// Comparing: m ≤ n or n < m.
+theorem lt_split(m: Nat, k: Nat, h: Le(Nat.succ(k), m)) -> Or(Le(m, Nat.succ(k)), Lt(Nat.succ(k), m)) =
+  Le.rec((m': Nat, e: Le(Nat.succ(k), m')) => Or(Le(m', Nat.succ(k)), Lt(Nat.succ(k), m')), Or.inl(Le.refl),
+    (j: Nat, e: Le(Nat.succ(k), j), ih: Or(Le(j, Nat.succ(k)), Lt(Nat.succ(k), j))) => Or.inr(succ_le_succ(e)), m, h)
+
+theorem le_or_gt_step(m: Nat, k: Nat, o: Or(Le(m, k), Lt(k, m))) -> Or(Le(m, Nat.succ(k)), Lt(Nat.succ(k), m)) = match o {
+  inl(h) => Or.inl(Le.step(k, h)),
+  inr(h) => lt_split(m, k, h),
+}
+
+theorem le_or_gt(m: Nat, n: Nat) -> Or(Le(m, n), Lt(n, m)) = match n {
+  zero => match m {
+    zero => Or.inl(Le.refl),
+    succ(j) => Or.inr(succ_le_succ(le_zero(j))),
+  },
+  succ(k) => le_or_gt_step(m, k, le_or_gt(m, k)),
+}
+
+theorem lt_of_not_le(m: Nat, n: Nat, h: Le(m, n) -> False) -> Lt(n, m) =
+  Or.rec((o: Or(Le(m, n), Lt(n, m))) => Lt(n, m), (a: Le(m, n)) => absurd(Lt(n, m), h(a)), (b: Lt(n, m)) => b, le_or_gt(m, n))
