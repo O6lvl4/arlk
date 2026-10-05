@@ -24,7 +24,10 @@ type Syn = { name: String, toks: List[String], slots: Map[String, String], order
 // (`params`: the binder of a floating one, "" for an essential one), its
 // typecode, the distinct pairs it demands (positions in `params`), and for
 // a syntax theorem, what it abbreviates.
-type Assertion = { name: String, tc: String, params: List[String], dv: List[(Int, Int)], body: MExpr? }
+// `concl`: a provable assertion's conclusion over its parameters, so that
+// each proof step knows what it proves (compressed proofs name the steps
+// they reuse, and a name needs its statement).
+type Assertion = { name: String, tc: String, params: List[String], dv: List[(Int, Int)], body: MExpr?, concl: MExpr? }
 
 // A syntax axiom, as distinct-variable obligations need it.
 type Ctor = { name: String, tc: String, slots: List[(String, String)] }
@@ -247,17 +250,21 @@ type MExpr =
   | MVar(String, String)
   | MNode(String, String, List[MExpr])
   | MProof(String)
+  // a proof whose statement (the expression after |-) is known
+  | MStep(String, MExpr)
 
 local fn render(e: MExpr) -> String = match e {
   MVar(x, _) => x,
   MNode(k, _, args) => call(k, args |> list.map((a) => render(a))),
   MProof(p) => p,
+  MStep(p, _) => p,
 }
 
 local fn tc_of(e: MExpr) -> String = match e {
   MVar(_, t) => t,
   MNode(_, t, _) => t,
   MProof(_) => PROVABLE,
+  MStep(_, _) => PROVABLE,
 }
 
 local fn subst(e: MExpr, params: List[String], args: List[MExpr]) -> MExpr = match e {
@@ -267,6 +274,7 @@ local fn subst(e: MExpr, params: List[String], args: List[MExpr]) -> MExpr = mat
   },
   MNode(k, t, xs) => MNode(k, t, xs |> list.map((x) => subst(x, params, args))),
   MProof(_) => e,
+  MStep(_, _) => e,
 }
 
 // (Not `Ctx`: kernel.almd has one, almide/almide#3401.)
@@ -307,8 +315,10 @@ local fn apart(c: Proving, a: MExpr, b: MExpr) -> String! = match b {
       },
     },
     MProof(_) => err("${c.label}: a proof where an expression was expected"),
+    MStep(_, _) => err("${c.label}: a proof where an expression was expected"),
   },
   MProof(_) => err("${c.label}: a proof where an expression was expected"),
+  MStep(_, _) => err("${c.label}: a proof where an expression was expected"),
 }
 
 local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
@@ -334,7 +344,11 @@ local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
           for (i, j) in a.dv {
             list.push(obligations, apart(c, list.get(args, i) ?? MProof(""), list.get(args, j) ?? MProof(""))!)
           }
-          ok(rest + [MProof(call(a.name, (args |> list.map((x) => render(x))) + obligations))])
+          let text = call(a.name, (args |> list.map((x) => render(x))) + obligations)
+          match a.concl {
+            some(t) => ok(rest + [MStep(text, subst(t, a.params, args))]),
+            none => ok(rest + [MProof(text)]),
+          }
         }
       },
       none => err("${c.label}: unknown label ${label} in a proof"),
@@ -345,8 +359,13 @@ local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
 local fn proof_labels(proof: List[String]) -> List[String] =
   if at(proof, 0) == "(" then copy(proof, 1, find(proof, 1, ")")) else proof
 
-fn proof_term(c: Proving, proof: List[String]) -> MExpr! = {
+// The proof, and the steps a compressed proof reuses, named: (name,
+// statement, proof), in order (each may use the earlier ones). Naming them
+// keeps the proof a graph, as Metamath has it, instead of a tree that
+// copies each reused step at every use.
+fn proof_term(c: Proving, proof: List[String]) -> (MExpr, List[(String, String, String)])! = {
   var stack: List[MExpr] = []
+  var named: List[(String, String, String)] = []
   if at(proof, 0) == "(" then {
     let close = find(proof, 1, ")")
     let labels = copy(proof, 1, close)
@@ -372,7 +391,19 @@ fn proof_term(c: Proving, proof: List[String]) -> MExpr! = {
       } else if cp >= 85 and cp <= 89 then {
         acc = acc * 5 + (cp - 84)
       } else if ch == "Z" then {
-        list.push(saved, list.last(stack) ?? MProof(""))
+        // Fetched, then matched: almide/almide#3421.
+        let top = list.last(stack) ?? MProof("")
+        let kept = match top {
+          MStep(p, st) => if string.len(p) > 80 then {
+            let nm = "z'" + int.to_string(list.len(named) + 1)
+            list.push(named, (nm, "Prf(" + render(st) + ")", p))
+            let e = MStep(nm, st)
+            stack = list.take(stack, list.len(stack) - 1) + [e]
+            e
+          } else top,
+          _ => top,
+        }
+        list.push(saved, kept)
       } else {
         guard false else err("${c.label}: incomplete proof (`${ch}`)")
       }
@@ -384,9 +415,47 @@ fn proof_term(c: Proving, proof: List[String]) -> MExpr! = {
     }
   }
   match stack {
-    [t] => ok(t),
+    [t] => ok((t, named)),
     _ => err("${c.label}: the proof leaves ${int.to_string(list.len(stack))} terms on the stack"),
   }
+}
+
+// A proof with its named steps, as an Almide-style block.
+local fn with_steps(p: String, named: List[(String, String, String)]) -> String =
+  if list.is_empty(named) then p
+  else "{\n" + list.join(named |> list.map(((n, st, q)) => "    let " + n + ": " + st + " = " + q), "\n") + "\n    " + p + "\n  }"
+
+// A conclusion's parse (call syntax: `wi(ph, wn(ps))`) read back as a
+// tree over the assertion's parameters.
+fn read_call(text: String, params: List[String]) -> MExpr = {
+  let cs = string.chars(text)
+  let (e, _) = read_at(cs, 0, params)
+  e
+}
+
+local fn read_at(cs: List[String], i: Int, params: List[String]) -> (MExpr, Int) = {
+  var j = i
+  while j < list.len(cs) and not list.contains(["(", ")", ","], at(cs, j)) {
+    j = j + 1
+  }
+  let name = string.trim(list.join(list.take(list.drop(cs, i), j - i), ""))
+  if at(cs, j) == "(" then {
+    var args: List[MExpr] = []
+    var k = j + 1
+    var going = true
+    while going {
+      let (a, k1) = read_at(cs, k, params)
+      list.push(args, a)
+      if at(cs, k1) == "," then {
+        k = k1 + 1
+      } else {
+        k = k1 + 1
+        going = false
+      }
+    }
+    (MNode(name, "", args), k)
+  } else if list.contains(params, name) then (MVar(name, ""), j)
+  else (MNode(name, "", []), j)
 }
 
 // ── Statements ──────────────────────────────────────────────────────
@@ -657,11 +726,11 @@ fn absorb_mm(src: String, upto: String) -> String! = {
             } else ()
           }
           let ctx = Proving { label: label, hyps: hyps, asserts: asserts, mandatory: mandatory, dummies: dummies, facts: facts }
-          let proof = proof_term(ctx, proof_toks)!
+          let (proof, named) = proof_term(ctx, proof_toks)!
           if tc == PROVABLE then {
             let closes = list.join(list.repeat(")", list.len(opens)), "")
             let opened = list.join(opens |> list.map((o) => o + "\n    "), "")
-            list.push(out, "theorem ${sig} =\n  ${opened}${render(proof)}${closes}")
+            list.push(out, "theorem ${sig} =\n  ${opened}${with_steps(render(proof), named)}${closes}")
             count = count + 1
             last_theorem = name
           } else {
@@ -669,7 +738,9 @@ fn absorb_mm(src: String, upto: String) -> String! = {
             abbreviates = some(proof)
           }
         }
-        map.insert(asserts, label, Assertion { name: name, tc: tc, params: pnames, dv: dv, body: abbreviates })
+        // The conclusion's tree: `result` is `Prf(<tree>)`.
+        let concl = if tc == PROVABLE then some(read_call(string.drop(string.drop_end(result, 1), 4), pnames)) else none
+        map.insert(asserts, label, Assertion { name: name, tc: tc, params: pnames, dv: dv, body: abbreviates, concl: concl })
         if label == upto then {
           i = n
         } else ()
