@@ -576,10 +576,12 @@ local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
   _ => false,
 }
 
-local fn surface_type(env: Env, lv: List[String], r: Raw) -> Term! =
+// `mut env` here and below only to borrow the environment: passed by value,
+// it is copied on every declaration (the checker became quadratic).
+local fn surface_type(mut env: Env, lv: List[String], r: Raw) -> Term! =
   if needs_elab(env, r) then elab.elab_type(env, lv, r) else resolve(env, lv, [], r)
 
-local fn surface_term(env: Env, lv: List[String], r: Raw, ty: Term) -> Term! =
+local fn surface_term(mut env: Env, lv: List[String], r: Raw, ty: Term) -> Term! =
   if needs_elab(env, r) then elab.elab_term(env, lv, r, ty) else resolve(env, lv, [], r)
 
 // A body that is `match x { ... }` (under the parameters' lambdas) is
@@ -687,7 +689,7 @@ local fn result_head(t: Term) -> String? = match t {
   },
 }
 
-local fn typed_body(env: Env, lv: List[String], ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
+local fn typed_body(mut env: Env, lv: List[String], ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
   no_brackets([ty_raw, body_raw])!
   let ty = surface_type(env, lv, ty_raw)!
   var bu = budget()
