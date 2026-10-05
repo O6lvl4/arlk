@@ -1,0 +1,9 @@
+package "plugin" (
+  directory = "."
+  requires = "rocq-runtime.plugins.ltac"
+  archive(byte) = "rocq_arlk_export.cma"
+  archive(native) = "rocq_arlk_export.cmxa"
+  plugin(byte) = "rocq_arlk_export.cma"
+  plugin(native) = "rocq_arlk_export.cmxs"
+)
+directory = "."

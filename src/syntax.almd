@@ -278,12 +278,10 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
 }
 
 // `[x : A, y : B]` before a rule; the brackets are optional when empty.
-local fn rule_vars(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! = if is_sym(ts, p, "[") then rule_var_list(
-  ts,
-  p + 1,
-  [],
-)
-else ok(([], p))
+local fn rule_vars(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! =
+  if is_sym(ts, p, "[") and is_sym(ts, p + 1, "]") then ok(([], p + 2))
+  else if is_sym(ts, p, "[") then rule_var_list(ts, p + 1, [])
+  else ok(([], p))
 
 local fn rule_var_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! = {
   let (x, p1) = ident(ts, p)!

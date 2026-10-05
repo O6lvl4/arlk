@@ -1,0 +1,62 @@
+-- A bridge between Lean and Rocq.
+--
+-- Lean's library (room Init) and Rocq's library (room Corelib) were
+-- absorbed onto the same foundation (lib/core.arlk), so a proof here can
+-- use both: Lean's recursor builds a function into Rocq's numbers, and
+-- Lean's theorem `Nat.add_comm` becomes a statement about Rocq's equality.
+--
+--   arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
+--              absorbed/rocq/init_peano.arlk examples/bridge.arlk
+
+room bridge uses Init, Corelib.
+
+-- ── Shorthands ─────────────────────────────────────────────────────
+
+-- Lean's Nat and Rocq's nat, both types of universe 1 (Lean's Type,
+-- Rocq's Set).
+def LeanNat : core.Univ core.l1 := Nat.
+def RocqNat : core.Univ core.l1 := Init.Datatypes.nat.
+
+-- Lean's `n + m`.
+def lean_add : core.El core.l1 LeanNat -> core.El core.l1 LeanNat -> core.El core.l1 LeanNat :=
+  fun (n m : core.El core.l1 LeanNat) => HAdd.hAdd@0@0@0 Nat Nat Nat (instHAdd@0 Nat instAddNat) n m.
+
+-- Rocq's `a = b` on its numbers. Rocq's eq takes its type in universe 2,
+-- so nat is lifted there: cumulativity, made explicit.
+def rocq_eq : core.El core.l1 RocqNat -> core.El core.l1 RocqNat -> core.Univ core.l0 :=
+  fun (a b : core.El core.l1 RocqNat) => Init.Logic.eq (core.lift core.l1 core.l2 RocqNat) a b.
+
+-- ── From Lean's numbers to Rocq's ──────────────────────────────────
+
+-- Defined by Lean's own recursor, returning Rocq values.
+def to_rocq : core.El core.l1 LeanNat -> core.El core.l1 RocqNat :=
+  fun (n : core.El core.l1 LeanNat) =>
+    Nat.rec@1 (fun (k : core.El core.l1 Nat) => Init.Datatypes.nat)
+      Init.Datatypes.nat.O
+      (fun (k : core.El core.l1 Nat) (r : core.El core.l1 Init.Datatypes.nat) => Init.Datatypes.nat.S r)
+      n.
+
+-- Lean computes 1 + 1, Rocq's constructors show the result.
+#eval to_rocq (lean_add (Nat.succ Nat.zero) (Nat.succ Nat.zero)).
+
+-- ── Computation agrees ─────────────────────────────────────────────
+
+-- Lean's definitions reduce n + 0 to n, so Rocq's reflexivity is enough.
+theorem add_zero_in_rocq : (n : core.El core.l1 LeanNat) -> core.El core.l0 (rocq_eq (to_rocq (lean_add n Nat.zero)) (to_rocq n)) :=
+  fun (n : core.El core.l1 LeanNat) => Init.Logic.eq.eq_refl (core.lift core.l1 core.l2 RocqNat) (to_rocq n).
+
+-- ── A Lean theorem, transported into Rocq's logic ──────────────────
+
+-- Lean proves n + m = m + n with Lean's equality. Lean's eliminator for
+-- that equality rewrites a Rocq statement along it.
+theorem add_comm_in_rocq :
+  (n m : core.El core.l1 LeanNat) -> core.El core.l0 (rocq_eq (to_rocq (lean_add n m)) (to_rocq (lean_add m n))) :=
+  fun (n m : core.El core.l1 LeanNat) =>
+    Eq.rec@0@1 Nat (lean_add n m)
+      (fun (b : core.El core.l1 Nat) (h : core.El core.l0 (Eq@1 Nat (lean_add n m) b)) => rocq_eq (to_rocq (lean_add n m)) (to_rocq b))
+      (Init.Logic.eq.eq_refl (core.lift core.l1 core.l2 RocqNat) (to_rocq (lean_add n m)))
+      (lean_add m n)
+      (Nat.add_comm n m).
+
+-- Which provers and which assumptions the transported theorem rests on.
+#axioms add_comm_in_rocq.

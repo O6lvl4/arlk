@@ -12,15 +12,17 @@ import self.absorb
 
 let USAGE = """
   usage:
-    arlk check FILE.arlk [--timing]      check every declaration (--timing: list the slowest)
+    arlk check FILE.arlk... [--timing]   check files in order, into one environment
+                                         (--timing: list the slowest declarations)
     arlk absorb EXPORT.json [-o OUT]     turn a Lean export (tools/lean-export) into Arlk source
   """
 
 effect fn main() -> Unit = {
   let args = process.args()
-  match (list.get(args, 1), list.get(args, 2)) {
-    (some("check"), some(path)) => run_check(path, list.contains(args, "--timing"))!,
-    (some("absorb"), some(path)) => run_absorb(path, output_flag(args))!,
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-"))
+  match list.get(args, 1) {
+    some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"))!,
+    some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", output_flag(args))!,
     _ => {
       println(USAGE)
       process.exit(2)
@@ -33,46 +35,49 @@ local fn output_flag(args: List[String]) -> String? = match list.index_of(args, 
   none => none,
 }
 
-effect fn run_check(path: String, timing: Bool) -> Unit = {
-  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
-  match syntax.parse(src) {
-    err(e) => {
-      println("✗ ${path}:${e}")
+// All files are checked into one environment, in order, so a later file
+// can use the rooms of an earlier one (lib/core.arlk first).
+effect fn run_check(paths: List[String], timing: Bool) -> Unit = {
+  var kenv = kernel.empty()
+  var failure: String? = none
+  var times: List[(Int, Int)] = []
+  for path in paths {
+    if failure == none then {
+      let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+      match syntax.parse(src) {
+        err(e) => {
+          failure = some("${path}:${e}")
+        },
+        ok(ds) => {
+          for d in ds {
+            if failure == none then {
+              let started = env.millis()
+              let result = kernel.process(kenv, d)
+              times = times + [(env.millis() - started, d.line)]
+              match result {
+                ok((env2, lines)) => {
+                  kenv = env2
+                  for line in lines {
+                    println(line)
+                  }
+                },
+                err(e) => {
+                  failure = some("${path}:${int.to_string(d.line)}: ${e}")
+                },
+              }
+            }
+          }
+        },
+      }
+    }
+  }
+  if timing then report_timing(times)! else ()
+  match failure {
+    some(e) => {
+      println("✗ ${e}")
       process.exit(1)
     },
-    ok(ds) => {
-      // Declarations are checked and reported one at a time, so a long file
-      // shows progress and the first failure stops the run.
-      var kenv = kernel.empty()
-      var failure: String? = none
-      var times: List[(Int, Int)] = []
-      for d in ds {
-        if failure == none then {
-          let started = env.millis()
-          let result = kernel.process(kenv, d)
-          times = times + [(env.millis() - started, d.line)]
-          match result {
-            ok((env2, lines)) => {
-              kenv = env2
-              for line in lines {
-                println(line)
-              }
-            },
-            err(e) => {
-              failure = some("${int.to_string(d.line)}: ${e}")
-            },
-          }
-        }
-      }
-      if timing then report_timing(times)! else ()
-      match failure {
-        some(e) => {
-          println("✗ ${path}:${e}")
-          process.exit(1)
-        },
-        none => println("ok: ${path} (${int.to_string(list.len(kenv.order))} declarations)"),
-      }
-    },
+    none => println("ok: ${list.join(paths, " ")} (${int.to_string(list.len(kenv.order))} declarations)"),
   }
 }
 

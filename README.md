@@ -10,9 +10,17 @@ Arlk is meant for programmers, not only mathematicians. Its syntax reads like co
 `symbol`, `rule`, `room`), Unicode is only an optional alias, and errors say what was expected
 and what was found.
 
-**Lean 4 is absorbed, not linked.** Lean's whole `Init.Data.Nat.Basic` module (308 of its 310
-theorems, 822 declarations with their dependencies) has been translated into Arlk source and is
-checked by Arlk's kernel alone, in about 40 seconds. See [Absorbing Lean](#absorbing-lean).
+**Lean 4 and Rocq are absorbed, not linked, and they meet in one place.**
+
+- Lean's whole `Init.Data.Nat.Basic` module (308 of its 310 theorems, 822 declarations with their
+  dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
+- Rocq's `Corelib.Init.Peano` (26 of 33 declarations) is checked the same way.
+- Both sit on one shared foundation, [lib/core.arlk](lib/core.arlk). That foundation has Rocq's
+  cumulative universes *and* Lean's proof irrelevance, so a single proof can use both libraries.
+  [examples/bridge.arlk](examples/bridge.arlk) turns Lean's theorem `Nat.add_comm` into a statement
+  about Rocq's equality on Rocq's numbers.
+
+See [Absorbing provers](#absorbing-provers) and [The bridge](#the-bridge).
 
 ```
 room logic.
@@ -85,62 +93,111 @@ Unicode aliases: `→` for `->`, `λ` for `fun`, `⇒` for `=>`, `↪` for `-->`
 
 Every declaration ends with `.` **followed by whitespace**. `a.b` with no space is a qualified name.
 
-## Absorbing Lean
+## Absorbing provers
 
 ```
-tools/lean-export/Export.lean     Lean side: write a declaration and its dependencies as JSON
-arlk absorb EXPORT.json -o F      Arlk side: turn that JSON into Arlk source
-arlk check F                      check it; Lean is not involved
+tools/lean-export/Export.lean      Lean side: a declaration (or module) and its dependencies as JSON
+tools/rocq-export/                 Rocq side: a plugin, `Arlk Export "out.json" name...`
+arlk absorb EXPORT.json -o F       Arlk side: turn that JSON into Arlk source
+arlk check lib/core.arlk F         check it; neither prover is involved
 ```
 
 ```
-$ cd tools/lean-export && lean --run Export.lean Nat.add_zero > ../../absorbed/lean/nat_add_zero.json
-$ ./arlk absorb absorbed/lean/nat_add_zero.json -o absorbed/lean/nat_add_zero.arlk
-$ ./arlk check absorbed/lean/nat_add_zero.arlk
-✓ theorem Init.Nat.add_zero : lean.El lean.l0 (lean.pi lean.l1 lean.l0 Nat (fun (n : lean.El lean.l1 Nat) => Eq@1 Nat (HAdd.hAdd@0@0@0 Nat Nat Nat (instHAdd@0 Nat instAddNat) n (OfNat.ofNat@0 Nat Nat.zero (instOfNatNat Nat.zero))) n))
-#axioms Init.Nat.add_zero
-  rooms:   lean, Init
-  ...
-ok: absorbed/lean/nat_add_zero.arlk (52 declarations)
+$ ./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
+✓ theorem Init.Nat.add_zero : core.El core.l0 (core.pi core.l1 core.l0 Nat (fun (n : core.El core.l1 Nat) => Eq@1 Nat (HAdd.hAdd@0@0@0 ... n (OfNat.ofNat@0 Nat Nat.zero ...)) n))
+ok: lib/core.arlk absorbed/lean/nat_add_zero.arlk (53 declarations)
+
+$ ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
+✓ theorem Corelib.Init.Peano.plus_n_O : core.El core.l0 (core.pi core.l1 core.l0 Init.Datatypes.nat (fun (n : ...) => Init.Logic.eq (core.lift core.l1 core.l2 Init.Datatypes.nat) n (Init.Nat.add n Init.Datatypes.nat.O)))
+ok: lib/core.arlk absorbed/rocq/init_peano.arlk (93 declarations)
 ```
 
-How it works:
+### The shared foundation
 
-- **Lean's type theory is the `lean` room**, written in Arlk itself (see the top of
-  [nat_add_zero.arlk](absorbed/lean/nat_add_zero.arlk)). A universe level is a value of `Lvl`, the
-  types of universe `l` are values of `Univ l`, `El l A` turns one into an Arlk type, and Lean's
-  function types are values `pi a b A B` that a rule unfolds into Arlk function types. `imax`,
-  which makes functions into `Prop` propositions, is a pair of rewrite rules.
-- **Everything else is the `Init` room**: 33 declarations from Lean's prelude, including `Nat`,
-  `Eq`, the `HAdd`/`Add`/`OfNat` classes, `Nat.rec`, the structural recursion machinery
-  (`Nat.below`, `Nat.brecOn`), `Nat.add` and `rfl`. Inductive types become symbols, recursors get
-  one rewrite rule per constructor, and class projections get one rule each.
-- **Universe polymorphism is removed** by instantiating each constant at the levels it is used at.
-  `Eq@1` is `Eq.{1}`.
-- **Nothing on the way is trusted.** The exporter and `arlk absorb` only produce text. The tests
-  in `spec/absorb_test.almd` show that a false statement (`n + 1 = n`) is rejected and that
-  deleting one projection rule breaks the proof. The proof really goes through Lean's definitions
-  of `+` and `0`.
+[lib/core.arlk](lib/core.arlk) is the trusted theory both provers are translated into, written by
+hand to be read. A universe level is a value of `Lvl`, the types of universe `l` are values of
+`Univ l`, `El l A` turns one into an Arlk type, and function types are values `pi a b A B` that a
+rule unfolds into Arlk function types. Level 0 is `Prop`, level 1 is Lean's `Type` and Rocq's
+`Set`.
 
-What the `lean` room already covers, beyond the basics:
+| Feature | Comes from | In Arlk |
+|---|---|---|
+| Impredicative `Prop` | both | `imax`: a function type into level 0 is at level 0 |
+| Cumulative universes | Rocq | `lift a b A` moves a type up; the Rocq exporter inserts it wherever Rocq's kernel used subtyping |
+| Definitional proof irrelevance | Lean | `irrelevant [P : Univ lz] El lz P.` |
 
-| Lean kernel feature | How Arlk does it |
+Having both is consistent: Rocq with proof irrelevance and Lean with cumulativity both hold in
+the set-theoretic model with inaccessible cardinals. Each one shows up in `#axioms` when a theorem
+uses it.
+
+### Lean
+
+| Lean kernel feature | How it is absorbed |
 |---|---|
-| Definitional proof irrelevance | `irrelevant [P : Univ lz] El lz P.` A room may declare that all values of a type family are equal. Lean's room does, and a Rocq room would not. |
-| K-like reduction (`Eq.rec` on any proof of `a = a`) | The exporter emits a rule whose major premise is a variable. Proof irrelevance makes it type-check. |
-| Quotients (`Quot.lift`, `Quot.ind`) | Ordinary rewrite rules. `Quot.sound` stays an axiom and shows up in `#axioms`. |
-| Projections, including into `Prop` | One rule per projection function. |
+| Inductive types, recursors | symbols, and one rewrite rule per constructor |
+| K-like reduction (`Eq.rec` on any proof of `a = a`) | a rule whose major premise is a variable; proof irrelevance makes it type-check |
+| Quotients (`Quot.lift`, `Quot.ind`) | rewrite rules; `Quot.sound` stays an axiom |
+| Projections, including into `Prop` | one rule per projection function |
+| Universe polymorphism | not yet: each constant is instantiated at the levels it is used at (`Eq@1` is `Eq.{1}`) |
 
-| Module | Theorems | Declarations | Time |
+### Rocq
+
+| Rocq kernel feature | How it is absorbed |
+|---|---|
+| Universe variables with constraints | numbered by the longest path from `Set` in Rocq's universe graph, which satisfies every constraint |
+| `match` | a lambda-lifted symbol with one rule per constructor (as in Dedukti's CoqInE) |
+| `fix` | lambda-lifted symbols whose rules fire only on a constructor, as Rocq's guard condition expects |
+| Cumulativity | explicit `lift`, computed in the encoding's own level arithmetic |
+| Fixpoints over indexed families, primitive projections, cofixpoints, primitive integers | not yet |
+
+### Results
+
+| Library | Theorems | Declarations | Time |
 |---|---|---|---|
-| `Nat.add_zero` | 1 | 33 | < 0.1 s |
-| `Init.Data.Nat.Basic` | 308 of 310 | 822 | ~40 s |
+| Lean `Nat.add_zero` | 1 | 33 | < 0.1 s |
+| Lean `Init.Data.Nat.Basic` | 308 of 310 | 822 | ~40 s |
+| Rocq `Corelib.Init.Peano` | 26 of 33 | 97 | < 0.2 s |
 
-The two theorems left out are universe-polymorphic. Not absorbed yet: universe polymorphism
-(constants are instantiated at concrete levels instead), structure eta, and Lean's fast kernel
-arithmetic on numerals (numerals are spelled out as `Nat.succ` chains).
+Nothing on the way is trusted. The exporters and `arlk absorb` only produce text. The tests in
+`spec/absorb_test.almd` show that a false statement is rejected, that deleting one rule breaks a
+Lean proof (it really computes through Lean's definitions of `+` and `0`), and that lifting Rocq's
+`nat` *down* a universe is rejected.
 
-`tools/check-absorbed.sh` checks every absorbed file.
+## The bridge
+
+[examples/bridge.arlk](examples/bridge.arlk) loads Lean's library and Rocq's library into one
+environment and works across them:
+
+```
+def to_rocq : core.El core.l1 LeanNat -> core.El core.l1 RocqNat :=      -- Lean's recursor,
+  fun (n : core.El core.l1 LeanNat) =>                                     -- Rocq's constructors
+    Nat.rec@1 (fun (k : core.El core.l1 Nat) => Init.Datatypes.nat)
+      Init.Datatypes.nat.O
+      (fun (k : core.El core.l1 Nat) (r : core.El core.l1 Init.Datatypes.nat) => Init.Datatypes.nat.S r)
+      n.
+
+theorem add_comm_in_rocq :                                                 -- Rocq's equality,
+  (n m : core.El core.l1 LeanNat) ->                                       -- proved by Lean's
+    core.El core.l0 (rocq_eq (to_rocq (lean_add n m)) (to_rocq (lean_add m n))) :=   -- Nat.add_comm
+  fun (n m : core.El core.l1 LeanNat) =>
+    Eq.rec@0@1 Nat (lean_add n m)
+      (fun (b : core.El core.l1 Nat) (h : core.El core.l0 (Eq@1 Nat (lean_add n m) b)) => rocq_eq (to_rocq (lean_add n m)) (to_rocq b))
+      (Init.Logic.eq.eq_refl (core.lift core.l1 core.l2 RocqNat) (to_rocq (lean_add n m)))
+      (lean_add m n)
+      (Nat.add_comm n m).
+```
+
+```
+$ ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
+to_rocq (lean_add (Init.Nat.succ Init.Nat.zero) (Init.Nat.succ Init.Nat.zero)) ⇝ Corelib.Init.Datatypes.nat.S (Corelib.Init.Datatypes.nat.S Corelib.Init.Datatypes.nat.O)
+✓ theorem bridge.add_zero_in_rocq : ...
+✓ theorem bridge.add_comm_in_rocq : ...
+#axioms bridge.add_comm_in_rocq
+  rooms:   core, Init, Corelib
+ok: ... (903 declarations)
+```
+
+`tools/check-absorbed.sh` checks every absorbed library and the bridge.
 
 ## Usage
 
@@ -149,7 +206,9 @@ almide build src/main.almd -o arlk
 ./arlk check examples/logic.arlk
 ./arlk check examples/nat.arlk
 
-./arlk check absorbed/lean/nat_add_zero.arlk
+./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
+./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
+tools/check-absorbed.sh
 
 almide test            # kernel and absorb tests (spec/): good proofs pass, bad ones are rejected
 almide test src/       # unit tests of term, syntax, pretty, absorb
@@ -171,17 +230,19 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 
 1. **Kernel hardening.** Confluence and termination checks for rules, and checking subject
    reduction properly instead of trusting the declared variable types.
-2. **Bridges between rooms.** Declare a translation from room A to room B, check that it
-   preserves typing, and transport theorems along it. This draws on institution theory and MMT.
-3. **Absorbing Lean 4** (started: `Nat.add_zero` checks). The goal is not to interoperate with Lean but to take it over. Lean's
+2. **Bridges between rooms** (started: [examples/bridge.arlk](examples/bridge.arlk)). Next, declare
+   a translation from room A to room B as a first-class object, check that it preserves typing,
+   and transport whole theories along it. This draws on institution theory and MMT.
+3. **Absorbing Lean 4 and Rocq** (started: Lean's `Init.Data.Nat.Basic` and Rocq's
+   `Corelib.Init.Peano` check). The goal is not to interoperate with Lean but to take it over. Lean's
    type theory (universes, inductive types and their recursors, proof-irrelevant `Prop`,
    quotients) becomes one room, `lean`, encoded in Arlk's own core. Lean's declarations, Mathlib
    included, are translated into that room once and from then on are checked by Arlk's kernel
    alone. Lean is needed only as the source of the original text, never to trust a result. The
    translation starts from Lean's kernel export, the same way
    [lean4-rust-backend](https://github.com/O6lvl4/lean4-rust-backend) takes Lean's compiler IR out
-   as JSON and rebuilds it outside Lean. Other provers (Rocq, Isabelle/HOL, Dedukti `.dk`) follow
-   the same path into rooms of their own.
+   as JSON and rebuilds it outside Lean. Next: Metamath (ZFC), Isabelle/HOL, Agda, and Dedukti
+   `.dk` files, each into a room of its own.
 4. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 

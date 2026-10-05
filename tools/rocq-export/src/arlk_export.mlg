@@ -1,0 +1,10 @@
+DECLARE PLUGIN "rocq-arlk-export.plugin"
+
+{
+open Stdarg
+}
+
+VERNAC COMMAND EXTEND ArlkExport CLASSIFIED AS QUERY
+| ![ opaque_access ] [ "Arlk" "Export" string(file) ne_reference_list(rs) ] ->
+  { fun ~opaque_access -> Arlk_export_main.run opaque_access file rs }
+END

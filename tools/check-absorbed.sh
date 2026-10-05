@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Check every absorbed file with the Arlk kernel alone (no Lean needed).
+# Check every absorbed library, and the Lean–Rocq bridge, with the Arlk
+# kernel alone (no Lean or Rocq needed).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 almide build src/main.almd -o arlk
-for f in absorbed/*/*.arlk; do
-  ./arlk check "$f" | tail -1
-done
+./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk | tail -1
+./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk | tail -1
+./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk | tail -1

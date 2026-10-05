@@ -1,0 +1,5 @@
+-R theories ArlkExport
+-I src
+src/arlk_export_main.ml
+src/arlk_export.mlg
+src/rocq_arlk_export.mlpack

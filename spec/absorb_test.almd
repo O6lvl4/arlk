@@ -1,51 +1,68 @@
-// Lean's Nat.add_zero, absorbed: checked by the Arlk kernel alone.
+// Absorbed Lean and Rocq declarations, checked by the Arlk kernel alone.
 
 import fs
 import self.syntax
 import self.kernel
 import self.absorb
 
-let EXPORT = "absorbed/lean/nat_add_zero.json"
-let ABSORBED = "absorbed/lean/nat_add_zero.arlk"
+let CORE = "lib/core.arlk"
+let LEAN_EXPORT = "absorbed/lean/nat_add_zero.json"
+let LEAN_ABSORBED = "absorbed/lean/nat_add_zero.arlk"
+let ROCQ_EXPORT = "absorbed/rocq/init_peano.json"
+let ROCQ_ABSORBED = "absorbed/rocq/init_peano.arlk"
 
-fn check_text(src: String) -> String? = match syntax.parse(src) {
+// Absorbed files sit on the shared foundation, so it is checked first.
+fn check_with(core: String, src: String) -> String? = match syntax.parse(core + "\n" + src) {
   err(e) => some("parse: " + e),
   ok(ds) => kernel.check_all(kernel.empty(), ds).error,
 }
 
-test "the committed .arlk is exactly what absorb produces from the export" {
-  let exported = fs.read_text(EXPORT)!
-  let absorbed = fs.read_text(ABSORBED)!
-  assert_eq(absorb.absorb(exported), ok(absorbed))
+test "the committed Lean file is exactly what absorb produces" {
+  assert_eq(absorb.absorb(fs.read_text(LEAN_EXPORT)!), ok(fs.read_text(LEAN_ABSORBED)!))
 }
 
-test "Nat.add_zero checks without Lean" {
-  let src = fs.read_text(ABSORBED)!
-  assert_eq(check_text(src), none)
+test "the committed Rocq file is exactly what absorb produces" {
+  assert_eq(absorb.absorb(fs.read_text(ROCQ_EXPORT)!), ok(fs.read_text(ROCQ_ABSORBED)!))
+}
+
+test "Lean's Nat.add_zero checks without Lean" {
+  assert_eq(check_with(fs.read_text(CORE)!, fs.read_text(LEAN_ABSORBED)!), none)
+}
+
+test "Rocq's Peano module checks without Rocq" {
+  assert_eq(check_with(fs.read_text(CORE)!, fs.read_text(ROCQ_ABSORBED)!), none)
 }
 
 test "a false statement with the same proof is rejected" {
-  let src = fs.read_text(ABSORBED)!
+  let src = fs.read_text(LEAN_ABSORBED)!
   let zero = "(OfNat.ofNat@0 Nat Nat.zero (instOfNatNat Nat.zero))) n)) :="
   let one = "(OfNat.ofNat@0 Nat (Nat.succ Nat.zero) (instOfNatNat (Nat.succ Nat.zero)))) n)) :="
   assert(string.contains(src, zero))
-  let tampered = string.replace_first(src, zero, one)
-  match check_text(tampered) {
+  match check_with(fs.read_text(CORE)!, string.replace_first(src, zero, one)) {
     some(e) => assert(string.contains(e, "type mismatch")),
     none => assert(false),
   }
 }
 
-test "the proof really computes through Lean's definitions" {
+test "the Lean proof really computes through Lean's definitions" {
   // Without the projection rule for HAdd.hAdd, n + 0 no longer reduces to n.
-  let src = fs.read_text(ABSORBED)!
-  let start = string.index_of(src, "rule [α : lean.El lean.l2 (lean.sort lean.l1), β") ?? -1
+  let src = fs.read_text(LEAN_ABSORBED)!
+  let start = string.index_of(src, "rule [α : core.El core.l2 (core.sort core.l1), β") ?? -1
   assert(start >= 0)
   let rest = string.drop(src, start)
   let stop = (string.index_of(rest, ".\n") ?? 0) + 2
-  let without = string.take(src, start) + string.drop(rest, stop)
-  match check_text(without) {
+  match check_with(fs.read_text(CORE)!, string.take(src, start) + string.drop(rest, stop)) {
     some(e) => assert(string.contains(e, "type mismatch")),
     none => assert(false),
   }
+}
+
+test "Rocq's cumulativity is checked: lifting nat downwards is rejected" {
+  // eq wants its type in universe 2; nat is lifted from 1. Claiming it
+  // came from 3 breaks the proof, because lift only goes up.
+  let src = fs.read_text(ROCQ_ABSORBED)!
+  let up = "core.lift core.l1 core.l2 Init.Datatypes.nat"
+  assert(string.contains(src, up))
+  let down = string.replace(src, up, "core.lift core.l3 core.l2 Init.Datatypes.nat")
+  assert(check_with(fs.read_text(CORE)!, down) != none)
 }
