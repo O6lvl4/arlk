@@ -1,0 +1,568 @@
+// Incremental checking within one session (#21).
+//
+//   arlk session STEP_DIR...     check the first step, then each following
+//                                step reusing what is unaffected
+//   arlk check FILE... --digest  the same digest from a fresh check
+//
+// A step is a directory with `files.txt`, the source files in checking
+// order. A unit is one top-level declaration; its key is the hash of its
+// text together with the room header it is checked under. After an edit, a
+// unit is reused (its additions to the environment copied from the
+// previous step's environment, not checked again) only when:
+//
+//   - a unit with the same key succeeded in the previous step;
+//   - nothing it depends on changed: no name its elaborated statement or
+//     proof mentions, transitively through statements, definition bodies,
+//     rewrite rules and declared irrelevance, has a different statement,
+//     body, kind, room, implicit arguments, universe parameters or rules;
+//   - no name it could resolve to appeared or disappeared: an identifier
+//     it is written with matches no added or removed declaration;
+//   - it is not a room header, view, translation or directive (those are
+//     always checked again: they are cheap, and depend on the whole
+//     environment).
+//
+// Everything else is checked again by the ordinary checker, in order, into
+// a fresh environment; the previous one is replaced only when the step is
+// done, so a failed or interrupted step leaves the previous result whole.
+// Reused entries come only from successful checks earlier in this session;
+// nothing is read from disk but sources. Each step prints what was reused
+// and why each other unit was checked again, and a digest of the result
+// (each declaration's outcome, statement, definition body, assumption
+// inventory and diagnostics) that a fresh `arlk check --digest` must
+// reproduce exactly.
+
+import fs
+import hash
+import self.syntax
+import self.syntax.{Located, Decl}
+import self.kernel
+import self.kernel.{Env, Entry, Rule, Rw, View, IndInfo}
+import self.term.{Term, consts}
+import self.pretty
+import self.checker
+
+// One declaration as checked: what it added to the environment.
+type Delta = {
+  names: List[String],
+  rules: List[Rule],
+  irrelevants: List[Rule],
+  views: List[(String, View)],
+  inductives: List[(String, IndInfo)],
+  rooms: List[(String, List[String])],
+  room: String,
+}
+
+type Record = {
+  key: String,
+  file: String,
+  line: Int,
+  ok: Bool,
+  lines: List[String],
+  message: String,
+  delta: Delta,
+  // names its own statements and proofs mention (what reuse depends on)
+  deps: List[String],
+  // its identifiers as written (what name resolution depends on)
+  idents: List[String],
+  // the room it was checked in, and what that room could see
+  room: String,
+  seen: List[String],
+}
+
+type Unit_ = { key: String, file: String, line: Int, decl: Located, idents: List[String], always: Bool }
+
+type Step = { env: Env, records: List[Record], rechecked: Int, reused: Int, reasons: List[String] }
+
+// ── Units ───────────────────────────────────────────────────────────
+
+local fn is_ident_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'" or c == "."
+
+local fn idents_of(text: String) -> List[String] = {
+  var out: List[String] = []
+  var cur = ""
+  for c in string.chars(text + " ") {
+    if is_ident_char(c) then {
+      cur = cur + c
+    } else {
+      if cur != "" and not list.contains(out, cur) then list.push(out, cur) else ()
+      cur = ""
+    }
+  }
+  out
+}
+
+local fn always_checked(d: Decl) -> Bool = match d {
+  DRoom(_, _) => true,
+  DRule(_, _, _) => true,
+  DIrrelevant(_, _) => true,
+  DCheck(_) => true,
+  DEval(_) => true,
+  DAxioms(_) => true,
+  DView(_, _, _) => true,
+  DTranslate(_, _) => true,
+  DViewVia(_, _, _) => true,
+  DViews => true,
+  DRoutes(_) => true,
+  _ => false,
+}
+
+// The units of the files, in order, each keyed by its text and the text of
+// the room header it is checked under.
+effect fn units_of(files: List[String]) -> List[Unit_] = {
+  var out: List[Unit_] = []
+  for file in files {
+    let src = fs.read_text(file) |> result.map_err((e) => "reading ${file}: ${e}")!
+    let lines = string.lines(src)
+    let ds = syntax.parse(src) |> result.map_err((e) => "${file}:${e}")!
+    var header = ""
+    var i = 0
+    for d in ds {
+      let next = match list.get(ds, i + 1) {
+        some(n) => n.line,
+        none => list.len(lines) + 1,
+      }
+      let text = list.join(list.take(list.drop(lines, d.line - 1), next - d.line), "\n")
+      match d.decl {
+        DRoom(_, _) => {
+          header = text
+        },
+        _ => (),
+      }
+      list.push(out, Unit_ { key: hash.sha256_hex(header + "\n\u{0}\n" + text), file: file, line: d.line, decl: d, idents: idents_of(text), always: always_checked(d.decl) })
+      i = i + 1
+    }
+  }
+  out
+}
+
+// ── What a declaration added ────────────────────────────────────────
+
+// Where the environment stood before a declaration (not a copy of it).
+type Mark = { order: Int, rules: Int, irrelevants: Int, room: String, seen: List[String], views: List[String] }
+
+local fn mark_of(env: Env) -> Mark =
+  Mark { order: list.len(env.order), rules: list.len(env.rules), irrelevants: list.len(env.irrelevants), room: env.room, seen: map.get(env.rooms, env.room) ?? [], views: map.keys(env.views) }
+
+// `mut`, though nothing is changed: a plain parameter is copied here, and
+// copying the environment for every declaration made a step quadratic.
+local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
+  // The tails, read by index: `list.drop` copies the whole list.
+  var names: List[String] = []
+  var i = before.order
+  while i < list.len(after.order) {
+    list.push(names, list.get(after.order, i) ?? "")
+    i = i + 1
+  }
+  var rules: List[Rule] = []
+  var j = before.rules
+  while j < list.len(after.rules) {
+    match list.get(after.rules, j) {
+      some(r) => list.push(rules, r),
+      none => (),
+    }
+    j = j + 1
+  }
+  var irr: List[Rule] = []
+  var k = before.irrelevants
+  while k < list.len(after.irrelevants) {
+    match list.get(after.irrelevants, k) {
+      some(r) => list.push(irr, r),
+      none => (),
+    }
+    k = k + 1
+  }
+  var views: List[(String, View)] = []
+  var inductives: List[(String, IndInfo)] = []
+  var rooms: List[(String, List[String])] = []
+  match d {
+    DInductive(ind) => {
+      let q = before.room + "." + ind.name
+      match map.get(after.inductives, q) {
+        some(info) => list.push(inductives, (q, info)),
+        none => (),
+      }
+    },
+    DRoom(name, _) => match map.get(after.rooms, name) {
+      some(seen) => list.push(rooms, (name, seen)),
+      none => (),
+    },
+    _ => (),
+  }
+  // Views are added by view, composition and translation declarations.
+  if map.len(after.views) != list.len(before.views) then {
+    for (k, v) in map.entries(after.views) {
+      if not list.contains(before.views, k) then list.push(views, (k, v)) else ()
+    }
+  } else ()
+  Delta { names: names, rules: rules, irrelevants: irr, views: views, inductives: inductives, rooms: rooms, room: after.room }
+}
+
+// Copy a declaration's additions from the environment it was checked in;
+// heights are those of the new position.
+local fn replay(mut env: Env, from: Env, dl: Delta) -> Unit = {
+  for q in dl.names {
+    let h = list.len(env.order)
+    match map.get(from.entries, q) {
+      some(e) => map.insert(env.entries, q, { ...e, height: h }),
+      none => (),
+    }
+    match map.get(from.types, q) {
+      some(t) => map.insert(env.types, q, t),
+      none => (),
+    }
+    match map.get(from.bodies, q) {
+      some(b) => map.insert(env.bodies, q, b),
+      none => (),
+    }
+    if map.contains(from.defs, q) then map.insert(env.defs, q, h) else ()
+    match map.get(from.lparams, q) {
+      some(ls) => map.insert(env.lparams, q, ls),
+      none => (),
+    }
+    match map.get(from.implicits, q) {
+      some(n) => map.insert(env.implicits, q, n),
+      none => (),
+    }
+    list.push(env.order, q)
+  }
+  for r in dl.rules {
+    let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs, lparams: r.lparams }
+    let existing = map.get(env.rws, r.head) ?? []
+    map.insert(env.rws, r.head, existing + [rw])
+    list.push(env.rules, r)
+  }
+  for r in dl.irrelevants {
+    list.push(env.irrelevants, r)
+  }
+  for (k, v) in dl.views {
+    map.insert(env.views, k, v)
+  }
+  for (k, info) in dl.inductives {
+    map.insert(env.inductives, k, info)
+  }
+  for (k, seen) in dl.rooms {
+    map.insert(env.rooms, k, seen)
+  }
+  env.room = dl.room
+}
+
+// ── Dependencies and change ─────────────────────────────────────────
+
+local fn exact(t: Term) -> String = pretty.show("", [], t)
+
+// What a name means to the declarations that use it.
+fn fingerprint(env: Env, q: String) -> String = {
+  let kind = match map.get(env.entries, q) {
+    some(e) => e.kind + " " + e.room,
+    none => "?",
+  }
+  let ty = match map.get(env.types, q) {
+    some(t) => exact(t),
+    none => "",
+  }
+  let body = if map.contains(env.defs, q) then match map.get(env.bodies, q) {
+    some(b) => exact(b),
+    none => "",
+  } else ""
+  let ls = list.join(map.get(env.lparams, q) ?? [], ",")
+  let imps = int.to_string(map.get(env.implicits, q) ?? 0)
+  let rules = (map.get(env.rws, q) ?? []) |> list.map((rw) => exact(rw.rhs) + " " + int.to_string(rw.arity))
+  let irr = if list.any(env.irrelevants, (r) => r.head == q) then "irrelevant" else ""
+  hash.sha256_hex(list.join([kind, ty, body, ls, imps, irr] + rules, "\n"))
+}
+
+// The names a name's meaning rests on: its statement, a definition's body,
+// and the right-hand sides of rules on it.
+local fn semantic_deps(env: Env, q: String) -> List[String] = {
+  var out: List[String] = []
+  match map.get(env.types, q) {
+    some(t) => {
+      out = out + consts(t)
+    },
+    none => (),
+  }
+  if map.contains(env.defs, q) then match map.get(env.bodies, q) {
+    some(b) => {
+      out = out + consts(b)
+    },
+    none => (),
+  } else ()
+  for rw in map.get(env.rws, q) ?? [] {
+    out = out + consts(rw.rhs)
+  }
+  list.unique(out |> list.filter((c) => c != q))
+}
+
+// What checking a declaration again would look at: everything its own
+// statements and proofs mention (theorem proofs included).
+local fn check_deps(env: Env, dl: Delta) -> List[String] = {
+  var out: List[String] = []
+  for q in dl.names {
+    match map.get(env.types, q) {
+      some(t) => {
+        out = out + consts(t)
+      },
+      none => (),
+    }
+    match map.get(env.bodies, q) {
+      some(b) => {
+        out = out + consts(b)
+      },
+      none => (),
+    }
+  }
+  list.unique(out |> list.filter((c) => not list.contains(dl.names, c)))
+}
+
+type Changes = { direct: Map[String, Bool], memo: Map[String, Bool] }
+
+local fn mark(mut ch: Changes, q: String) -> Unit = {
+  if map.contains(ch.direct, q) then () else {
+    map.insert(ch.direct, q, true)
+    let fresh_memo: Map[String, Bool] = [:]
+    ch.memo = fresh_memo
+  }
+}
+
+// A name that disappeared with an edited unit and came back meaning the
+// same (a proof edited, its statement kept) is not a change after all.
+local fn unmark(mut ch: Changes, q: String) -> Unit = {
+  if map.contains(ch.direct, q) then {
+    map.delete(ch.direct, q)
+    let fresh_memo: Map[String, Bool] = [:]
+    ch.memo = fresh_memo
+  } else ()
+}
+
+// Whether q's meaning changed: q itself, or anything it rests on,
+// transitively (in the new environment). Iterative, memoised until the next
+// change is marked.
+local fn changed(env: Env, mut ch: Changes, q: String) -> Bool = {
+  if map.contains(ch.memo, q) then map.get(ch.memo, q) ?? false
+  else {
+    var stack: List[String] = [q]
+    var seen: Map[String, Bool] = [:]
+    var found = false
+    while not found and not list.is_empty(stack) {
+      match list.pop(stack) {
+        some(n) => if not map.contains(seen, n) then {
+          map.insert(seen, n, true)
+          if map.contains(ch.direct, n) or (map.get(ch.memo, n) ?? false) then {
+            found = true
+          } else if map.contains(ch.memo, n) then ()
+          else for d in semantic_deps(env, n) {
+            list.push(stack, d)
+          }
+        } else (),
+        none => (),
+      }
+    }
+    // Only a negative answer holds for everything visited.
+    if not found then for (n, _) in map.entries(seen) {
+      map.insert(ch.memo, n, false)
+    } else map.insert(ch.memo, q, true)
+    found
+  }
+}
+
+local fn first_changed(env: Env, mut ch: Changes, deps: List[String]) -> Option[String] = {
+  var found: Option[String] = none
+  for d in deps {
+    if found == none and changed(env, ch, d) then {
+      found = some(d)
+    } else ()
+  }
+  found
+}
+
+local fn all_declared(env: Env, names: List[String]) -> Bool = {
+  var all = true
+  for d in names {
+    if all and not map.contains(env.entries, d) then {
+      all = false
+    } else ()
+  }
+  all
+}
+
+local fn resolves_to(ident: String, q: String) -> Bool = q == ident or string.ends_with(q, "." + ident)
+
+// ── A step ──────────────────────────────────────────────────────────
+
+// The first unused record with this key. Records are found through an
+// index (key -> positions), not by walking the list: walking copies every
+// record, once per unit.
+local fn first_match(records: List[Record], index: Map[String, List[Int]], key: String, used: Map[Int, Bool]) -> Option[(Int, Record)] =
+  match list.find(map.get(index, key) ?? [], (i) => not map.contains(used, i)) {
+    some(i) => match list.get(records, i) {
+      some(r) => some((i, r)),
+      none => none,
+    },
+    none => none,
+  }
+
+effect fn step(prev: Option[Step], files: List[String]) -> Step = {
+  let units = units_of(files)!
+  var env = kernel.empty()
+  var records: List[Record] = []
+  var reasons: List[String] = []
+  var rechecked = 0
+  var reused = 0
+  var ch = Changes { direct: [:], memo: [:] }
+  var used: Map[Int, Bool] = [:]
+  // Compared once: comparing the Option copies the whole previous step.
+  let first = match prev {
+    some(_) => false,
+    none => true,
+  }
+  let old_env = match prev {
+    some(p) => p.env,
+    none => kernel.empty(),
+  }
+  let old_records = match prev {
+    some(p) => p.records,
+    none => [],
+  }
+  // Names declared in the previous step, and rule texts by head.
+  var old_names: Map[String, Bool] = [:]
+  for q in old_env.order {
+    map.insert(old_names, q, true)
+  }
+  var old_rules: Map[String, List[String]] = [:]
+  for r in old_env.rules + old_env.irrelevants {
+    map.insert(old_rules, r.head, (map.get(old_rules, r.head) ?? []) + [r.text])
+  }
+  // Units of the previous step that are gone: what they declared, and the
+  // heads of their rules, changed (conservatively, from the start).
+  var new_keys: Map[String, Bool] = [:]
+  for u in units {
+    map.insert(new_keys, u.key, true)
+  }
+  var vanished: List[String] = []
+  for r in old_records {
+    if not map.contains(new_keys, r.key) then {
+      for q in r.delta.names {
+        mark(ch, q)
+        list.push(vanished, q)
+      }
+      for rl in r.delta.rules + r.delta.irrelevants {
+        mark(ch, rl.head)
+      }
+    } else ()
+  }
+  var index: Map[String, List[Int]] = [:]
+  var pos = 0
+  for r in old_records {
+    map.insert(index, r.key, (map.get(index, r.key) ?? []) + [pos])
+    pos = pos + 1
+  }
+  var added: List[String] = []
+  for u in units {
+    let candidate = first_match(old_records, index, u.key, used)
+    let seen_now = map.get(env.rooms, env.room) ?? []
+    let why = if u.always then "always checked (room, rule, view, translation or directive)" else match candidate {
+      none => if first then "first check" else "new or edited",
+      some((_, r)) =>
+        if not r.ok then "failed before"
+        else if r.room != env.room or r.seen != seen_now then "its room, or what the room can see, differs"
+        // A helper, not a closure: a closure would capture (copy) the environment.
+        else if not all_declared(env, r.deps) then "something it uses is not declared (yet)"
+        // A loop, not `list.find` with a closure: almide/almide#3431.
+        else match first_changed(env, ch, r.deps) {
+          some(d) => "rests on ${d}, which changed",
+          none => match list.find(u.idents, (x) => list.any(added + vanished, (q) => resolves_to(x, q))) {
+            some(x) => "the name ${x} may resolve differently (a declaration appeared or disappeared)",
+            none => "",
+          },
+        },
+    }
+    if why == "" then {
+      match candidate {
+        some((i, r)) => {
+          map.insert(used, i, true)
+          replay(env, old_env, r.delta)
+          list.push(records, { ...r, file: u.file, line: u.line })
+          reused = reused + 1
+        },
+        none => (),
+      }
+    } else {
+      rechecked = rechecked + 1
+      let before = mark_of(env)
+      let result = checker.process(env, u.decl)
+      let dl = delta_of(before, env, u.decl.decl)
+      let (good, out, msg) = match result {
+        ok(lines) => (true, lines, ""),
+        err(e) => (false, [], e),
+      }
+      list.push(reasons, "  check ${u.file}:${int.to_string(u.line)}: ${why}")
+      // What the same unit declared before and does not now (it failed, or
+      // declares less) is gone: a change, and a name that no longer resolves.
+      match candidate {
+        some((i, r)) => {
+          map.insert(used, i, true)
+          for q in r.delta.names {
+            if not list.contains(dl.names, q) then {
+              mark(ch, q)
+              if list.contains(vanished, q) then () else list.push(vanished, q)
+            } else ()
+          }
+        },
+        none => (),
+      }
+      // Did what it declares change, for those that use it?
+      for q in dl.names {
+        if not map.contains(old_names, q) then {
+          list.push(added, q)
+          mark(ch, q)
+        } else if fingerprint(env, q) != fingerprint(old_env, q) then mark(ch, q)
+        else if list.contains(vanished, q) then {
+          unmark(ch, q)
+          vanished = list.filter(vanished, (v) => v != q)
+        } else ()
+      }
+      for rl in dl.rules + dl.irrelevants {
+        if not list.contains(map.get(old_rules, rl.head) ?? [], rl.text) then mark(ch, rl.head) else ()
+      }
+      for (k, _) in dl.views {
+        match (checker.view_text(env, k), checker.view_text(old_env, k)) {
+          (some(a), some(b)) => if a != b then mark(ch, k) else (),
+          _ => mark(ch, k),
+        }
+      }
+      list.push(records, Record { key: u.key, file: u.file, line: u.line, ok: good, lines: out, message: msg, delta: dl, deps: check_deps(env, dl), idents: u.idents, room: before.room, seen: before.seen })
+    }
+  }
+  Step { env: env, records: records, rechecked: rechecked, reused: reused, reasons: reasons }
+}
+
+// ── The digest ──────────────────────────────────────────────────────
+
+// Each unit's outcome; each declared name's kind, statement, body (proofs
+// too) and assumption inventory; and diagnostics.
+fn digest_text(env: Env, records: List[Record]) -> String = {
+  var out: List[String] = []
+  for r in records {
+    if r.ok then {
+      list.push(out, "ok ${r.file}:${int.to_string(r.line)}")
+      for line in r.lines {
+        list.push(out, "  | ${line}")
+      }
+      for q in r.delta.names {
+        let body = match map.get(env.bodies, q) {
+          some(b) => hash.sha256_hex(exact(b)),
+          none => "-",
+        }
+        let ty = match map.get(env.types, q) {
+          some(t) => exact(t),
+          none => "",
+        }
+        list.push(out, "  ${q}: ${ty} [body ${body}] [assumptions ${hash.sha256_hex(list.join(checker.axioms_report(env, q), "\n"))}]")
+      }
+    } else list.push(out, "failed ${r.file}:${int.to_string(r.line)}: ${r.message}")
+  }
+  list.join(out, "\n")
+}
+
+// A fresh check, as records (for `arlk check --digest`).
+effect fn fresh(files: List[String]) -> Step = step(none, files)!

@@ -528,6 +528,15 @@ loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](do
 arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 ```
 
+## Incremental checking
+
+`arlk session STEP_DIR...` checks a sequence of edits in one process. It reuses each declaration
+that an edit cannot have affected, and says why each other one was checked again. Proofs are opaque
+to their users, so editing a proof checks one declaration. Changing a definition, rule, type, room
+or view checks everything that rests on it. After every edit, the result must be identical to a
+fresh check (`arlk check --digest`); CI checks this over 29 edits of every kind. See
+[docs/INCREMENTAL.md](docs/INCREMENTAL.md).
+
 ## Packages: checked libraries and views, reused
 
 A project names the packages it requires in a data-only manifest, each pinned by hash. A package

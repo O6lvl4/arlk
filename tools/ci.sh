@@ -164,6 +164,10 @@ must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arl
 # The native standard library and its clients, with negative controls (#18).
 must_pass "native standard library and clients" 600 tools/std-check.sh ./arlk "$LOGS/std"
 
+# Incremental checking (#21): a session of edits, each step identical to a
+# fresh check; the scale table is advisory.
+must_pass "incremental checking equals a fresh check" 900 python3 tools/session_check.py ./arlk "$LOGS/session" --scale
+
 # Packages (#20): two projects on shared packages, every failure status,
 # the assumption policy, bundles bound to packages, tampering.
 must_pass "packages and projects" 900 tools/package-check.sh ./arlk "$LOGS/packages"
