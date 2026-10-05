@@ -1,13 +1,20 @@
-// Surface syntax of Arlk: lexer and parser.
+// Surface syntax of Arlk: lexer and parser. It reads like Almide.
 //
-//   room logic.
-//   symbol Prop : Type.
-//   symbol imp : Prop -> Prop -> Prop.
-//   rule [a : Prop, b : Prop] Prf (imp a b) --> Prf a -> Prf b.
-//   theorem id : (a : Prop) -> Prf (imp a a) := fun (a : Prop) (h : Prf a) => h.
+//   room logic
 //
-// The parser produces named `Raw` terms; name resolution to de Bruijn
+//   symbol Prop: Type
+//   symbol Prf(p: Prop) -> Type
+//   symbol imp(a: Prop, b: Prop) -> Prop
+//   rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
+//
+//   theorem k(a: Prop, b: Prop) -> Prf(imp(a, imp(b, a))) =
+//     (x: Prf(a), y: Prf(b)) => x
+//
+// Declarations start with a keyword and need no terminator. Calls are
+// `f(a, b)`, functions `(x: A) => e`, function types `(x: A) -> B` or
+// `A -> B`, and `//` starts a comment. Name resolution to de Bruijn
 // indices happens in the elaborator, which knows the rooms.
+
 type Token = { kind: String, text: String, line: Int }
 
 // `RBracket` is `{t}`: only legal in a rule's left-hand side, where it
@@ -40,12 +47,16 @@ let KEYWORDS = [
   "def",
   "theorem",
   "rule",
+  "where",
   "irrelevant",
-  "fun",
-  "Type"
+  "check",
+  "eval",
+  "axioms",
+  "Type",
 ]
 
 // ── Lexer ───────────────────────────────────────────────────────────
+
 // `@` lets absorbed names carry universe levels: `Eq@1`, `HAdd@0@0@0`.
 local fn is_ident_char(c: String) -> Bool =
   c != "" and (string.is_alphanumeric(c) or c == "_" or c == "'" or c == "@")
@@ -56,30 +67,23 @@ local fn at(cs: List[String], i: Int) -> String = list.get(cs, i) ?? ""
 local fn punct(cs: List[String], i: Int) -> (String, Int)? = {
   let c = at(cs, i)
   let c2 = c + at(cs, i + 1)
-  let c3 = c2 + at(cs, i + 2)
-  if c3 == "-->" then some(("-->", 3))
-  else match c2 {
+  match c2 {
     "->" => some(("->", 2)),
     "=>" => some(("=>", 2)),
-    ":=" => some((":=", 2)),
     _ => match c {
-      "(" | ")" | "[" | "]" | "{" | "}" | ":" | "," | "." => some((c, 1)),
+      "(" | ")" | "{" | "}" | ":" | "," | "=" | "|" => some((c, 1)),
       "→" => some(("->", 1)),
-      "↪" => some(("-->", 1)),
       "⇒" => some(("=>", 1)),
-      "λ" => some(("fun", 1)),
       _ => none,
     },
   }
 }
 
-// An identifier may contain dots (`logic.Prf`) as long as each dot is
-// followed by another identifier character; a trailing dot ends the decl.
-local fn scan_ident(cs: List[String], i: Int) -> Int = if is_ident_char(at(cs, i)) then scan_ident(
-  cs,
-  i + 1,
-)
-else if at(cs, i) == "." and is_ident_char(at(cs, i + 1)) then scan_ident(cs, i + 1) else i
+// An identifier may contain dots (`logic.Prf`) between identifier characters.
+local fn scan_ident(cs: List[String], i: Int) -> Int =
+  if is_ident_char(at(cs, i)) then scan_ident(cs, i + 1)
+  else if at(cs, i) == "." and is_ident_char(at(cs, i + 1)) then scan_ident(cs, i + 1)
+  else i
 
 // Copy element by element: `list.slice` clones the whole list per call on
 // native (almide/almide#3397), which made lexing quadratic.
@@ -107,18 +111,10 @@ fn lex(src: String) -> List[Token]! = {
       i = i + 1
     } else if string.is_whitespace(c) then {
       i = i + 1
-    } else if c == "-" and at(cs, i + 1) == "-" and at(cs, i + 2) != ">" then {
+    } else if c == "/" and at(cs, i + 1) == "/" then {
       while i < n and at(cs, i) != "\n" {
         i = i + 1
       }
-    } else if c == "#" and is_ident_char(at(cs, i + 1)) then {
-      let j = scan_ident(cs, i + 1)
-      list.push(toks, Token { kind: "ident", text: text_between(cs, i, j), line: line })
-      i = j
-    } else if c == "λ" then {
-      // λ is a letter to Unicode, so it must be claimed before identifiers.
-      list.push(toks, Token { kind: "kw", text: "fun", line: line })
-      i = i + 1
     } else if is_ident_char(c) then {
       let j = scan_ident(cs, i)
       let text = text_between(cs, i, j)
@@ -128,8 +124,7 @@ fn lex(src: String) -> List[Token]! = {
     } else {
       match punct(cs, i) {
         some((text, len)) => {
-          let kind = if text == "fun" then "kw" else "sym"
-          list.push(toks, Token { kind: kind, text: text, line: line })
+          list.push(toks, Token { kind: "sym", text: text, line: line })
           i = i + len
         },
         none => {
@@ -139,17 +134,14 @@ fn lex(src: String) -> List[Token]! = {
     }
   }
   guard failure == "" else err(failure)
-  toks + [
-    Token { kind: "eof", text: "end of file", line: line }
-  ]
+  list.push(toks, Token { kind: "eof", text: "end of file", line: line })
+  ok(toks)
 }
 
 // ── Parser ──────────────────────────────────────────────────────────
-local fn tok(ts: List[Token], p: Int) -> Token = list.get(ts, p) ?? Token {
-  kind: "eof",
-  text: "end of file",
-  line: 0,
-}
+
+local fn tok(ts: List[Token], p: Int) -> Token =
+  list.get(ts, p) ?? Token { kind: "eof", text: "end of file", line: 0 }
 
 local fn is_sym(ts: List[Token], p: Int, s: String) -> Bool = {
   let t = tok(ts, p)
@@ -166,143 +158,165 @@ local fn fail_at(ts: List[Token], p: Int, msg: String) -> String = {
   "${int.to_string(t.line)}: ${msg}, found '${t.text}'"
 }
 
-local fn expect(ts: List[Token], p: Int, s: String) -> Int! = if is_sym(ts, p, s) then ok(p + 1)
-else err(fail_at(ts, p, "expected '${s}'"))
+local fn expect(ts: List[Token], p: Int, s: String) -> Int! =
+  if is_sym(ts, p, s) then ok(p + 1) else err(fail_at(ts, p, "expected '${s}'"))
 
 local fn ident(ts: List[Token], p: Int) -> (String, Int)! = {
   let t = tok(ts, p)
-  if t.kind == "ident" then ok((t.text, p + 1))
-  else err(fail_at(ts, p, "expected a name"))
+  if t.kind == "ident" then ok((t.text, p + 1)) else err(fail_at(ts, p, "expected a name"))
 }
 
-local fn starts_atom(ts: List[Token], p: Int) -> Bool = {
-  let t = tok(ts, p)
-  t.kind == "ident" or is_kw(ts, p, "Type") or is_sym(ts, p, "(") or is_sym(ts, p, "{")
-}
+// One entry of a parenthesised list: a binder `x: A`, or a term.
+type Item = | Binder(String, Raw) | Plain(Raw)
 
-// `(` name+ `:` — a binder group rather than a parenthesised term.
-local fn is_binder_group(ts: List[Token], p: Int) -> Bool = is_sym(ts, p, "(") and tok(ts, p + 1).kind == "ident" and names_then_colon(
-  ts,
-  p + 1,
-)
-
-local fn names_then_colon(ts: List[Token], p: Int) -> Bool = if tok(ts, p).kind == "ident" then names_then_colon(
-  ts,
-  p + 1,
-)
-else is_sym(ts, p, ":")
-
-local fn names(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int) = if tok(ts, p).kind == "ident" then names(
-  ts,
-  p + 1,
-  acc + [
-    tok(ts, p).text
-  ],
-)
-else (acc, p)
-
-// One group `(x y : A)` → [(x, A), (y, A)].
-local fn binder_group(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! = {
-  let p1 = expect(ts, p, "(")!
-  let (xs, p2) = names(ts, p1, [])
-  let p3 = expect(ts, p2, ":")!
-  let (ty, p4) = term(ts, p3)!
-  let p5 = expect(ts, p4, ")")!
-  (xs |> list.map((x) => (x, ty)), p5)
-}
-
-local fn binder_groups(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! = if is_binder_group(
-  ts,
-  p,
-) then {
-  let (bs, p1) = binder_group(ts, p)!
-  binder_groups(ts, p1, acc + bs)
-} else ok((acc, p))
-
-local fn wrap_lams(bs: List[(String, Raw)], body: Raw) -> Raw = list.fold(
-  list.reverse(bs),
-  body,
-  (acc, (x, ty)) => RLam(x, ty, acc),
-)
-
-local fn wrap_pis(bs: List[(String, Raw)], body: Raw) -> Raw = list.fold(
-  list.reverse(bs),
-  body,
-  (acc, (x, ty)) => RPi(x, ty, acc),
-)
-
-fn term(ts: List[Token], p: Int) -> (Raw, Int)! = {
-  if is_kw(ts, p, "fun") then {
-    let (bs, p1) = binder_groups(ts, p + 1, [])!
-    guard not list.is_empty(bs) else err(fail_at(ts, p + 1, "expected a binder '(x : A)'"))
-    let p2 = expect(ts, p1, "=>")!
-    let (body, p3) = term(ts, p2)!
-    ok((wrap_lams(bs, body), p3))
-  } else if is_binder_group(ts, p) then {
-    let (bs, p1) = binder_groups(ts, p, [])!
-    let p2 = expect(ts, p1, "->")!
-    let (body, p3) = term(ts, p2)!
-    ok((wrap_pis(bs, body), p3))
+local fn item(ts: List[Token], p: Int) -> (Item, Int)! =
+  if tok(ts, p).kind == "ident" and is_sym(ts, p + 1, ":") then {
+    let (ty, p1) = term(ts, p + 2)!
+    ok((Binder(tok(ts, p).text, ty), p1))
   } else {
-    let (lhs, p1) = app(ts, p)!
-    if is_sym(ts, p1, "->") then {
-      let (rhs, p2) = term(ts, p1 + 1)!
-      ok((RPi("_", lhs, rhs), p2))
-    } else ok((lhs, p1))
+    let (t, p1) = term(ts, p)!
+    ok((Plain(t), p1))
+  }
+
+local fn items(ts: List[Token], p: Int, acc: List[Item]) -> (List[Item], Int)! = {
+  let (it, p1) = item(ts, p)!
+  let acc2 = acc + [it]
+  if is_sym(ts, p1, ",") then items(ts, p1 + 1, acc2)
+  else {
+    let p2 = expect(ts, p1, ")")!
+    ok((acc2, p2))
   }
 }
 
-local fn app(ts: List[Token], p: Int) -> (Raw, Int)! = {
-  let (head, p1) = atom(ts, p)!
-  app_args(ts, p1, head)
+local fn binders_of(ts: List[Token], p: Int, its: List[Item]) -> List[(String, Raw)]! = {
+  let bs = its |> list.filter_map((it) => match it {
+    Binder(x, ty) => some((x, ty)),
+    Plain(_) => none,
+  })
+  guard list.len(bs) == list.len(its) else err(fail_at(ts, p, "a function's parameters need types, like (x: A)"))
+  ok(bs)
 }
 
-local fn app_args(ts: List[Token], p: Int, acc: Raw) -> (Raw, Int)! = if starts_atom(ts, p) then {
-  let (a, p1) = atom(ts, p)!
-  app_args(ts, p1, RApp(acc, a))
-} else ok((acc, p))
+local fn wrap_lams(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
+
+local fn wrap_pis(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+// `(x: A, B) -> C`: binders are dependent, plain terms are not.
+local fn wrap_pi_items(its: List[Item], body: Raw) -> Raw =
+  list.fold(list.reverse(its), body, (acc, it) => match it {
+    Binder(x, ty) => RPi(x, ty, acc),
+    Plain(ty) => RPi("_", ty, acc),
+  })
+
+fn term(ts: List[Token], p: Int) -> (Raw, Int)! = {
+  if is_sym(ts, p, "(") then {
+    let (its, p1) = items(ts, p + 1, [])!
+    if is_sym(ts, p1, "=>") then {
+      let bs = binders_of(ts, p, its)!
+      let (body, p2) = term(ts, p1 + 1)!
+      ok((wrap_lams(bs, body), p2))
+    } else if is_sym(ts, p1, "->") then {
+      let (body, p2) = term(ts, p1 + 1)!
+      ok((wrap_pi_items(its, body), p2))
+    } else {
+      // `[it]` then `match it`, not `[Plain(inner)]`: almide/almide#3400.
+      let lone = match its {
+        [it] => match it {
+          Plain(inner) => some(inner),
+          _ => none,
+        },
+        _ => none,
+      }
+      match lone {
+        some(inner) => {
+          let (t, p2) = calls(ts, p1, inner)!
+          arrow(ts, p2, t)
+        },
+        none => err(fail_at(ts, p1, "a parenthesised list must be followed by '=>' or '->'")),
+      }
+    }
+  } else {
+    let (head, p1) = atom(ts, p)!
+    let (t, p2) = calls(ts, p1, head)!
+    arrow(ts, p2, t)
+  }
+}
+
+local fn arrow(ts: List[Token], p: Int, lhs: Raw) -> (Raw, Int)! =
+  if is_sym(ts, p, "->") then {
+    let (rhs, p1) = term(ts, p + 1)!
+    ok((RPi("_", lhs, rhs), p1))
+  } else ok((lhs, p))
+
+// f(a, b)(c): each argument list applies in turn.
+local fn calls(ts: List[Token], p: Int, f: Raw) -> (Raw, Int)! =
+  if is_sym(ts, p, "(") then {
+    let (args, p1) = args_list(ts, p + 1, [])!
+    calls(ts, p1, list.fold(args, f, (acc, a) => RApp(acc, a)))
+  } else ok((f, p))
+
+local fn args_list(ts: List[Token], p: Int, acc: List[Raw]) -> (List[Raw], Int)! = {
+  let (a, p1) = term(ts, p)!
+  let acc2 = acc + [a]
+  if is_sym(ts, p1, ",") then args_list(ts, p1 + 1, acc2)
+  else {
+    let p2 = expect(ts, p1, ")")!
+    ok((acc2, p2))
+  }
+}
 
 local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   let t = tok(ts, p)
   if t.kind == "ident" then ok((RName(t.text), p + 1))
   else if is_kw(ts, p, "Type") then ok((RType, p + 1))
-  else if is_sym(ts, p, "(") then {
-    let (inner, p1) = term(ts, p + 1)!
-    let p2 = expect(ts, p1, ")")!
-    ok((inner, p2))
-  } else if is_sym(ts, p, "{") then {
+  else if is_sym(ts, p, "{") then {
     let (inner, p1) = term(ts, p + 1)!
     let p2 = expect(ts, p1, "}")!
     ok((RBracket(inner), p2))
   } else err(fail_at(ts, p, "expected a term"))
 }
 
-// `[x : A, y : B]` before a rule; the brackets are optional when empty.
-local fn rule_vars(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! =
-  if is_sym(ts, p, "[") and is_sym(ts, p + 1, "]") then ok(([], p + 2))
-  else if is_sym(ts, p, "[") then rule_var_list(ts, p + 1, [])
-  else ok(([], p))
+// `where x: A, y: B` after a rule; absent means no variables.
+local fn where_vars(ts: List[Token], p: Int) -> (List[(String, Raw)], Int)! =
+  if is_kw(ts, p, "where") then where_list(ts, p + 1, []) else ok(([], p))
 
-local fn rule_var_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! = {
+local fn where_list(ts: List[Token], p: Int, acc: List[(String, Raw)]) -> (List[(String, Raw)], Int)! = {
   let (x, p1) = ident(ts, p)!
   let p2 = expect(ts, p1, ":")!
   let (ty, p3) = term(ts, p2)!
   let acc2 = acc + [(x, ty)]
-  if is_sym(ts, p3, ",") then rule_var_list(ts, p3 + 1, acc2)
-  else {
-    let p4 = expect(ts, p3, "]")!
-    ok((acc2, p4))
-  }
+  if is_sym(ts, p3, ",") then where_list(ts, p3 + 1, acc2) else ok((acc2, p3))
 }
 
 local fn room_uses(ts: List[Token], p: Int, acc: List[String]) -> (List[String], Int)! = {
   let (r, p1) = ident(ts, p)!
-  if is_sym(ts, p1, ",") then room_uses(ts, p1 + 1, acc + [r])
-  else ok((acc + [r], p1))
+  if is_sym(ts, p1, ",") then room_uses(ts, p1 + 1, acc + [r]) else ok((acc + [r], p1))
 }
+
+// `name(x: A, ...) -> T` or `name: T`: the declared type, with the
+// parameters bound around it, and the parameters themselves.
+local fn signature(ts: List[Token], p: Int) -> (String, List[(String, Raw)], Raw, Int)! = {
+  let (name, p1) = ident(ts, p)!
+  if is_sym(ts, p1, "(") then {
+    let (its, p2) = items(ts, p1 + 1, [])!
+    let params = binders_of(ts, p1, its)!
+    let p3 = expect(ts, p2, "->")!
+    let (ret, p4) = term(ts, p3)!
+    ok((name, params, wrap_pis(params, ret), p4))
+  } else {
+    let p2 = expect(ts, p1, ":")!
+    let (ty, p3) = term(ts, p2)!
+    ok((name, [], ty, p3))
+  }
+}
+
+let DECL_HINT = "expected a declaration (room, symbol, def, theorem, rule, irrelevant, check, eval, axioms)"
 
 local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
   let t = tok(ts, p)
+  guard t.kind == "kw" else err(fail_at(ts, p, DECL_HINT))
   match t.text {
     "room" => {
       let (name, p1) = ident(ts, p + 1)!
@@ -312,49 +326,41 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       } else ok((DRoom(name, []), p1))
     },
     "symbol" => {
-      let (name, p1) = ident(ts, p + 1)!
-      let p2 = expect(ts, p1, ":")!
-      let (ty, p3) = term(ts, p2)!
-      ok((DSymbol(name, ty), p3))
+      let (name, _, ty, p1) = signature(ts, p + 1)!
+      ok((DSymbol(name, ty), p1))
     },
     "def" | "theorem" => {
-      let (name, p1) = ident(ts, p + 1)!
-      let p2 = expect(ts, p1, ":")!
-      let (ty, p3) = term(ts, p2)!
-      let p4 = expect(ts, p3, ":=")!
-      let (body, p5) = term(ts, p4)!
-      if t.text == "def" then ok((DDef(name, ty, body), p5))
-      else ok((DTheorem(name, ty, body), p5))
+      let (name, params, ty, p1) = signature(ts, p + 1)!
+      let p2 = expect(ts, p1, "=")!
+      let (body, p3) = term(ts, p2)!
+      let value = wrap_lams(params, body)
+      if t.text == "def" then ok((DDef(name, ty, value), p3)) else ok((DTheorem(name, ty, value), p3))
     },
     "rule" => {
-      let (vars, p1) = rule_vars(ts, p + 1)!
-      let (lhs, p2) = term(ts, p1)!
-      let p3 = expect(ts, p2, "-->")!
-      let (rhs, p4) = term(ts, p3)!
+      let (lhs, p1) = term(ts, p + 1)!
+      let p2 = expect(ts, p1, "=")!
+      let (rhs, p3) = term(ts, p2)!
+      let (vars, p4) = where_vars(ts, p3)!
       ok((DRule(vars, lhs, rhs), p4))
     },
     "irrelevant" => {
-      let (vars, p1) = rule_vars(ts, p + 1)!
-      let (ty, p2) = term(ts, p1)!
+      let (ty, p1) = term(ts, p + 1)!
+      let (vars, p2) = where_vars(ts, p1)!
       ok((DIrrelevant(vars, ty), p2))
     },
-    "#check" => {
+    "check" => {
       let (e, p1) = term(ts, p + 1)!
       ok((DCheck(e), p1))
     },
-    "#eval" => {
+    "eval" => {
       let (e, p1) = term(ts, p + 1)!
       ok((DEval(e), p1))
     },
-    "#axioms" => {
+    "axioms" => {
       let (name, p1) = ident(ts, p + 1)!
       ok((DAxioms(name), p1))
     },
-    _ => err(fail_at(
-      ts,
-      p,
-      "expected a declaration (room, symbol, def, theorem, rule, irrelevant, #check, #eval, #axioms)",
-    )),
+    _ => err(fail_at(ts, p, DECL_HINT)),
   }
 }
 
@@ -372,66 +378,61 @@ local fn decls(ts: List[Token], p: Int, acc: List[Located]) -> List[Located]! = 
   while failure == "" and tok(ts, q).kind != "eof" {
     let line = tok(ts, q).line
     match decl(ts, q) {
-      ok((d, p1)) => match expect(ts, p1, ".") {
-        ok(p2) => {
-          list.push(out, Located { line: line, decl: d })
-          q = p2
-        },
-        err(e) => { failure = e },
+      ok((d, p1)) => {
+        list.push(out, Located { line: line, decl: d })
+        q = p1
       },
-      err(e) => { failure = e },
+      err(e) => {
+        failure = e
+      },
     }
   }
   guard failure == "" else err(failure)
   ok(out)
 }
 
-test "lexer separates qualified names from the terminating dot" {
-  let ts = lex("symbol x : logic.Prop.")!
-  let texts = ts |> list.map((t) => t.text)
-  assert_eq(
-    texts,
-    [
-      "symbol",
-      "x",
-      ":",
-      "logic.Prop",
-      ".",
-      "end of file"
-    ],
-  )
+local fn first_decl(src: String) -> Decl = match parse(src) {
+  ok(ds) => (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl,
+  err(e) => DCheck(RName("parse error: " + e)),
 }
 
-test "unicode arrows are aliases" {
-  let ts = lex("λ → ↪ ⇒")!
-  let texts = ts |> list.map((t) => t.text)
-  assert_eq(texts, ["fun", "->", "-->", "=>", "end of file"])
+test "the lexer keeps qualified names whole" {
+  let ts = lex("symbol x: logic.Prop")!
+  assert_eq(ts |> list.map((t) => t.text), ["symbol", "x", ":", "logic.Prop", "end of file"])
 }
 
-test "comments are skipped but the rule arrow is not" {
-  let ts = lex("a --> b -- trailing comment\nc")!
-  let texts = ts |> list.map((t) => t.text)
-  assert_eq(texts, ["a", "-->", "b", "c", "end of file"])
+test "comments are skipped" {
+  let ts = lex("a -> b // trailing comment\nc")!
+  assert_eq(ts |> list.map((t) => t.text), ["a", "->", "b", "c", "end of file"])
 }
 
-test "arrows associate to the right and bind looser than application" {
-  let ds = parse("symbol f : A B -> C -> D.")!
-  let d = (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl
-  assert_eq(
-    d,
-    DSymbol("f", RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D")))),
-  )
+test "calls apply each argument in turn" {
+  assert_eq(first_decl("check f(a, b)(c)"), DCheck(RApp(RApp(RApp(RName("f"), RName("a")), RName("b")), RName("c"))))
 }
 
-test "binder groups share a type" {
-  let ds = parse("#check fun (x y : A) => x.")!
-  let d = (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl
-  assert_eq(d, DCheck(RLam("x", RName("A"), RLam("y", RName("A"), RName("x")))))
+test "arrows associate to the right and bind looser than calls" {
+  assert_eq(first_decl("symbol f: A(B) -> C -> D"), DSymbol("f", RPi("_", RApp(RName("A"), RName("B")), RPi("_", RName("C"), RName("D")))))
 }
 
-test "brackets and level suffixes parse" {
-  let ds = parse("rule [l : Lvl] El {ls l} (sort l) --> Univ@1 l.")!
-  let d = (list.first(ds) ?? Located { line: 0, decl: DCheck(RType) }).decl
+test "a parameter list makes a function type or a function" {
+  assert_eq(first_decl("check (x: A, B) -> C"), DCheck(RPi("x", RName("A"), RPi("_", RName("B"), RName("C")))))
+  assert_eq(first_decl("check (x: A, y: B) => x"), DCheck(RLam("x", RName("A"), RLam("y", RName("B"), RName("x")))))
+}
+
+test "a declaration with parameters binds them in its type and its body" {
+  let d = first_decl("def id(a: A) -> A = a")
+  assert_eq(d, DDef("id", RPi("a", RName("A"), RName("A")), RLam("a", RName("A"), RName("a"))))
+}
+
+test "rules take their variables from a where clause" {
+  let d = first_decl("rule El({ls(l)}, sort(l)) = Univ@1(l) where l: Lvl")
   let lhs = RApp(RApp(RName("El"), RBracket(RApp(RName("ls"), RName("l")))), RApp(RName("sort"), RName("l")))
   assert_eq(d, DRule([("l", RName("Lvl"))], lhs, RApp(RName("Univ@1"), RName("l"))))
+}
+
+test "declarations need no terminator" {
+  match parse("symbol A: Type\nsymbol a: A\ncheck a") {
+    ok(ds) => assert_eq(list.len(ds), 3),
+    err(e) => assert_eq(e, ""),
+  }
 }

@@ -1,69 +1,69 @@
--- The shared foundation of absorbed provers.
---
--- Lean and Rocq both build on a tower of universes and dependent function
--- types. This room writes that tower down once, so that Lean's Prop and
--- Rocq's Prop are the same Prop, and a theorem from one prover can be used
--- by a proof from the other.
---
--- Everything here is an assumption, and `#axioms` reports what a theorem
--- uses of it. The two features that only one prover has are both
--- included, because together they are still consistent (both hold in the
--- set-theoretic model with inaccessible cardinals):
---   - cumulativity (Rocq): a type in universe a is also in every universe above
---   - proof irrelevance (Lean): two proofs of the same proposition are equal
+// The shared foundation of absorbed provers.
+//
+// Lean and Rocq both build on a tower of universes and dependent function
+// types. This room writes that tower down once, so that Lean's Prop and
+// Rocq's Prop are the same Prop, and a theorem from one prover can be used
+// by a proof from the other.
+//
+// Everything here is an assumption, and `axioms` reports what a theorem
+// uses of it. The two features that only one prover has are both
+// included, because together they are still consistent (both hold in the
+// set-theoretic model with inaccessible cardinals):
+//   - cumulativity (Rocq): a type in universe a is also in every universe above
+//   - proof irrelevance (Lean): two proofs of the same proposition are equal
 
-room core.
+room core
 
--- ── Universe levels ────────────────────────────────────────────────
+// ── Universe levels ────────────────────────────────────────────────
 
-symbol Lvl : Type.
-symbol lz : Lvl.
-symbol ls : Lvl -> Lvl.
+symbol Lvl: Type
+symbol lz: Lvl
+symbol ls(n: Lvl) -> Lvl
 
-symbol max : Lvl -> Lvl -> Lvl.
-rule [m : Lvl] max lz m --> m.
-rule [n : Lvl] max (ls n) lz --> ls n.
-rule [n : Lvl, m : Lvl] max (ls n) (ls m) --> ls (max n m).
+symbol max(n: Lvl, m: Lvl) -> Lvl
+rule max(lz, m) = m  where m: Lvl
+rule max(ls(n), lz) = ls(n)  where n: Lvl
+rule max(ls(n), ls(m)) = ls(max(n, m))  where n: Lvl, m: Lvl
 
--- The level of a function type from universe a into universe b: 0 when b
--- is 0 (a function into Prop is a proposition), max a b otherwise.
-symbol imax : Lvl -> Lvl -> Lvl.
-rule [n : Lvl] imax n lz --> lz.
-rule [n : Lvl, m : Lvl] imax n (ls m) --> max n (ls m).
+// The level of a function type from universe a into universe b: 0 when b
+// is 0 (a function into Prop is a proposition), max(a, b) otherwise.
+symbol imax(n: Lvl, m: Lvl) -> Lvl
+rule imax(n, lz) = lz  where n: Lvl
+rule imax(n, ls(m)) = max(n, ls(m))  where n: Lvl, m: Lvl
 
-def l0 : Lvl := lz.
-def l1 : Lvl := ls l0.
-def l2 : Lvl := ls l1.
-def l3 : Lvl := ls l2.
-def l4 : Lvl := ls l3.
-def l5 : Lvl := ls l4.
-def l6 : Lvl := ls l5.
-def l7 : Lvl := ls l6.
-def l8 : Lvl := ls l7.
-def l9 : Lvl := ls l8.
+def l0: Lvl = lz
+def l1: Lvl = ls(l0)
+def l2: Lvl = ls(l1)
+def l3: Lvl = ls(l2)
+def l4: Lvl = ls(l3)
+def l5: Lvl = ls(l4)
+def l6: Lvl = ls(l5)
+def l7: Lvl = ls(l6)
+def l8: Lvl = ls(l7)
+def l9: Lvl = ls(l8)
 
--- ── Universes and types ────────────────────────────────────────────
+// ── Universes and types ────────────────────────────────────────────
 
--- The types living in universe l are the values of `Univ l`; `El l A`
--- turns one into an Arlk type. Level 0 is Prop, level 1 is Lean's Type
--- and Rocq's Set.
-symbol Univ : Lvl -> Type.
-symbol El : (l : Lvl) -> Univ l -> Type.
+// The types living in universe l are the values of `Univ(l)`; `El(l, A)`
+// turns one into an Arlk type. Level 0 is Prop, level 1 is Lean's Type
+// and Rocq's Set.
+symbol Univ(l: Lvl) -> Type
+symbol El(l: Lvl, A: Univ(l)) -> Type
 
-symbol sort : (l : Lvl) -> Univ (ls l).
-rule [l : Lvl] El {ls l} (sort l) --> Univ l.
+symbol sort(l: Lvl) -> Univ(ls(l))
+rule El({ls(l)}, sort(l)) = Univ(l)  where l: Lvl
 
--- Function types are values too: `pi a b A B` is `(x : A) -> B x`.
-symbol pi : (a : Lvl) -> (b : Lvl) -> (A : Univ a) -> (El a A -> Univ b) -> Univ (imax a b).
-rule [a : Lvl, b : Lvl, A : Univ a, B : El a A -> Univ b]
-  El {imax a b} (pi a b A B) --> (x : El a A) -> El b (B x).
+// Function types are values too: `pi(a, b, A, B)` is `(x: A) -> B(x)`.
+symbol pi(a: Lvl, b: Lvl, A: Univ(a), B: El(a, A) -> Univ(b)) -> Univ(imax(a, b))
+rule El({imax(a, b)}, pi(a, b, A, B)) = (x: El(a, A)) -> El(b, B(x))
+  where a: Lvl, b: Lvl, A: Univ(a), B: El(a, A) -> Univ(b)
 
--- ── Cumulativity (from Rocq) ───────────────────────────────────────
+// ── Cumulativity (from Rocq) ───────────────────────────────────────
 
--- `lift a b A` moves A from universe a up to max a b. It has the same values.
-symbol lift : (a : Lvl) -> (b : Lvl) -> Univ a -> Univ (max a b).
-rule [a : Lvl, b : Lvl, A : Univ a] El {max a b} (lift a b A) --> El a A.
+// `lift(a, b, A)` moves A from universe a up to max(a, b). It has the same values.
+symbol lift(a: Lvl, b: Lvl, A: Univ(a)) -> Univ(max(a, b))
+rule El({max(a, b)}, lift(a, b, A)) = El(a, A)  where a: Lvl, b: Lvl, A: Univ(a)
 
--- ── Proof irrelevance (from Lean) ──────────────────────────────────
+// ── Proof irrelevance (from Lean) ──────────────────────────────────
 
-irrelevant [P : Univ lz] El lz P.
+irrelevant El(lz, P)  where P: Univ(lz)

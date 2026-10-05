@@ -1,4 +1,5 @@
 // Printing kernel terms back into Arlk surface syntax.
+
 import self.term.{Term, spine, occurs}
 
 // `room` is the room the reader is in: its own names print unqualified.
@@ -13,7 +14,8 @@ local fn paren(cond: Bool, s: String) -> String = if cond then "(" + s + ")" els
 
 local fn short(room: String, c: String) -> String = string.strip_prefix(c, room + ".") ?? c
 
-// prec 0: binders and arrows, 1: application, 2: atoms.
+// prec 0: anywhere; 1: a callee or the left of an arrow, where a function
+// or a function type needs parentheses.
 local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = match t {
   Sort(0) => "Type",
   Sort(_) => "Kind",
@@ -21,42 +23,56 @@ local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = m
   Const(c) => short(room, c),
   App(_, _) => {
     let (h, args) = spine(t)
-    let parts = [
-      pp(room, names, h, 2)
-    ] + (args |> list.map((a) => pp(room, names, a, 2)))
-    paren(prec > 1, list.join(parts, " "))
+    let parts = args |> list.map((a) => pp(room, names, a, 0))
+    pp(room, names, h, 1) + "(" + list.join(parts, ", ") + ")"
   },
+  Lam(_, _, _) => paren(prec > 0, lambdas(room, names, t, [])),
+  Pi(_, _, _) => paren(prec > 0, pis(room, names, t, [], false)),
+}
+
+// (x: A, y: B) => body
+local fn lambdas(room: String, names: List[String], t: Term, params: List[String]) -> String = match t {
   Lam(x, ty, b) => {
     let y = fresh(names, x)
-    let s = "fun (${y} : ${pp(room, names, ty, 0)}) => ${pp(room, [y] + names, b, 0)}"
-    paren(prec > 0, s)
+    lambdas(room, [y] + names, b, params + ["${y}: ${pp(room, names, ty, 0)}"])
   },
-  Pi(x, ty, b) => {
-    if x == "_" and not occurs(b, 0) then {
-      let s = "${pp(room, names, ty, 1)} -> ${pp(room, ["_"] + names, b, 0)}"
-      paren(prec > 0, s)
-    } else {
+  _ => "(" + list.join(params, ", ") + ") => " + pp(room, names, t, 0),
+}
+
+// (x: A, B) -> C, or A -> C for one plain argument. `named` records whether
+// any entry is a binder, which forces the parenthesised form.
+local fn pis(room: String, names: List[String], t: Term, items: List[String], named: Bool) -> String = match t {
+  Pi(x, ty, b) =>
+    if x == "_" and not occurs(b, 0) then pis(room, ["_"] + names, b, items + [pp(room, names, ty, 1)], named)
+    else {
       let y = fresh(names, x)
-      let s = "(${y} : ${pp(room, names, ty, 0)}) -> ${pp(room, [y] + names, b, 0)}"
-      paren(prec > 0, s)
+      pis(room, [y] + names, b, items + ["${y}: ${pp(room, names, ty, 0)}"], true)
+    },
+  _ => {
+    let body = pp(room, names, t, 0)
+    match items {
+      [one] => if named then "(" + one + ") -> " + body else one + " -> " + body,
+      _ => "(" + list.join(items, ", ") + ") -> " + body,
     }
   },
 }
 
-test "arrows and applications print with minimal parentheses" {
-  let t = Pi(
-    "_",
-    App(Const("r.P"), Var(0)),
-    Pi("_", Pi("_", Const("r.A"), Const("r.B")), Const("r.C")),
-  )
-  assert_eq(show("r", ["x"], t), "P x -> (A -> B) -> C")
+test "calls print with parentheses and commas" {
+  let t = App(App(Const("r.f"), Var(0)), App(Const("r.g"), Const("r.a")))
+  assert_eq(show("r", ["x"], t), "f(x, g(a))")
+}
+
+test "a plain argument prints as an arrow, several as a list" {
+  assert_eq(show("r", ["x"], Pi("_", App(Const("r.P"), Var(0)), Const("r.C"))), "P(x) -> C")
+  assert_eq(show("r", [], Pi("_", Const("r.A"), Pi("_", Const("r.B"), Const("r.C")))), "(A, B) -> C")
+  assert_eq(show("r", [], Pi("_", Pi("_", Const("r.A"), Const("r.B")), Const("r.C"))), "(A -> B) -> C")
 }
 
 test "dependent binders keep their names and foreign rooms stay qualified" {
   let t = Pi("n", Const("nat.Nat"), App(Const("logic.Prf"), Var(0)))
-  assert_eq(show("nat", [], t), "(n : Nat) -> logic.Prf n")
+  assert_eq(show("nat", [], t), "(n: Nat) -> logic.Prf(n)")
 }
 
-test "shadowed names are freshened" {
-  assert_eq(show("r", ["x"], Lam("x", Const("r.A"), Var(1))), "fun (x' : A) => x")
+test "functions print as Almide lambdas, shadowed names are freshened" {
+  assert_eq(show("r", ["x"], Lam("x", Const("r.A"), Lam("y", Const("r.B"), Var(2)))), "(x': A, y: B) => x")
 }

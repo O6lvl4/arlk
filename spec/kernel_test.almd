@@ -3,11 +3,11 @@ import self.syntax
 import self.kernel
 
 let PRELUDE = """
-  room logic.
-  symbol Prop : Type.
-  symbol Prf : Prop -> Type.
-  symbol imp : Prop -> Prop -> Prop.
-  rule [a : Prop, b : Prop] Prf (imp a b) --> Prf a -> Prf b.
+  room logic
+  symbol Prop: Type
+  symbol Prf(p: Prop) -> Type
+  symbol imp(a: Prop, b: Prop) -> Prop
+  rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
   """
 
 // none = accepted; some(msg) = rejected with msg.
@@ -24,55 +24,55 @@ fn rejects_with(src: String, needle: String) -> Bool = match run(src) {
 }
 
 test "a correct proof is accepted" {
-  assert(accepts("theorem k : (a b : Prop) -> Prf (imp a (imp b a)) := fun (a b : Prop) (x : Prf a) (y : Prf b) => x."))
+  assert(accepts("theorem k(a: Prop, b: Prop) -> Prf(imp(a, imp(b, a))) = (x: Prf(a), y: Prf(b)) => x"))
 }
 
 test "returning the wrong hypothesis is rejected" {
   assert(rejects_with(
-    "theorem k : (a b : Prop) -> Prf (imp a (imp b a)) := fun (a b : Prop) (x : Prf a) (y : Prf b) => y.",
+    "theorem k(a: Prop, b: Prop) -> Prf(imp(a, imp(b, a))) = (x: Prf(a), y: Prf(b)) => y",
     "type mismatch",
   ))
 }
 
 test "a proof of a different proposition is rejected" {
   assert(rejects_with(
-    "theorem bad : (a b : Prop) -> Prf (imp a b) := fun (a b : Prop) (x : Prf a) => x.",
+    "theorem bad(a: Prop, b: Prop) -> Prf(imp(a, b)) = (x: Prf(a)) => x",
     "type mismatch",
   ))
 }
 
 test "Type is not a Type" {
-  assert(rejects_with("def t : Type := Type.", "type mismatch"))
+  assert(rejects_with("def t: Type = Type", "type mismatch"))
 }
 
 test "inner binders shadow outer ones" {
-  assert(accepts("symbol A : Type. symbol B : Type. def f : A -> B -> B := fun (x : A) (x : B) => x."))
+  assert(accepts("symbol A: Type\nsymbol B: Type\ndef f: (A, B) -> B = (x: A, x: B) => x"))
   assert(rejects_with(
-    "symbol A : Type. symbol B : Type. def f : A -> B -> A := fun (x : A) (x : B) => x.",
+    "symbol A: Type\nsymbol B: Type\ndef f: (A, B) -> A = (x: A, x: B) => x",
     "type mismatch",
   ))
 }
 
 test "dependent application substitutes the argument into the result type" {
   assert(accepts("""
-    symbol a : Prop.
-    symbol refl_imp : (p : Prop) -> Prf (imp p p).
-    def r : Prf (imp a a) := refl_imp a.
+    symbol a: Prop
+    symbol refl_imp(p: Prop) -> Prf(imp(p, p))
+    def r: Prf(imp(a, a)) = refl_imp(a)
     """))
 }
 
 test "defs unfold during conversion but theorems stay opaque" {
   assert(accepts("""
-    symbol a : Prop.
-    def p : Prop := a.
-    def q : Prf p -> Prf a := fun (h : Prf p) => h.
+    symbol a: Prop
+    def p: Prop = a
+    def q: Prf(p) -> Prf(a) = (h: Prf(p)) => h
     """))
   assert(rejects_with(
     """
-    symbol a : Prop.
-    symbol pa : Prf a.
-    theorem p : Prop := a.
-    def q : Prf p -> Prf a := fun (h : Prf p) => h.
+    symbol a: Prop
+    symbol pa: Prf(a)
+    theorem p: Prop = a
+    def q: Prf(p) -> Prf(a) = (h: Prf(p)) => h
     """,
     "type mismatch",
   ))
@@ -81,8 +81,8 @@ test "defs unfold during conversion but theorems stay opaque" {
 test "a rule must preserve types" {
   assert(rejects_with(
     """
-    symbol f : Prop -> Prop.
-    rule [x : Prop] f x --> Prf x.
+    symbol f(p: Prop) -> Prop
+    rule f(x) = Prf(x)  where x: Prop
     """,
     "rule does not preserve types",
   ))
@@ -91,9 +91,9 @@ test "a rule must preserve types" {
 test "a rule can only extend a symbol of the current room" {
   assert(rejects_with(
     """
-    room other uses logic.
-    symbol a : Prop.
-    rule [x : Prop] Prf (imp x x) --> Prf a.
+    room other uses logic
+    symbol a: Prop
+    rule Prf(imp(x, x)) = Prf(a)  where x: Prop
     """,
     "rules can only be added to symbols of the current room",
   ))
@@ -102,62 +102,62 @@ test "a rule can only extend a symbol of the current room" {
 test "rules cannot be attached to defs or theorems" {
   assert(rejects_with(
     """
-    symbol a : Prop.
-    def d : Prop -> Prop := fun (p : Prop) => p.
-    rule [x : Prop] d x --> a.
+    symbol a: Prop
+    def d(p: Prop) -> Prop = p
+    rule d(x) = a  where x: Prop
     """,
     "only symbols can have rules",
   ))
 }
 
 test "non-linear and unbound pattern variables are rejected" {
-  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop] f x x --> x.", "only once"))
+  assert(rejects_with("symbol f(p: Prop, q: Prop) -> Prop\nrule f(x, x) = x  where x: Prop", "only once"))
   assert(rejects_with(
-    "symbol f : Prop -> Prop. symbol a : Prop. rule [x : Prop, y : Prop] f x --> a.",
+    "symbol f(p: Prop) -> Prop\nsymbol a: Prop\nrule f(x) = a  where x: Prop, y: Prop",
     "must appear",
   ))
 }
 
 test "rooms are sealed once left" {
-  assert(rejects_with("room other uses logic. room logic.", "sealed"))
+  assert(rejects_with("room other uses logic\nroom logic", "sealed"))
 }
 
 test "a room only sees the rooms it uses" {
-  assert(rejects_with("room island. symbol x : logic.Prop.", "does not use"))
-  assert(rejects_with("room island. symbol x : Prop.", "unknown name Prop"))
-  assert(accepts("room shore uses logic. symbol x : Prop."))
+  assert(rejects_with("room island\nsymbol x: logic.Prop", "does not use"))
+  assert(rejects_with("room island\nsymbol x: Prop", "unknown name Prop"))
+  assert(accepts("room shore uses logic\nsymbol x: Prop"))
 }
 
 test "visibility is transitive through uses" {
-  assert(accepts("room mid uses logic. room top uses mid. symbol x : Prop."))
+  assert(accepts("room mid uses logic\nroom top uses mid\nsymbol x: Prop"))
 }
 
 test "duplicate declarations are rejected" {
-  assert(rejects_with("symbol Prop : Type.", "already declared"))
+  assert(rejects_with("symbol Prop: Type", "already declared"))
 }
 
 test "rewriting computes inside the kernel" {
   assert(accepts("""
-    room nat uses logic.
-    symbol Nat : Type.
-    symbol z : Nat.
-    symbol s : Nat -> Nat.
-    symbol add : Nat -> Nat -> Nat.
-    rule [n : Nat] add z n --> n.
-    rule [m : Nat, n : Nat] add (s m) n --> s (add m n).
-    symbol eq : Nat -> Nat -> Prop.
-    symbol refl : (n : Nat) -> Prf (eq n n).
-    theorem t : Prf (eq (add (s z) (s z)) (s (s z))) := refl (s (s z)).
+    room nat uses logic
+    symbol Nat: Type
+    symbol z: Nat
+    symbol s(n: Nat) -> Nat
+    symbol add(m: Nat, n: Nat) -> Nat
+    rule add(z, n) = n  where n: Nat
+    rule add(s(m), n) = s(add(m, n))  where m: Nat, n: Nat
+    symbol eq(m: Nat, n: Nat) -> Prop
+    symbol refl(n: Nat) -> Prf(eq(n, n))
+    theorem t: Prf(eq(add(s(z), s(z)), s(s(z)))) = refl(s(s(z)))
     """))
   assert(rejects_with(
     """
-    room nat uses logic.
-    symbol Nat : Type.
-    symbol z : Nat.
-    symbol s : Nat -> Nat.
-    symbol eq : Nat -> Nat -> Prop.
-    symbol refl : (n : Nat) -> Prf (eq n n).
-    theorem t : Prf (eq (s z) z) := refl z.
+    room nat uses logic
+    symbol Nat: Type
+    symbol z: Nat
+    symbol s(n: Nat) -> Nat
+    symbol eq(m: Nat, n: Nat) -> Prop
+    symbol refl(n: Nat) -> Prf(eq(n, n))
+    theorem t: Prf(eq(s(z), z)) = refl(z)
     """,
     "type mismatch",
   ))
@@ -165,20 +165,20 @@ test "rewriting computes inside the kernel" {
 
 test "eta: a function equals its own expansion" {
   assert(accepts("""
-    symbol f : Prop -> Prop.
-    symbol P : (Prop -> Prop) -> Prop.
-    symbol pf : Prf (P f).
-    def g : Prf (P (fun (x : Prop) => f x)) := pf.
+    symbol f(p: Prop) -> Prop
+    symbol P(g: Prop -> Prop) -> Prop
+    symbol pf: Prf(P(f))
+    def g: Prf(P((x: Prop) => f(x))) = pf
     """))
 }
 
-test "#axioms reports only what a theorem actually uses" {
+test "axioms reports only what a theorem actually uses" {
   let src = PRELUDE + "\n" + """
-    room classical uses logic.
-    symbol bot : Prop.
-    symbol em : (p : Prop) -> Prf p.
-    theorem plain : (a : Prop) -> Prf (imp a a) := fun (a : Prop) (h : Prf a) => h.
-    theorem uses_em : (a : Prop) -> Prf a := fun (a : Prop) => em a.
+    room classical uses logic
+    symbol bot: Prop
+    symbol em(p: Prop) -> Prf(p)
+    theorem plain(a: Prop) -> Prf(imp(a, a)) = (h: Prf(a)) => h
+    theorem uses_em(a: Prop) -> Prf(a) = em(a)
     """
   match syntax.parse(src) {
     ok(ds) => {
@@ -195,90 +195,99 @@ test "#axioms reports only what a theorem actually uses" {
 
 test "a bracket matches by conversion, so a variable can be repeated" {
   assert(accepts("""
-    room nat uses logic.
-    symbol Nat : Type.
-    symbol z : Nat.
-    symbol s : Nat -> Nat.
-    symbol Vec : Nat -> Type.
-    symbol vnil : Vec z.
-    symbol vcons : (n : Nat) -> Nat -> Vec n -> Vec (s n).
-    symbol tail : (n : Nat) -> Vec (s n) -> Vec n.
-    rule [n : Nat, x : Nat, v : Vec n] tail {n} (vcons n x v) --> v.
-    symbol eqv : (n : Nat) -> Vec n -> Vec n -> Prop.
-    symbol reflv : (n : Nat) -> (v : Vec n) -> Prf (eqv n v v).
-    theorem t : Prf (eqv z (tail z (vcons z z vnil)) vnil) := reflv z vnil.
+    room nat uses logic
+    symbol Nat: Type
+    symbol z: Nat
+    symbol s(n: Nat) -> Nat
+    symbol Vec(n: Nat) -> Type
+    symbol vnil: Vec(z)
+    symbol vcons(n: Nat, x: Nat, v: Vec(n)) -> Vec(s(n))
+    symbol tail(n: Nat, v: Vec(s(n))) -> Vec(n)
+    rule tail({n}, vcons(n, x, v)) = v  where n: Nat, x: Nat, v: Vec(n)
+    symbol eqv(n: Nat, v: Vec(n), w: Vec(n)) -> Prop
+    symbol reflv(n: Nat, v: Vec(n)) -> Prf(eqv(n, v, v))
+    theorem t: Prf(eqv(z, tail(z, vcons(z, z, vnil)), vnil)) = reflv(z, vnil)
     """))
 }
 
 test "without the bracket the same rule does not type-check" {
   assert(rejects_with("""
-    room nat uses logic.
-    symbol Nat : Type.
-    symbol s : Nat -> Nat.
-    symbol Vec : Nat -> Type.
-    symbol vcons : (n : Nat) -> Nat -> Vec n -> Vec (s n).
-    symbol tail : (n : Nat) -> Vec (s n) -> Vec n.
-    rule [m : Nat, n : Nat, x : Nat, v : Vec n] tail m (vcons n x v) --> v.
+    room nat uses logic
+    symbol Nat: Type
+    symbol s(n: Nat) -> Nat
+    symbol Vec(n: Nat) -> Type
+    symbol vcons(n: Nat, x: Nat, v: Vec(n)) -> Vec(s(n))
+    symbol tail(n: Nat, v: Vec(s(n))) -> Vec(n)
+    rule tail(m, vcons(n, x, v)) = v  where m: Nat, n: Nat, x: Nat, v: Vec(n)
     """, "type mismatch"))
 }
 
 test "brackets are only allowed in rule patterns" {
-  assert(rejects_with("symbol a : Prop. def b : Prop := {a}.", "only allowed in the left-hand side"))
-  assert(rejects_with("symbol f : Prop -> Prop. symbol a : Prop. rule [x : Prop] f x --> {a}.", "only allowed in the left-hand side"))
+  assert(rejects_with("symbol a: Prop\ndef b: Prop = {a}", "only allowed in the left-hand side"))
+  assert(rejects_with("symbol f(p: Prop) -> Prop\nsymbol a: Prop\nrule f(x) = {a}  where x: Prop", "only allowed in the left-hand side"))
 }
 
 test "a bracket cannot mention a variable the pattern leaves unbound" {
-  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop, y : Prop] f x {y} --> x.", "must appear"))
+  assert(rejects_with("symbol f(p: Prop, q: Prop) -> Prop\nrule f(x, {y}) = x  where x: Prop, y: Prop", "must appear"))
 }
 
 test "names inside a room may contain dots" {
   assert(accepts("""
-    room nat uses logic.
-    symbol Nat : Type.
-    symbol Nat.zero : Nat.
-    def Nat.one@0 : Nat := Nat.zero.
-    def two : Nat := nat.Nat.one@0.
+    room nat uses logic
+    symbol Nat: Type
+    symbol Nat.zero: Nat
+    def Nat.one@0: Nat = Nat.zero
+    def two: Nat = nat.Nat.one@0
     """))
 }
 
 test "irrelevant: two proofs of the same proposition are equal" {
   let without = """
-    symbol a : Prop.
-    symbol h1 : Prf a.
-    symbol h2 : Prf a.
-    symbol P : Prf a -> Prop.
-    symbol ph1 : Prf (P h1).
-    def q : Prf (P h2) := ph1.
+    symbol a: Prop
+    symbol h1: Prf(a)
+    symbol h2: Prf(a)
+    symbol P(h: Prf(a)) -> Prop
+    symbol ph1: Prf(P(h1))
+    def q: Prf(P(h2)) = ph1
     """
   assert(rejects_with(without, "type mismatch"))
-  assert(accepts("irrelevant [a : Prop] Prf a.\n" + without))
+  assert(accepts("irrelevant Prf(a)  where a: Prop\n" + without))
 }
 
 test "irrelevant only applies to the declared types" {
   assert(rejects_with("""
-    room p uses logic.
-    symbol N : Type.
-    symbol a : N.
-    symbol b : N.
-    symbol P : N -> Prop.
-    symbol pa : Prf (P a).
-    def q : Prf (P b) := pa.
+    room p uses logic
+    symbol N: Type
+    symbol a: N
+    symbol b: N
+    symbol P(n: N) -> Prop
+    symbol pa: Prf(P(a))
+    def q: Prf(P(b)) = pa
     """, "type mismatch"))
 }
 
 test "an irrelevant declaration may only target symbols of its own room" {
-  assert(rejects_with("room p uses logic. irrelevant [a : Prop] Prf a.", "rules can only be added to symbols of the current room"))
+  assert(rejects_with("room p uses logic\nirrelevant Prf(a)  where a: Prop", "rules can only be added to symbols of the current room"))
 }
 
 test "functions into an irrelevant type are irrelevant too" {
   assert(accepts("""
-    irrelevant [a : Prop] Prf a.
-    symbol a : Prop.
-    symbol b : Prop.
-    symbol f : Prf (imp a b).
-    symbol g : Prf (imp a b).
-    symbol P : Prf (imp a b) -> Prop.
-    symbol pf : Prf (P f).
-    def q : Prf (P g) := pf.
+    irrelevant Prf(a)  where a: Prop
+    symbol a: Prop
+    symbol b: Prop
+    symbol f: Prf(imp(a, b))
+    symbol g: Prf(imp(a, b))
+    symbol P(h: Prf(imp(a, b))) -> Prop
+    symbol pf: Prf(P(f))
+    def q: Prf(P(g)) = pf
+    """))
+}
+
+test "the Almide-style surface: calls, lambdas and arrows" {
+  assert(accepts("""
+    symbol a: Prop
+    def twice(f: Prop -> Prop, x: Prop) -> Prop = f(f(x))
+    def same: Prop -> Prop = (p: Prop) => twice((q: Prop) => q, p)
+    theorem self_imp: Prf(imp(a, a)) = (h: Prf(a)) => h
     """))
 }

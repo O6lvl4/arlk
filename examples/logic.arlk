@@ -1,44 +1,44 @@
--- Minimal implicational logic, encoded the Dedukti way:
--- propositions are terms of Prop, proofs of p are terms of Prf p,
--- and a rule turns Prf (imp a b) into the function type Prf a -> Prf b.
+// Minimal implicational logic, encoded the Dedukti way: propositions are
+// values of Prop, proofs of p are values of Prf(p), and a rule turns
+// Prf(imp(a, b)) into the function type Prf(a) -> Prf(b).
 
-room logic.
+room logic
 
-symbol Prop : Type.
-symbol Prf : Prop -> Type.
+symbol Prop: Type
+symbol Prf(p: Prop) -> Type
 
-symbol imp : Prop -> Prop -> Prop.
-rule [a : Prop, b : Prop] Prf (imp a b) --> Prf a -> Prf b.
+symbol imp(a: Prop, b: Prop) -> Prop
+rule Prf(imp(a, b)) = Prf(a) -> Prf(b)  where a: Prop, b: Prop
 
--- Thanks to the rule, a proof of an implication is just a function.
-theorem id : (a : Prop) -> Prf (imp a a) :=
-  fun (a : Prop) (h : Prf a) => h.
+// Thanks to the rule, a proof of an implication is just a function.
+theorem id(a: Prop) -> Prf(imp(a, a)) =
+  (h: Prf(a)) => h
 
-theorem k : (a b : Prop) -> Prf (imp a (imp b a)) :=
-  fun (a b : Prop) (x : Prf a) (y : Prf b) => x.
+theorem k(a: Prop, b: Prop) -> Prf(imp(a, imp(b, a))) =
+  (x: Prf(a), y: Prf(b)) => x
 
-theorem s : (a b c : Prop) -> Prf (imp (imp a (imp b c)) (imp (imp a b) (imp a c))) :=
-  fun (a b c : Prop) (f : Prf (imp a (imp b c))) (g : Prf (imp a b)) (x : Prf a) => f x (g x).
+theorem s(a: Prop, b: Prop, c: Prop) -> Prf(imp(imp(a, imp(b, c)), imp(imp(a, b), imp(a, c)))) =
+  (f: Prf(imp(a, imp(b, c))), g: Prf(imp(a, b)), x: Prf(a)) => f(x, g(x))
 
--- Modus ponens is application.
-theorem mp : (a b : Prop) -> Prf a -> Prf (imp a b) -> Prf b :=
-  fun (a b : Prop) (x : Prf a) (f : Prf (imp a b)) => f x.
+// Modus ponens is a call.
+theorem mp(a: Prop, b: Prop) -> (Prf(a), Prf(imp(a, b))) -> Prf(b) =
+  (x: Prf(a), f: Prf(imp(a, b))) => f(x)
 
-#axioms s.
+axioms s
 
--- Classical logic lives in its own room: it adds an assumption,
--- and only theorems that use it will report it.
-room classical uses logic.
+// Classical logic lives in its own room: it adds an assumption, and only
+// theorems that use it report it.
+room classical uses logic
 
-symbol bot : Prop.
-def not : Prop -> Prop := fun (p : Prop) => imp p bot.
-symbol dne : (p : Prop) -> Prf (not (not p)) -> Prf p.
+symbol bot: Prop
+def not(p: Prop) -> Prop = imp(p, bot)
+symbol dne(p: Prop) -> Prf(not(not(p))) -> Prf(p)
 
-theorem peirce_free : (a : Prop) -> Prf (imp a (not (not a))) :=
-  fun (a : Prop) (x : Prf a) (n : Prf (not a)) => n x.
+theorem double_negation_intro(a: Prop) -> Prf(imp(a, not(not(a)))) =
+  (x: Prf(a), n: Prf(not(a))) => n(x)
 
-theorem dne_id : (a : Prop) -> Prf (not (not a)) -> Prf a :=
-  fun (a : Prop) (h : Prf (not (not a))) => dne a h.
+theorem by_contradiction(a: Prop) -> Prf(not(not(a))) -> Prf(a) =
+  (h: Prf(not(not(a)))) => dne(a, h)
 
-#axioms peirce_free.
-#axioms dne_id.
+axioms double_negation_intro
+axioms by_contradiction

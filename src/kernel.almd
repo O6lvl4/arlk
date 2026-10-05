@@ -594,7 +594,7 @@ local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Ra
   let rhs = resolve(env, l.scope, rhs_raw)!
   let tl = infer(env, ctx, l.term)!
   let tr = infer(env, ctx, rhs)!
-  let text = "${show(env, ctx, l.term)} --> ${show(env, ctx, rhs)}"
+  let text = "${show(env, ctx, l.term)} = ${show(env, ctx, rhs)}"
   let tl_s = show(env, ctx, tl)
   let tr_s = show(env, ctx, tr)
   guard conv(env, ctx, tl, tr) else err("rule does not preserve types: ${text}\n    left:  ${tl_s}\n    right: ${tr_s}")
@@ -648,7 +648,7 @@ fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
   DTheorem(name, ty_raw, body_raw) => {
     let (ty, body) = typed_body(env, ty_raw, body_raw)!
     let env2 = declare(env, name, "theorem", ty, some(body))!
-    ok((env2, ["✓ theorem ${env.room}.${name} : ${show(env, [], ty)}"]))
+    ok((env2, ["✓ theorem ${env.room}.${name}: ${show(env, [], ty)}"]))
   },
   DRule(vars, lhs, rhs) => {
     let (env2, _) = add_rule(env, vars, lhs, rhs, d.line)!
@@ -659,13 +659,13 @@ fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
     no_brackets([e_raw])!
     let e = resolve(env, [], e_raw)!
     let ty = infer(env, [], e)!
-    ok((env, ["${show(env, [], e)} : ${show(env, [], ty)}"]))
+    ok((env, ["${show(env, [], e)}: ${show(env, [], ty)}"]))
   },
   DEval(e_raw) => {
     no_brackets([e_raw])!
     let e = resolve(env, [], e_raw)!
     infer(env, [], e)!
-    ok((env, ["${show(env, [], e)} ⇝ ${show(env, [], nf(env, e))}"]))
+    ok((env, ["${show(env, [], e)} = ${show(env, [], nf(env, e))}"]))
   },
   DAxioms(name) => {
     let q = resolve_const(env, name)!
@@ -727,7 +727,7 @@ local fn rule_mentions(r: Rule) -> List[String] =
 local fn report_axioms(env: Env, q: String) -> List[String] = {
   let d = deps(env, q)
   let rooms = list.unique((d.symbols |> list.map((s) => room_of(env, s))) + (d.rules |> list.map((r) => r.room)))
-  let header = ["#axioms ${q}", "  rooms:   ${list.join(rooms, ", ")}"]
+  let header = ["axioms ${q}", "  rooms:   ${list.join(rooms, ", ")}"]
   let syms = if list.is_empty(d.symbols) then ["  symbols: (none)"] else ["  symbols: ${list.join(d.symbols, ", ")}"]
   let rules = if list.is_empty(d.rules) then ["  rules:   (none)"]
     else d.rules |> list.enumerate |> list.map(((i, r)) =>

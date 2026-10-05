@@ -13,7 +13,7 @@ import json
 let NAMED_LEVELS = 10
 
 local fn level(o: Out, n: Int) -> String =
-  if n < NAMED_LEVELS then "core.l${int.to_string(n)}" else "(core.ls ${level(o, n - 1)})"
+  if n < NAMED_LEVELS then "core.l${int.to_string(n)}" else "core.ls(${level(o, n - 1)})"
 
 // The room absorbed declarations live in, and the name prefix it replaces.
 local fn library_room(th: String) -> String = match th {
@@ -30,7 +30,7 @@ local fn cname(o: Out, raw: String) -> String = mangle(string.strip_prefix(raw, 
 
 // ── Names ───────────────────────────────────────────────────────────
 
-let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "irrelevant", "fun", "Type"]
+let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "irrelevant", "check", "eval", "axioms", "Type"]
 
 local fn plain_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'"
 
@@ -68,13 +68,8 @@ local fn arr_of(v: Value) -> List[Value]! = value.as_array(v)
 
 local fn kind_of(v: Value) -> String = list.first(value.keys(v)) ?? ""
 
-local fn paren(s: String, atomic: Bool) -> String = if atomic then s else "(" + s + ")"
-
-local fn is_atomic(v: Value) -> Bool = match kind_of(v) {
-  "v" | "c" => true,
-  "n" => (int_of(get(v, "n") ?? value.null()) ?? 1) == 0,
-  _ => false,
-}
+// Only a function needs parentheses, and only when it is called.
+local fn callee(s: String, v: Value) -> String = if kind_of(v) == "l" then "(" + s + ")" else s
 
 // `names` holds the binders in scope, innermost first, so a de Bruijn
 // index is a position in it.
@@ -84,7 +79,7 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
     ok(list.get(names, i) ?? "#${int.to_string(i)}")
   },
   "c" => ok(cname(o, str_of(get(v, "c")!)!)),
-  "s" => ok("core.sort ${level(o, int_of(get(v, "s")!)!)}"),
+  "s" => ok("core.sort(${level(o, int_of(get(v, "s")!)!)})"),
   "n" => {
     let n = int_of(get(v, "n")!)!
     guard n <= 4096 else err("the numeral ${int.to_string(n)} is too large to spell in unary")
@@ -92,29 +87,28 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
   },
   "a" => {
     let (head, args) = app_spine(v, [])!
-    let parts = [paren(expr(names, o, head)!, is_atomic(head))]
-      + (args |> list.map((a) => paren(expr(names, o, a)!, is_atomic(a)))!)
-    ok(list.join(parts, " "))
+    let parts = args |> list.map((a) => expr(names, o, a)!)!
+    ok(callee(expr(names, o, head)!, head) + "(" + list.join(parts, ", ") + ")")
   },
   "l" => {
     let xs = arr_of(get(v, "l")!)!
     let (x, dom, ld) = binder_parts(names, o, xs)!
     let body = expr([x] + names, o, list.get(xs, 3) ?? value.null())!
-    ok("fun (${x} : core.El ${level(o, ld)} ${dom}) => ${body}")
+    ok("(${x}: core.El(${level(o, ld)}, ${dom})) => ${body}")
   },
   "p" => {
     let xs = arr_of(get(v, "p")!)!
     let (x, dom, ld) = binder_parts(names, o, xs)!
     let body = expr([x] + names, o, list.get(xs, 3) ?? value.null())!
     let lb = int_of(list.get(xs, 4) ?? value.null())!
-    ok("core.pi ${level(o, ld)} ${level(o, lb)} ${dom} (fun (${x} : core.El ${level(o, ld)} ${dom}) => ${body})")
+    ok("core.pi(${level(o, ld)}, ${level(o, lb)}, ${dom}, (${x}: core.El(${level(o, ld)}, ${dom})) => ${body})")
   },
   "lift" => {
     let xs = arr_of(get(v, "lift")!)!
     let la = int_of(list.get(xs, 0) ?? value.null())!
     let lb = int_of(list.get(xs, 1) ?? value.null())!
     let t = list.get(xs, 2) ?? value.null()
-    ok("core.lift ${level(o, la)} ${level(o, lb)} ${paren(expr(names, o, t)!, is_atomic(t))}")
+    ok("core.lift(${level(o, la)}, ${level(o, lb)}, ${expr(names, o, t)!})")
   },
   other => err("unknown expression node '${other}'"),
 }
@@ -122,7 +116,7 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
 local fn binder_parts(names: List[String], o: Out, xs: List[Value]) -> (String, String, Int)! = {
   let raw = str_of(list.get(xs, 0) ?? value.null())!
   let dom_v = list.get(xs, 1) ?? value.null()
-  let dom = paren(expr(names, o, dom_v)!, is_atomic(dom_v))
+  let dom = expr(names, o, dom_v)!
   let ld = int_of(list.get(xs, 2) ?? value.null())!
   ok((binder(raw, names, o.reserved), dom, ld))
 }
@@ -133,12 +127,12 @@ local fn app_spine(v: Value, args: List[Value]) -> (Value, List[Value])! =
     app_spine(list.get(fa, 0) ?? value.null(), [list.get(fa, 1) ?? value.null()] + args)
   } else ok((v, args))
 
-local fn numeral(n: Int) -> String = if n == 0 then "Nat.zero" else "Nat.succ " + paren(numeral(n - 1), n - 1 == 0)
+local fn numeral(n: Int) -> String = if n == 0 then "Nat.zero" else "Nat.succ(" + numeral(n - 1) + ")"
 
-// A Lean type `T` living in universe `l` is the Arlk type `El l T`.
+// A Lean type `T` living in universe `l` is the Arlk type `El(l, T)`.
 local fn el(names: List[String], o: Out, ty: Value, lvl: Int) -> String! = {
   let t = expr(names, o, ty)!
-  ok("core.El ${level(o, lvl)} ${paren(t, is_atomic(ty))}")
+  ok("core.El(${level(o, lvl)}, ${t})")
 }
 
 // ── Rules ───────────────────────────────────────────────────────────
@@ -152,7 +146,7 @@ local fn pattern(names: List[String], o: Out, p: Value) -> String! = match kind_
   _ => {
     let c = cname(o, str_of(get(p, "pc")!)!)
     let args = arr_of(get(p, "args")!)! |> list.map((a) => pattern(names, o, a)!)!
-    if list.is_empty(args) then ok(c) else ok("(" + list.join([c] + args, " ") + ")")
+    if list.is_empty(args) then ok(c) else ok(c + "(" + list.join(args, ", ") + ")")
   },
 }
 
@@ -164,13 +158,15 @@ local fn rule(o: Out, r: Value) -> String! = {
     let parts = arr_of(v)!
     let x = binder(str_of(list.get(parts, 0) ?? value.null())!, names, o.reserved)
     let ty = el(names, o, list.get(parts, 1) ?? value.null(), int_of(list.get(parts, 2) ?? value.null())!)!
-    decls = decls + ["${x} : ${ty}"]
+    list.push(decls, "${x}: ${ty}")
     names = [x] + names
   }
   let head = cname(o, str_of(get(r, "head")!)!)
   let args = arr_of(get(r, "args")!)! |> list.map((p) => pattern(names, o, p)!)!
   let rhs = expr(names, o, get(r, "rhs")!)!
-  ok("rule [${list.join(decls, ", ")}]\n  ${list.join([head] + args, " ")}\n  --> ${rhs}.")
+  let lhs = if list.is_empty(args) then head else head + "(" + list.join(args, ", ") + ")"
+  let vars = if list.is_empty(decls) then "" else "\n  where ${list.join(decls, ", ")}"
+  ok("rule ${lhs} =\n  ${rhs}${vars}")
 }
 
 // ── Declarations ────────────────────────────────────────────────────
@@ -186,8 +182,8 @@ local fn decl(o: Out, d: Value) -> String! = {
   let name = cname(o, str_of(get(d, "name")!)!)
   let ty = el([], o, get(d, "type")!, int_of(get(d, "level")!)!)!
   let head = match kind {
-    "def" | "theorem" => "${kind} ${name} :\n  ${ty} :=\n  ${expr([], o, get(d, "value")!)!}.",
-    _ => "symbol ${name} : ${ty}.",
+    "def" | "theorem" => "${kind} ${name}: ${ty} =\n  ${expr([], o, get(d, "value")!)!}",
+    _ => "symbol ${name}: ${ty}",
   }
   ok(list.join([head] + rules, "\n"))
 }
@@ -215,15 +211,15 @@ fn absorb(src: String) -> String! = {
     ts => "${int.to_string(list.len(ts))} theorems and everything they use",
   }
   let header = """
-    -- Absorbed from ${prover} by `arlk absorb`: ${what}.
-    -- Check it with `arlk check lib/core.arlk <this file>`;
-    -- ${prover} is not needed and not trusted.
+    // Absorbed from ${prover} by `arlk absorb`: ${what}.
+    // Check it with `arlk check lib/core.arlk <this file>`;
+    // ${prover} is not needed and not trusted.
     """
   let footer = match targets {
-    [t] => ["", "#axioms ${t}."],
+    [t] => ["", "axioms ${t}"],
     _ => [],
   }
-  ok(list.join([header, "room ${lib} uses core.", ""] + body + footer, "\n") + "\n")
+  ok(list.join([header, "room ${lib} uses core", ""] + body + footer, "\n") + "\n")
 }
 
 test "mangling keeps dots and levels and escapes the rest" {
@@ -243,6 +239,6 @@ test "binders drop hygiene and avoid capture" {
 
 test "levels and numerals" {
   assert_eq(level(Out { lib: "Init", reserved: set.new() }, 2), "core.l2")
-  assert_eq(level(Out { lib: "Init", reserved: set.new() }, 11), "(core.ls (core.ls core.l9))")
-  assert_eq(numeral(2), "Nat.succ (Nat.succ Nat.zero)")
+  assert_eq(level(Out { lib: "Init", reserved: set.new() }, 11), "core.ls(core.ls(core.l9))")
+  assert_eq(numeral(2), "Nat.succ(Nat.succ(Nat.zero))")
 }
