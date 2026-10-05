@@ -49,6 +49,9 @@ type Decl =
   | DTheorem(Sig, Raw)
   | DRule(List[(String, Raw)], Raw, Raw)
   | DIrrelevant(List[(String, Raw)], Raw)
+  // `structure S = S.mk(S.f1, S.f2)`: structure eta for a type given by
+  // symbols and rules (an absorbed Lean structure).
+  | DStructure(String, String, List[String])
   | DCheck(Raw)
   | DEval(Raw)
   | DAxioms(String)
@@ -109,6 +112,7 @@ let KEYWORDS = [
   "rule",
   "where",
   "irrelevant",
+  "structure",
   "check",
   "eval",
   "axioms",
@@ -712,6 +716,25 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       let (rhs, p3) = term(ts, p2)!
       let (vars, p4) = where_vars(ts, p3)!
       ok((DRule(vars, lhs, rhs), p4))
+    },
+    "structure" => {
+      let (ty, p1) = ident(ts, p + 1)!
+      let p2 = expect(ts, p1, "=")!
+      let (mk, p3) = ident(ts, p2)!
+      var q = expect(ts, p3, "(")!
+      var projs: List[String] = []
+      var going = true
+      while going {
+        let (f, q1) = ident(ts, q)!
+        list.push(projs, f)
+        if is_sym(ts, q1, ",") then {
+          q = q1 + 1
+        } else {
+          q = expect(ts, q1, ")")!
+          going = false
+        }
+      }
+      ok((DStructure(ty, mk, projs), q))
     },
     "irrelevant" => {
       let (ty, p1) = term(ts, p + 1)!

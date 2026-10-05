@@ -14,6 +14,7 @@ soundness proof, and a passing test suite is not one either.
 | Universe levels: `max`, `imax`, parameters, decided for every parameter value | `term.almd`: `level_leq`, `level_eq` |
 | Typing: sorts (`Sort(u) : Sort(u + 1)`), Π types at `imax`, constants at their universe instance | `kernel.almd`: `infer`, `check`, `expect_sort` |
 | Reduction: β, δ (defs, by height), rewrite rules | `kernel.almd`: `reduce`, `rewrite`, `try_rule`, `match_pat` |
+| Structure eta for declared structures (`structure S = S.mk(S.f1, ...)`): in conversion, and in matching a rule's constructor pattern against a value of S (not for the projections' own rules) | `kernel.almd`: `eta_pairs`, `struct_expand`, `struct_params` |
 | Conversion: lazy δ, η, η for non-recursive records (`p ≡ P.mk(p.x, p.y)`), proof irrelevance (Prop, and declared `irrelevant` types) | `kernel.almd`: `conv`, `record_eta`, `eta_pairs`, `irrelevant_eq`, `is_prop` |
 | Resource limits: one work budget per declaration, bounded nesting (including reductions inside rule matching), exhaustion reported as an error, never as a normal form | `kernel.almd`: `Budget`, `spend`, `enter`, `enter_by` |
 | Holes are never accepted: a term containing a metavariable or an unsolved level is rejected | `kernel.almd`: `infer` (`Meta`, `level_has_meta`) |
@@ -103,8 +104,11 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
 ## 5. Assumptions a result is relative to — not established by Arlk
 
 * **Hand-declared `symbol`s and `rule`s**, including user rewrite rules (no confluence,
-  termination or full subject-reduction check), and declared `irrelevant` types. They appear in
-  `axioms`.
+  termination or full subject-reduction check), declared `irrelevant` types, and `structure`
+  declarations (every value of S is its constructor applied to its projections; checked only in
+  that the names are this room's symbols, the constructor builds S, and each projection computes
+  to its field). They appear in `axioms`. `arlk absorb` declares a structure for each Lean
+  constructor all of whose projections it exports, as Lean's kernel has eta for every structure.
 * **Imported theories.** [lib/core.arlk](../lib/core.arlk) (the shared foundation for Lean and Rocq),
   the absorbed Lean/Rocq libraries' symbols and rules, Metamath's axioms and the `Apart`/`fresh`
   facts about Metamath syntax, and for HOL [lib/hol.arlk](../lib/hol.arlk) (HOL's inference rules as

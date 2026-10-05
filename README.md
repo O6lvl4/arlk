@@ -419,7 +419,7 @@ axioms, each next to its checked `nonempty` theorem).
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
-| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1553 of 1573 (three roots fail, in `Nat.Linear`'s reflection proofs) | ~12 min |
+| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~12 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |

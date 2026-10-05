@@ -207,6 +207,68 @@ local fn decl(o: Out, d: Value) -> String! = {
   ok(list.join([head] + rules, "\n"))
 }
 
+// A projection as Lean exports it: one rule `f(params, C({params}, fields))
+// = field_i`. The constructor, its number of fields, i and f.
+local fn projection(d: Value) -> (String, Int, Int, String)? = {
+  let rules = match value.field(d, "rules") {
+    ok(rs) => arr_of(rs) ?? [],
+    err(_) => [],
+  }
+  match rules {
+    [r] => {
+      let args = match value.field(r, "args") {
+        ok(a) => arr_of(a) ?? [],
+        err(_) => [],
+      }
+      let head = match value.field(r, "head") {
+        ok(h) => str_of(h) ?? "",
+        err(_) => "",
+      }
+      let rhs_var = match value.field(r, "rhs") {
+        ok(x) => match value.field(x, "v") {
+          ok(v) => int_of(v) ?? -1,
+          err(_) => -1,
+        },
+        err(_) => -1,
+      }
+      match list.last(args) {
+        some(last) => match value.field(last, "pc") {
+          ok(cv) => {
+            let c = str_of(cv) ?? ""
+            let cargs = match value.field(last, "args") {
+              ok(a) => arr_of(a) ?? [],
+              err(_) => [],
+            }
+            let np = list.len(args) - 1
+            let fields = list.drop(cargs, np) |> list.map((a) => match value.field(a, "pv") {
+              ok(v) => int_of(v) ?? -1,
+              err(_) => -1,
+            })
+            let brackets = list.take(cargs, np) |> list.all((a) => value.field(a, "pb") != err(""))
+            match list.index_of(fields, rhs_var) {
+              some(i) => if rhs_var >= 0 and brackets and list.len(cargs) >= np and list.all(fields, (f) => f >= 0) and head != "" then some((c, list.len(fields), i, head)) else none,
+              none => none,
+            }
+          },
+          err(_) => none,
+        },
+        none => none,
+      }
+    },
+    _ => none,
+  }
+}
+
+// The type a structure constructor builds: `Prod.mk@0@0` → `Prod@0@0`.
+local fn structure_of(c: String) -> String = {
+  let parts = string.split(c, "@")
+  let base = list.first(parts) ?? c
+  let levels = list.drop(parts, 1)
+  let comps = string.split(base, ".")
+  let ty = list.join(list.take(comps, list.len(comps) - 1), ".")
+  list.join([ty] + levels, "@")
+}
+
 fn absorb(src: String) -> String! = {
   let root = json.parse(src)!
   let th = match value.field(root, "theory") {
@@ -224,7 +286,26 @@ fn absorb(src: String) -> String! = {
     ok(ts) => arr_of(ts)! |> list.map((t) => cname(o, str_of(t)!))!,
     err(_) => [cname(o, str_of(get(root, "target")!)!)],
   }
-  let body = decls |> list.map((d) => decl(o, d)!)!
+  // Lean structures: once every projection of a constructor is in, declare
+  // the structure, so the kernel has Lean's structure eta for it.
+  var body: List[String] = []
+  var found: Map[String, Map[Int, String]] = [:]
+  for d in decls {
+    list.push(body, decl(o, d)!)
+    if th != "rocq" then {
+      match projection(d) {
+        some((c, nf, i, h)) => {
+          let got = map.set(map.get(found, c) ?? [:], i, h)
+          found = map.set(found, c, got)
+          if map.len(got) == nf then {
+            let projs = list.map(0..<nf, (k) => cname(o, map.get(got, k) ?? ""))
+            list.push(body, "structure ${cname(o, structure_of(c))} = ${cname(o, c)}(${list.join(projs, ", ")})")
+          } else ()
+        },
+        none => (),
+      }
+    } else ()
+  }
   let what = match targets {
     [t] => "${t} and everything it uses",
     ts => "${int.to_string(list.len(ts))} theorems and everything they use",

@@ -14,12 +14,14 @@ symbol HAdd.hAdd@0@0@0: core.El(core.l2, core.pi(core.l2, core.l2, core.sort(cor
 rule HAdd.hAdd@0@0@0(α, β, γ, HAdd.mk@0@0@0({α}, {β}, {γ}, hAdd)) =
   hAdd
   where α: core.El(core.l2, core.sort(core.l1)), β: core.El(core.l2, core.sort(core.l1)), γ: core.El(core.l2, outParam@2(core.sort(core.l1))), hAdd: core.El(core.l1, core.pi(core.l1, core.l1, α, (a: core.El(core.l1, α)) => core.pi(core.l1, core.l1, β, (a': core.El(core.l1, β)) => γ)))
+structure HAdd@0@0@0 = HAdd.mk@0@0@0(HAdd.hAdd@0@0@0)
 symbol Add@0: core.El(core.l2, core.pi(core.l2, core.l2, core.sort(core.l1), (α: core.El(core.l2, core.sort(core.l1))) => core.sort(core.l1)))
 symbol Add.mk@0: core.El(core.l2, core.pi(core.l2, core.l1, core.sort(core.l1), (α: core.El(core.l2, core.sort(core.l1))) => core.pi(core.l1, core.l1, core.pi(core.l1, core.l1, α, (a: core.El(core.l1, α)) => core.pi(core.l1, core.l1, α, (a': core.El(core.l1, α)) => α)), (add: core.El(core.l1, core.pi(core.l1, core.l1, α, (a: core.El(core.l1, α)) => core.pi(core.l1, core.l1, α, (a': core.El(core.l1, α)) => α)))) => Add@0(α))))
 symbol Add.add@0: core.El(core.l2, core.pi(core.l2, core.l1, core.sort(core.l1), (α: core.El(core.l2, core.sort(core.l1))) => core.pi(core.l1, core.l1, Add@0(α), (self: core.El(core.l1, Add@0(α))) => core.pi(core.l1, core.l1, α, (a: core.El(core.l1, α)) => core.pi(core.l1, core.l1, α, (a': core.El(core.l1, α)) => α)))))
 rule Add.add@0(α, Add.mk@0({α}, add)) =
   add
   where α: core.El(core.l2, core.sort(core.l1)), add: core.El(core.l1, core.pi(core.l1, core.l1, α, (a: core.El(core.l1, α)) => core.pi(core.l1, core.l1, α, (a': core.El(core.l1, α)) => α)))
+structure Add@0 = Add.mk@0(Add.add@0)
 def instHAdd@0: core.El(core.l2, core.pi(core.l2, core.l1, core.sort(core.l1), (α: core.El(core.l2, core.sort(core.l1))) => core.pi(core.l1, core.l1, Add@0(α), (inst: core.El(core.l1, Add@0(α))) => HAdd@0@0@0(α, α, α)))) =
   (α: core.El(core.l2, core.sort(core.l1))) => (inst: core.El(core.l1, Add@0(α))) => HAdd.mk@0@0@0(α, α, α, (a: core.El(core.l1, α)) => (b: core.El(core.l1, α)) => Add.add@0(α, inst, a, b))
 symbol Nat.zero: core.El(core.l1, Nat)
@@ -66,6 +68,7 @@ symbol OfNat.ofNat@0: core.El(core.l2, core.pi(core.l2, core.l1, core.sort(core.
 rule OfNat.ofNat@0(α, x, OfNat.mk@0({α}, {x}, ofNat)) =
   ofNat
   where α: core.El(core.l2, core.sort(core.l1)), x: core.El(core.l1, Nat), ofNat: core.El(core.l1, α)
+structure OfNat@0 = OfNat.mk@0(OfNat.ofNat@0)
 def instOfNatNat: core.El(core.l1, core.pi(core.l1, core.l1, Nat, (n: core.El(core.l1, Nat)) => OfNat@0(Nat, n))) =
   (n: core.El(core.l1, Nat)) => OfNat.mk@0(Nat, n, n)
 symbol Eq.refl@1: core.El(core.l0, core.pi(core.l2, core.l0, core.sort(core.l1), (α: core.El(core.l2, core.sort(core.l1))) => core.pi(core.l1, core.l0, α, (a: core.El(core.l1, α)) => Eq@1(α, a, a))))

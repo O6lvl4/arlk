@@ -5,7 +5,7 @@
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
 import self.syntax
-import self.kernel.{IndInfo, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
+import self.kernel.{IndInfo, StructEta, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
 import self.patterns
@@ -78,6 +78,7 @@ type Change =
   | EnterRoom(String, List[String])
   | AddRule(Rule)
   | AddIrrelevant(Rule)
+  | AddStruct(String, StructEta)
   | NoChange
 
 local fn declare(env: Env, sig: Sig, kind: String, ty: Term, body: Term?) -> Change! = {
@@ -119,6 +120,7 @@ local fn commit(mut env: Env, c: Change) -> Unit = match c {
     list.push(env.rules, r)
   },
   AddIrrelevant(r) => list.push(env.irrelevants, r),
+  AddStruct(c, si) => map.insert(env.structs, c, si),
   NoChange => (),
 }
 
@@ -274,6 +276,74 @@ local fn add_rule(mut env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw
 }
 
 // `irrelevant [x : A] T.`: every two values of an instance of T are equal.
+// `structure S = S.mk(S.f1, ..., S.fn)`: every value of S is the
+// constructor applied to its projections (Lean's structure eta). An
+// assumption about symbols of this room, listed by `axioms`; checked here:
+// the names are this room's symbols, the constructor builds S from its
+// parameters and n fields, each projection takes the parameters and an S,
+// and each computes on the constructor to its field.
+local fn add_structure(mut env: Env, ty_name: String, mk_name: String, proj_names: List[String], line: Int) -> Change! = {
+  let ty = resolve_const(env, ty_name)!
+  let mk = resolve_const(env, mk_name)!
+  var projs: List[String] = []
+  for f in proj_names {
+    list.push(projs, resolve_const(env, f)!)
+  }
+  for q in [ty, mk] + projs {
+    guard is_symbol(env, q) and room_of(env, q) == env.room else err("structure ${ty_name}: ${q} must be a symbol of this room")
+  }
+  guard not map.contains(env.structs, mk) else err("structure ${ty_name}: already declared")
+  guard map.get(env.lparams, mk) == map.get(env.lparams, ty) and list.all(projs, (f) => map.get(env.lparams, f) == map.get(env.lparams, ty)) else err("structure ${ty_name}: the type, constructor and projections must share their universe parameters")
+  var bu = budget()
+  // The constructor: parameters, then one argument per field, ending in S(parameters).
+  var ctx: Ctx = []
+  var t = map.get(env.types, mk) ?? type0()
+  var n = 0
+  var going = true
+  while going {
+    match whnf(env, ctx, t, bu) {
+      Pi(x, dom, b) => {
+        ctx = [(x, dom)] + ctx
+        t = b
+        n = n + 1
+      },
+      other => {
+        t = other
+        going = false
+      },
+    }
+  }
+  let nfields = list.len(projs)
+  let np = n - nfields
+  guard np >= 0 else err("structure ${ty_name}: ${mk_name} takes fewer arguments than there are fields")
+  let si = StructEta { ty: ty, nparams: np, projs: projs, decl: Rule { id: "${env.room}:${int.to_string(line)}", head: mk, room: env.room, arity: 0, nvars: 0, var_tys: [], lhs_args: [], rhs: type0(), text: "structure ${ty_name} = ${mk_name}(${list.join(proj_names, ", ")})", lparams: [] } }
+  let params = list.map(0..<np, (i) => Var(n - 1 - i))
+  guard struct_params_ok(env, ctx, si, t, params, bu) else err("structure ${ty_name}: ${mk_name} must build ${ty_name} at its parameters")
+  // Each projection computes on the constructor to its field.
+  let ls = (map.get(env.lparams, mk) ?? []) |> list.map((u) => LParam(u))
+  let built = apply(Const(mk, ls), list.map(0..<n, (i) => Var(n - 1 - i)))
+  for (i, f) in list.enumerate(projs) {
+    let got = apply(Const(f, ls), params + [built])
+    guard conv(env, ctx, got, Var(nfields - 1 - i), bu) else err("structure ${ty_name}: ${f} does not compute to field ${int.to_string(i + 1)} on ${mk_name}")
+  }
+  ok(AddStruct(mk, si))
+}
+
+local fn struct_params_ok(env: Env, ctx: Ctx, si: StructEta, result: Term, params: List[Term], mut bu: Budget) -> Bool = {
+  let check_spine = (w: Term) => {
+    let (h, args) = spine(w)
+    match h {
+      Const(s, _) => s == si.ty and args == params,
+      _ => false,
+    }
+  }
+  let w = whnf(env, ctx, result, bu)
+  check_spine(w) or (match list.last(spine(w).1) {
+    some(inner) => check_spine(whnf(env, ctx, inner, bu)),
+    none => false,
+  })
+}
+
 local fn add_irrelevant(mut env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Change! = {
   var bu = budget()
   let l = rule_lhs(env, vars, ty_raw, bu)!
@@ -1164,6 +1234,9 @@ local fn install_view(mut env: Env, name: String, src: String, given: Map[String
   for r in env.irrelevants {
     guard r.room != src else err("view ${name}: ${src} declares irrelevant types, which views do not carry yet")
   }
+  for (_, si) in map.entries(env.structs) {
+    guard si.decl.room != src else err("view ${name}: ${src} declares structures, which views do not carry yet")
+  }
   v.mapped = list.sort(map.keys(v.images))
   v.carried = carried
   map.insert(env.views, vq, v)
@@ -1802,6 +1875,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   },
   DRule(vars, lhs, rhs) => ok((add_rule(env, vars, lhs, rhs, d.line)!, [])),
   DIrrelevant(vars, ty) => ok((add_irrelevant(env, vars, ty, d.line)!, [])),
+  DStructure(ty, mk, projs) => ok((add_structure(env, ty, mk, projs, d.line)!, [])),
   DCheck(e_raw) => {
     no_brackets([e_raw])!
     let e = if needs_elab(env, e_raw) then {
@@ -2071,6 +2145,10 @@ fn deps(env: Env, name: String) -> Deps = {
                   list.push(queued, m)
                 }
               } else ()
+            }
+            match map.get(env.structs, c) {
+              some(si) => list.push(rules, si.decl),
+              none => (),
             }
           } else if c != name then list.push(lemmas, c) else ()
           // Visit in source order: the type, then the body, then the rules.

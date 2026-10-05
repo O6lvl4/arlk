@@ -36,7 +36,7 @@ import hash
 import self.syntax
 import self.syntax.{Located, Decl}
 import self.kernel
-import self.kernel.{Env, Entry, Rule, Rw, View, IndInfo}
+import self.kernel.{Env, Entry, Rule, Rw, View, IndInfo, StructEta}
 import self.term.{Term, consts}
 import self.pretty
 import self.checker
@@ -48,6 +48,7 @@ type Delta = {
   irrelevants: List[Rule],
   views: List[(String, View)],
   inductives: List[(String, IndInfo)],
+  structs: List[(String, StructEta)],
   rooms: List[(String, List[String])],
   room: String,
 }
@@ -95,6 +96,7 @@ local fn always_checked(d: Decl) -> Bool = match d {
   DRoom(_, _) => true,
   DRule(_, _, _) => true,
   DIrrelevant(_, _) => true,
+  DStructure(_, _, _) => true,
   DCheck(_) => true,
   DEval(_) => true,
   DAxioms(_) => true,
@@ -138,10 +140,10 @@ effect fn units_of(files: List[String]) -> List[Unit_] = {
 // ── What a declaration added ────────────────────────────────────────
 
 // Where the environment stood before a declaration (not a copy of it).
-type Mark = { order: Int, rules: Int, irrelevants: Int, room: String, seen: List[String], views: List[String] }
+type Mark = { order: Int, rules: Int, irrelevants: Int, room: String, seen: List[String], views: List[String], inductives: Int, structs: List[String] }
 
 local fn mark_of(env: Env) -> Mark =
-  Mark { order: list.len(env.order), rules: list.len(env.rules), irrelevants: list.len(env.irrelevants), room: env.room, seen: map.get(env.rooms, env.room) ?? [], views: map.keys(env.views) }
+  Mark { order: list.len(env.order), rules: list.len(env.rules), irrelevants: list.len(env.irrelevants), room: env.room, seen: map.get(env.rooms, env.room) ?? [], views: map.keys(env.views), inductives: map.len(env.inductives), structs: map.keys(env.structs) }
 
 // `mut`, though nothing is changed: a plain parameter is copied here, and
 // copying the environment for every declaration made a step quadratic.
@@ -174,14 +176,23 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
   var views: List[(String, View)] = []
   var inductives: List[(String, IndInfo)] = []
   var rooms: List[(String, List[String])] = []
-  match d {
-    DInductive(ind) => {
-      let q = before.room + "." + ind.name
+  // Inductive types are added by type declarations, mutual groups (their
+  // family) and nested ones; read the new ones off the map.
+  if map.len(after.inductives) != before.inductives then {
+    for q in names {
       match map.get(after.inductives, q) {
         some(info) => list.push(inductives, (q, info)),
         none => (),
       }
-    },
+    }
+  } else ()
+  var structs: List[(String, StructEta)] = []
+  if map.len(after.structs) != list.len(before.structs) then {
+    for (k, si) in map.entries(after.structs) {
+      if not list.contains(before.structs, k) then list.push(structs, (k, si)) else ()
+    }
+  } else ()
+  match d {
     DRoom(name, _) => match map.get(after.rooms, name) {
       some(seen) => list.push(rooms, (name, seen)),
       none => (),
@@ -194,7 +205,7 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
       if not list.contains(before.views, k) then list.push(views, (k, v)) else ()
     }
   } else ()
-  Delta { names: names, rules: rules, irrelevants: irr, views: views, inductives: inductives, rooms: rooms, room: after.room }
+  Delta { names: names, rules: rules, irrelevants: irr, views: views, inductives: inductives, structs: structs, rooms: rooms, room: after.room }
 }
 
 // Copy a declaration's additions from the environment it was checked in;
@@ -239,6 +250,9 @@ local fn replay(mut env: Env, from: Env, dl: Delta) -> Unit = {
   }
   for (k, info) in dl.inductives {
     map.insert(env.inductives, k, info)
+  }
+  for (k, si) in dl.structs {
+    map.insert(env.structs, k, si)
   }
   for (k, seen) in dl.rooms {
     map.insert(env.rooms, k, seen)

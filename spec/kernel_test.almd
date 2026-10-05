@@ -1480,3 +1480,35 @@ def pick(m: Nat, h: Lt(Nat.zero, m)) -> Nat = match m {
 }
 """)!, none)
 }
+
+// ── Structure eta for structures given by symbols ──────────────────
+
+let STRUCT_BASE = """
+room st
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+symbol N: Type
+symbol P: Type
+symbol P.mk(x: N, y: N) -> P
+symbol P.fst(p: P) -> N
+symbol P.snd(p: P) -> N
+rule P.fst(P.mk(x, y)) = x  where x: N, y: N
+rule P.snd(P.mk(x, y)) = y  where x: N, y: N
+symbol P.rec(C: P -> Type, m: (x: N, y: N) -> C(P.mk(x, y)), p: P) -> C(p)
+rule P.rec(C, m, P.mk(x, y)) = m(x, y)  where C: P -> Type, m: (x: N, y: N) -> C(P.mk(x, y)), x: N, y: N
+"""
+
+let STRUCT_USE = """
+theorem rec_on_var(p: P) -> Eq(N, P.rec((q: P) => N, (x: N, y: N) => y, p), P.snd(p)) = Eq.refl
+theorem eta(p: P) -> Eq(P, p, P.mk(P.fst(p), P.snd(p))) = Eq.refl
+"""
+
+test "a declared structure has eta: its recursor computes on a variable" {
+  assert_eq(run(STRUCT_BASE + "\nstructure P = P.mk(P.fst, P.snd)\n" + STRUCT_USE), none)
+  assert(rejects_with(STRUCT_BASE + "\n" + STRUCT_USE, "mismatch"))
+}
+
+test "a structure declaration is checked against its projections" {
+  assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.snd, P.fst)\n", "does not compute to field"))
+  assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst)\n", "must build"))
+  assert(rejects_with(STRUCT_BASE + "\nroom other uses st\nstructure P = P.mk(P.fst, P.snd)\n", "symbol of this room"))
+}

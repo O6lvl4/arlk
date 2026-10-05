@@ -54,7 +54,9 @@ test "the Lean proof really computes through Lean's definitions" {
   // The rule ends with its `where` line.
   let at_where = string.index_of(rest, "\n  where ") ?? 0
   let stop = at_where + 1 + (string.index_of(string.drop(rest, at_where + 1), "\n") ?? 0) + 1
-  match check_with(fs.read_text(CORE)!, string.take(src, start) + string.drop(rest, stop)) {
+  // The structure declared from that rule goes too.
+  let without = string.replace(string.take(src, start) + string.drop(rest, stop), "structure HAdd@0@0@0 = HAdd.mk@0@0@0(HAdd.hAdd@0@0@0)\n", "")
+  match check_with(fs.read_text(CORE)!, without) {
     some(e) => assert(string.contains(e, "type mismatch")),
     none => assert(false),
   }

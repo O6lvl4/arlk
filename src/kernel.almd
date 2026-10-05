@@ -70,6 +70,9 @@ type Env = {
   implicits: Map[String, Int],
   // inductive types: their number of parameters, indices and constructors
   inductives: Map[String, IndInfo],
+  // declared structures (`structure S = S.mk(S.f1, ...)`), by constructor:
+  // every value of S is S.mk of its projections (Lean's structure eta)
+  structs: Map[String, StructEta],
   // views (`view V from S`), by their full name
   views: Map[String, View],
   room: String,
@@ -99,6 +102,11 @@ type View = {
 // `nested`: the occurrences of a nested type inside other types
 // (`List(Rose)`), in the context of its parameters; recursor `T.rec_k`
 // eliminates the k-th.
+// A structure declared for eta: its type former, how many parameters the
+// constructor takes before the fields, the projections in field order, and
+// the declaration as listed by `axioms`.
+type StructEta = { ty: String, nparams: Int, projs: List[String], decl: Rule }
+
 type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String], nested: List[Term] }
 
 // A typing context: innermost binder first.
@@ -116,6 +124,7 @@ fn empty() -> Env = Env {
   lparams: [:],
   implicits: [:],
   inductives: [:],
+  structs: [:],
   views: [:],
   room: "main",
   order: [],
@@ -303,7 +312,7 @@ local fn rewrite(env: Env, ctx: Ctx, c: String, ls: List[Level], args: List[Term
   var found: Term? = none
   for r in map.get(env.rws, c) ?? [] {
     if found == none and not b.exhausted then {
-      found = try_rule(env, ctx, r, ls, args, b)
+      found = try_rule(env, ctx, c, r, ls, args, b)
     } else ()
   }
   found
@@ -311,11 +320,13 @@ local fn rewrite(env: Env, ctx: Ctx, c: String, ls: List[Level], args: List[Term
 
 // What matching has learned so far: the bound variables, and the bracket
 // checks to run once all of them are known.
-type MState = { sub: Map[Int, Term], pending: List[(Term, Term)] }
+// `head`: the rule's head, so that structure eta is not used to match a
+// projection's own rule (it would rewrite `f(t)` to `f(t)`).
+type MState = { sub: Map[Int, Term], pending: List[(Term, Term)], head: String }
 
-local fn try_rule(env: Env, ctx: Ctx, r: Rw, ls: List[Level], args: List[Term], mut b: Budget) -> Term? =
+local fn try_rule(env: Env, ctx: Ctx, head: String, r: Rw, ls: List[Level], args: List[Term], mut b: Budget) -> Term? =
   if list.len(args) < r.arity then none
-  else match match_all(env, ctx, list.zip(r.lhs_args, list.take(args, r.arity)), b) {
+  else match match_all_at(env, ctx, list.zip(r.lhs_args, list.take(args, r.arity)), b, head) {
     some(st) => {
       let vals = list.map(0..<r.nvars, (k) => map.get(st.sub, k) ?? Var(k))
       // The rule's universe parameters take the levels of the head it matched.
@@ -341,8 +352,10 @@ local fn brackets_hold(env: Env, ctx: Ctx, st: MState, vals: List[Term], mut b: 
   all
 }
 
-fn match_all(env: Env, ctx: Ctx, pairs: List[(Pat, Term)], mut b: Budget) -> MState? = {
-  var st: MState? = some(MState { sub: [:], pending: [] })
+fn match_all(env: Env, ctx: Ctx, pairs: List[(Pat, Term)], mut b: Budget) -> MState? = match_all_at(env, ctx, pairs, b, "")
+
+fn match_all_at(env: Env, ctx: Ctx, pairs: List[(Pat, Term)], mut b: Budget, head: String) -> MState? = {
+  var st: MState? = some(MState { sub: [:], pending: [], head: head })
   for (p, t) in pairs {
     match st {
       some(s) => {
@@ -360,8 +373,8 @@ local fn match_pat(env: Env, ctx: Ctx, p: Pat, t: Term, st: MState, mut b: Budge
   PSym(c, ps) => {
     let (th, targs) = spine(whnf(env, ctx, t, b))
     match th {
-      Const(d, _) =>
-        if c == d and list.len(ps) == list.len(targs) then {
+      Const(d, _) if c == d =>
+        if list.len(ps) == list.len(targs) then {
           var cur: MState? = some(st)
           for (q, u) in list.zip(ps, targs) {
             match cur {
@@ -373,9 +386,47 @@ local fn match_pat(env: Env, ctx: Ctx, p: Pat, t: Term, st: MState, mut b: Budge
           }
           cur
         } else none,
-      _ => none,
+      _ => match struct_expand(env, ctx, c, st.head, t, b) {
+        // Structure eta: a value of a declared structure matches its
+        // constructor as the constructor of its projections.
+        some(e) => match_pat(env, ctx, p, e, st, b),
+        none => none,
+      },
     }
   },
+}
+
+// t as `S.mk(params, S.f1(params, t), ...)`, when c is the constructor of
+// a declared structure and t's type is S at some parameters (possibly as
+// the last argument of a wrapper such as `El(l, S(...))`).
+local fn struct_expand(env: Env, ctx: Ctx, c: String, head: String, t: Term, mut b: Budget) -> Term? = match map.get(env.structs, c) {
+  none => none,
+  some(si) => if head == "" or list.contains(si.projs, head) then none else match infer(env, ctx, t, b) {
+    err(_) => none,
+    ok(ty) => match struct_params(env, ctx, si, ty, b) {
+      none => none,
+      some((ls, params)) => some(apply(Const(c, ls), params + (si.projs |> list.map((f) => apply(Const(f, ls), params + [t]))))),
+    },
+  },
+}
+
+local fn struct_params(env: Env, ctx: Ctx, si: StructEta, ty: Term, mut b: Budget) -> (List[Level], List[Term])? = {
+  let w = whnf(env, ctx, ty, b)
+  let (h, args) = spine(w)
+  match h {
+    Const(s, ls) if s == si.ty and list.len(args) == si.nparams => some((ls, args)),
+    Const(_, _) => match list.last(args) {
+      some(inner) => {
+        let (h2, args2) = spine(whnf(env, ctx, inner, b))
+        match h2 {
+          Const(s, ls) if s == si.ty and list.len(args2) == si.nparams => some((ls, args2)),
+          _ => none,
+        }
+      },
+      none => none,
+    },
+    _ => none,
+  }
 }
 
 // Full normal form, for `eval`.
@@ -595,6 +646,13 @@ local fn record_eta(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Boo
 fn eta_pairs(env: Env, a: Term, b: Term) -> Option[List[(Term, Term)]] = {
   let (h, args) = spine(a)
   match h {
+    Const(c, ls) if map.contains(env.structs, c) => match map.get(env.structs, c) {
+      some(si) => if list.len(args) != si.nparams + list.len(si.projs) then none else {
+        let params = list.take(args, si.nparams)
+        some(list.zip(list.drop(args, si.nparams), si.projs) |> list.map(((x, f)) => (x, apply(Const(f, ls), params + [b]))))
+      },
+      none => none,
+    },
     Const(c, ls) => if not string.ends_with(c, ".mk") then none else {
       let q = string.drop_end(c, 3)
       match map.get(env.inductives, q) {
