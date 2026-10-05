@@ -436,7 +436,7 @@ fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
     // arguments into one.
     let wa = whnf_core(env, ctx, a, bu)
     let wb = whnf_core(env, ctx, b, bu)
-    let r = conv_whnf(env, ctx, wa, wb, bu) or irrelevant_eq(env, ctx, a, b, bu)
+    let r = conv_whnf(env, ctx, wa, wb, bu) or record_eta(env, ctx, wa, wb, bu) or record_eta(env, ctx, wb, wa, bu) or irrelevant_eq(env, ctx, a, b, bu)
     leave(bu)
     r
   }
@@ -529,6 +529,78 @@ local fn conv_spines(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bo
     _ => false,
   }
   heads and all_conv(env, ctx, xs, ys, bu)
+}
+
+// ── Record η ────────────────────────────────────────────────────────
+
+// Eta for records (as in Lean, Agda and Rocq's primitive records): a value
+// of a record type equals the record built from its own fields,
+// `p ≡ P.mk(p.x, p.y)`. When `a` is a record's constructor applied to all
+// its fields, each field is compared with the projection of `b`. Only
+// non-recursive records, as in Lean (for a recursive one eta could unfold
+// forever).
+local fn record_eta(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
+  if bu.exhausted then false
+  else match eta_pairs(env, a, b) {
+    none => false,
+    some(pairs) => {
+      var all = true
+      for (field, proj) in pairs {
+        if all then {
+          all = conv(env, ctx, field, proj, bu)
+        } else ()
+      }
+      all
+    },
+  }
+
+// What record eta compares when `a` is a record built by its constructor:
+// each field of `a` with the matching projection of `b`. None when `a`
+// is not such a record.
+fn eta_pairs(env: Env, a: Term, b: Term) -> Option[List[(Term, Term)]] = {
+  let (h, args) = spine(a)
+  match h {
+    Const(c, ls) => if not string.ends_with(c, ".mk") then none else {
+      let q = string.drop_end(c, 3)
+      match map.get(env.inductives, q) {
+        none => none,
+        some(info) => {
+          let n = list.len(info.fields)
+          if n == 0 or list.len(args) != info.params + n or not non_recursive(env, c, q) then none
+          else {
+            let params = list.take(args, info.params)
+            var pairs: List[(Term, Term)] = []
+            var i = 0
+            for f in info.fields {
+              list.push(pairs, (list.get(args, info.params + i) ?? Sort(LZero), apply(Const(q + "." + f, ls), params + [b])))
+              i = i + 1
+            }
+            some(pairs)
+          }
+        },
+      }
+    },
+    _ => none,
+  }
+}
+
+// The constructor's arguments do not mention the record type itself.
+local fn non_recursive(env: Env, c: String, q: String) -> Bool = {
+  var t = map.get(env.types, c) ?? Sort(LZero)
+  var ok_so_far = true
+  var going = true
+  while going {
+    match t {
+      Pi(_, dom, body) => {
+        if list.contains(consts(dom), q) then ok_so_far = false else ()
+        t = body
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  ok_so_far
 }
 
 // ── Proof irrelevance ───────────────────────────────────────────────

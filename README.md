@@ -61,7 +61,7 @@ axioms logic.s
 
 | Layer | What it is |
 |---|---|
-| **Kernel** | The λΠ-calculus modulo rewriting, the same core as Dedukti/Lambdapi. It has de Bruijn terms, β/δ/rule reduction, η-aware conversion with lazy unfolding, declared proof irrelevance, and bidirectional type inference. |
+| **Kernel** | The λΠ-calculus modulo rewriting, the same core as Dedukti/Lambdapi. It has de Bruijn terms, β/δ/rule reduction, η-aware conversion (functions and records) with lazy unfolding, declared proof irrelevance, and bidirectional type inference. |
 | **Rooms** | Namespaces that hold one theory each: its symbols, definitions, rules and theorems. A room sees only the rooms it `uses` (transitively). **Rooms are sealed once left**, so no later room can add rules to an earlier one's symbols. |
 | **Rules** | Rewrite rules may only extend symbols of the *current* room. Each rule is type-checked (left and right sides must have convertible types under the declared variable types). A pattern may contain `{t}`: a subterm that is not matched but checked by conversion, so typing can fix it. |
 | **Dependency tracking** | `axioms name` walks everything a theorem uses through defs and theorems. It reports the symbols assumed, the rules relied on, and the rooms involved. |

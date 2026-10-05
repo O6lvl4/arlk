@@ -46,9 +46,18 @@ let KEYWORDS = ["room", "uses", "symbol", "def", "theorem", "rule", "where", "ir
 
 local fn plain(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'"
 
-// A label as an Arlk constant: `ax-mp` is `ax_mp`, `pm2.43` stays.
+// A label as an Arlk constant: `ax-mp` is `ax_mp`, `pm2.43` stays. A dot
+// stays only where a name may have one, before a name character
+// (`0.999...` is `0.999___`).
 fn label_name(label: String) -> String = {
-  let cs = string.chars(label) |> list.map((c) => if plain(c) or c == "." then c else "_")
+  let chars = string.chars(label)
+  var cs: List[String] = []
+  var i = 0
+  for c in chars {
+    let next = list.get(chars, i + 1) ?? ""
+    list.push(cs, if plain(c) or (c == "." and next != "" and plain(next)) then c else "_")
+    i = i + 1
+  }
   let s = list.join(cs, "")
   if list.contains(KEYWORDS, s) then s + "'" else s
 }
@@ -759,6 +768,11 @@ fn absorb_mm(src: String, upto: String) -> String! = {
   let last = if upto == "" then last_theorem else label_name(upto)
   let footer = if last == "" then [] else ["", "axioms ${last}"]
   ok(list.join([header, "room setmm", ""] + out + footer, "\n") + "\n")
+}
+
+test "a label with trailing dots is one name" {
+  assert_eq(label_name("0.999..."), "0.999___")
+  assert_eq(label_name("pm2.43"), "pm2.43")
 }
 
 test "labels and binders" {

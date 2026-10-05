@@ -14,7 +14,7 @@ soundness proof, and a passing test suite is not one either.
 | Universe levels: `max`, `imax`, parameters, decided for every parameter value | `term.almd`: `level_leq`, `level_eq` |
 | Typing: sorts (`Sort(u) : Sort(u + 1)`), Π types at `imax`, constants at their universe instance | `kernel.almd`: `infer`, `check`, `expect_sort` |
 | Reduction: β, δ (defs, by height), rewrite rules | `kernel.almd`: `reduce`, `rewrite`, `try_rule`, `match_pat` |
-| Conversion: lazy δ, η, proof irrelevance (Prop, and declared `irrelevant` types) | `kernel.almd`: `conv`, `irrelevant_eq`, `is_prop` |
+| Conversion: lazy δ, η, η for non-recursive records (`p ≡ P.mk(p.x, p.y)`), proof irrelevance (Prop, and declared `irrelevant` types) | `kernel.almd`: `conv`, `record_eta`, `eta_pairs`, `irrelevant_eq`, `is_prop` |
 | Resource limits: one work budget per declaration, bounded nesting (including reductions inside rule matching), exhaustion reported as an error, never as a normal form | `kernel.almd`: `Budget`, `spend`, `enter`, `enter_by` |
 | Holes are never accepted: a term containing a metavariable or an unsolved level is rejected | `kernel.almd`: `infer` (`Meta`, `level_has_meta`) |
 | Name resolution and room visibility | `kernel.almd`: `resolve_const` |

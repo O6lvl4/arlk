@@ -15,7 +15,7 @@
 
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta}
 import self.syntax.{Raw}
-import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of}
+import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
 
 // `typed`: holes for implicit arguments with the type their solution must
@@ -328,7 +328,24 @@ local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> 
     },
     _ => match y {
       Lam(n2, t2, b2) => unify(env, st, [(n2, t2)] + ctx, App(shift(x, 1, 0), Var(0)), b2),
-      _ => unify_spines(env, st, ctx, x, y) or first_order(env, st, ctx, x, y) or first_order(env, st, ctx, y, x) or unify_delta(env, st, ctx, x, y),
+      _ => unify_spines(env, st, ctx, x, y) or first_order(env, st, ctx, x, y) or first_order(env, st, ctx, y, x) or unify_delta(env, st, ctx, x, y) or unify_eta(env, st, ctx, x, y) or unify_eta(env, st, ctx, y, x),
+    },
+  }
+
+// Record eta (see kernel.eta_pairs): `P.mk(a1, a2) =?= p` when
+// `a1 =?= p.x` and `a2 =?= p.y`.
+local fn unify_eta(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) -> Bool =
+  if is_meta_app(y) then false
+  else match eta_pairs(env, x, y) {
+    none => false,
+    some(pairs) => {
+      var good = true
+      for (a, b) in pairs {
+        if good then {
+          good = unify(env, st, ctx, a, b)
+        } else ()
+      }
+      good
     },
   }
 

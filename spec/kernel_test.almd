@@ -907,3 +907,34 @@ routes from a
 """
   assert(list.any(lines_of(src), (l) => string.contains(l, "no route from a to d within two views")))
 }
+
+// ── Record eta ──────────────────────────────────────────────────────
+
+test "a record equals the record of its fields (eta)" {
+  let src = """
+room r
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+type Point = { x: Nat, y: Nat }
+theorem eta(p: Point) -> Eq(Point, p, Point { x: p.x, y: p.y }) = Eq.refl
+theorem eta_back(p: Point) -> Eq(Point, Point { x: p.x, y: p.y }, p) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "eta does not equate a record with a different one" {
+  let src = """
+room r
+type Nat: Type =
+  | zero
+  | succ(n: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+type Point = { x: Nat, y: Nat }
+theorem swapped(p: Point) -> Eq(Point, p, Point { x: p.y, y: p.x }) = Eq.refl
+"""
+  assert(rejects_with(src, "mismatch"))
+}
