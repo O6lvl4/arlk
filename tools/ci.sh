@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Everything CI checks, runnable locally: build, tests, native examples,
-# absorbed libraries (Lean, Rocq, Metamath; no prover is run), the known
+# absorbed libraries (Lean, Rocq, Metamath, HOL via OpenTheory; no prover is
+# run), the known
 # Rocq Init baseline, and inputs that must be rejected for a stated reason.
 #
 #   tools/ci.sh            # logs go to ci-logs/, a summary is printed
@@ -9,6 +10,7 @@
 # accepted, crashes, times out or fails for another reason is a failure.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$(pwd)"
 LOGS="${LOG_DIR:-ci-logs}"
 mkdir -p "$LOGS"
 results=()
@@ -75,6 +77,7 @@ must_pass "Lean Nat.add_zero" 300 ./arlk check lib/core.arlk absorbed/lean/nat_a
 must_pass "Rocq Init.Peano" 300 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
 must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
 must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set_prop.arlk
+must_pass "HOL foundation" 60 ./arlk check lib/hol.arlk
 
 # Rocq's Corelib.Init is not fully supported: exactly the four known
 # declarations fail (sig/sigT at Prop, see the README). Anything else is a
@@ -102,6 +105,33 @@ tampered() { # name sed-expression
 }
 tampered broken-to_lean 's/(x: RN, r: LN) => Nat.succ(r)/(x: RN, r: LN) => r/'
 tampered false-add_hom 's/^theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_rocq(m)))/theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(m), to_rocq(m)))/'
+
+# OpenTheory's standard library (the HOL family's: HOL Light, HOL4, ...):
+# fetched as article files, pinned by checksum, absorbed and checked. No
+# HOL system or OpenTheory tool is run. A false statement among the absorbed
+# theorems must be rejected.
+OT="$LOGS/opentheory"
+if limit 900 tools/opentheory/fetch.sh base-1.221 "$OT" >"$LOGS/opentheory.articles" 2>"$LOGS/opentheory-fetch.log" \
+   && (cd "$OT" && shasum -a 256 -c "$ROOT/tools/opentheory/base-1.221.sha256") >"$LOGS/opentheory-sha.log" 2>&1; then
+  record "OpenTheory base-1.221 (fetched, pinned)" pass "$(wc -l <"$LOGS/opentheory.articles" | tr -d ' ') articles, checksums match"
+  ARTS=()
+  while IFS= read -r a; do ARTS+=("$a"); done <"$LOGS/opentheory.articles"
+  must_pass "OpenTheory: absorb base-1.221" 1800 ./arlk absorb-hol "${ARTS[@]}" -o "$LOGS/opentheory-base.arlk"
+  must_pass "OpenTheory: check base-1.221" 2400 ./arlk check lib/hol.arlk "$LOGS/opentheory-base.arlk"
+  must_pass "OpenTheory: absorb bool, unit" 300 ./arlk absorb-hol "${ARTS[@]:0:8}" -o "$LOGS/opentheory-bool.arlk"
+  ot_tampered() { # name sed-expression
+    sed "$2" "$LOGS/opentheory-bool.arlk" >"$LOGS/opentheory-$1.arlk"
+    if cmp -s "$LOGS/opentheory-bool.arlk" "$LOGS/opentheory-$1.arlk"; then
+      record "OpenTheory tampered: $1" FAIL "the edit did not apply"
+    else
+      must_reject "OpenTheory tampered: $1" 300 "type mismatch" ./arlk check lib/hol.arlk "$LOGS/opentheory-$1.arlk"
+    fi
+  }
+  ot_tampered false-definition 's/^theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.F, /theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.T, /'
+  ot_tampered contradiction 's/^theorem bool_class.thm87: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.or(t_7, /theorem bool_class.thm87: Prf(Data.Bool.forall(bool)((t_7: Tm(bool)) => Data.Bool.and(t_7, /'
+else
+  record "OpenTheory base-1.221 (fetched, pinned)" FAIL "see $LOGS/opentheory-fetch.log and opentheory-sha.log"
+fi
 
 for f in spec/fixtures/reject/*.arlk; do
   want="$(sed -nE 's|^// expect: (.*)$|\1|p' "$f" | head -1)"

@@ -3,6 +3,7 @@
 //   arlk check FILE.arlk                 check every declaration
 //   arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export into Arlk source
 //   arlk absorb-mm DB.mm [--upto LABEL]  turn a Metamath database into Arlk source
+//   arlk absorb-hol ART.art...           turn OpenTheory articles into Arlk source
 
 import env
 import fs
@@ -12,6 +13,7 @@ import self.kernel
 import self.checker
 import self.absorb
 import self.metamath
+import self.hol
 
 let USAGE = """
   usage:
@@ -22,6 +24,8 @@ let USAGE = """
     arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export (tools/) into Arlk source
     arlk absorb-mm DB.mm [--upto LABEL] [-o OUT]
                                          turn a Metamath database (up to LABEL) into Arlk source
+    arlk absorb-hol ARTICLE.art... [-o OUT]
+                                         turn OpenTheory articles (HOL), in order, into Arlk source
   """
 
 effect fn main() -> Unit = {
@@ -31,6 +35,7 @@ effect fn main() -> Unit = {
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
+    some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     _ => {
       println(USAGE)
@@ -180,5 +185,31 @@ effect fn run_absorb_mm(path: String, upto: String, out: String?) -> Unit = {
       },
       none => println(text),
     },
+  }
+}
+
+// Articles are read in order into one state, so a later article can use
+// the constants, types and theorems of an earlier one.
+effect fn run_absorb_hol(paths: List[String], out: String?) -> Unit = {
+  var st = hol.state()
+  for path in paths {
+    let text = fs.read_text(path)!
+    let base = list.last(string.split(path, "/")) ?? path
+    let name = string.strip_suffix(base, ".art") ?? base
+    match hol.read_article(st, name, text) {
+      err(e) => {
+        println("✗ ${e}")
+        process.exit(1)
+      },
+      ok(_) => (),
+    }
+  }
+  let text = hol.source(st)
+  match out {
+    some(o) => {
+      fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+      println("wrote ${o}")
+    },
+    none => println(text),
   }
 }

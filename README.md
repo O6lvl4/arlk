@@ -11,7 +11,7 @@ like function signatures, a call is `f(a, b)`, a function is `(x: A) => body`, a
 is `(x: A) -> B`. Unicode is only an optional alias, and errors say what was expected and what
 was found.
 
-**Lean 4, Rocq and Metamath are absorbed, not linked, and Lean and Rocq meet in one place.**
+**Lean 4, Rocq, Metamath and HOL are absorbed, not linked, and Lean and Rocq meet in one place.**
 
 - Lean's whole `Init.Data.Nat.Basic` module (308 of its 310 theorems, 823 declarations with their
   dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
@@ -19,6 +19,10 @@ was found.
   checked the same way.
 - Metamath's `set.mm`: its whole propositional calculus (1776 theorems, from `ax-mp` to `stoic4b`)
   is read straight from the database, proofs included, and checked by the same kernel.
+- HOL, the logic of HOL Light, HOL4 and Isabelle/HOL: OpenTheory's whole standard library
+  (`base-1.221`: 95 articles, 2.7 million proof commands, from Booleans through lists, natural
+  numbers and the reals) is run by Arlk's own article reader and checked by the same kernel, with
+  1340 theorems proved and only HOL's three axioms assumed.
 - Lean and Rocq sit on one shared foundation, [lib/core.arlk](lib/core.arlk). That foundation has Rocq's
   cumulative universes *and* Lean's proof irrelevance, so a single proof can use both libraries.
   [examples/bridge.arlk](examples/bridge.arlk) turns Lean's theorem `Nat.add_comm` into a statement
@@ -257,16 +261,56 @@ assumptions about Metamath's syntax that `axioms` lists, like the database's own
 Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay symbols here, so
 `axioms` lists exactly the ones a theorem depends on.
 
+### HOL (via OpenTheory)
+
+OpenTheory is the proof exchange format of the HOL family. An *article* is a program for a stack
+machine whose commands build types, terms and theorems with HOL's primitive inference rules.
+`arlk absorb-hol` is an article reader written in Almide ([src/hol.almd](src/hol.almd)): it runs the
+article itself and writes down, for every theorem, a proof over [lib/hol.arlk](lib/hol.arlk). No
+HOL system and no OpenTheory tool is run; [tools/opentheory/fetch.sh](tools/opentheory/fetch.sh)
+only downloads the packages, which CI pins by checksum.
+
+| HOL | In Arlk |
+|---|---|
+| Types, terms of type `a` | `Ty`, `Tm(a)`, with the rule `Tm(arr(a, b)) = Tm(a) -> Tm(b)`, so HOL's λ, application, β and α are Arlk's own |
+| A theorem `Γ ⊦ φ` | a proof of `Prf(φ)` under one variable per hypothesis (hypotheses are numbered up to α); `assume` is a variable, discharging is a λ |
+| `refl`, `appThm`, `absThm`, `eqMp`, `deductAntisym` | the symbols `refl`, `mk_comb`, `abs`, `eq_mp`, `deduct_antisym` of room `hol` |
+| `trans`, `sym`, `betaConv`, `proveHyp` | theorems proved in room `hol`, conversion, and application |
+| `subst` (types, then terms) | the proof, abstracted over its type variables, variables and hypotheses, applied to the instances; bound variables are renamed as HOL renames them |
+| `defineConst`, `defineConstList` | a checked `def`; the defining theorem is reflexivity |
+| `defineTypeOp` | symbols for the type and its two bijections with their two axioms (HOL's principle of type definition), next to a checked proof that the defining predicate is inhabited |
+| `axiom` | the theorem of an earlier article with that statement, or else a reported symbol |
+| A theorem the article keeps (`def`) | a lemma, checked once |
+| A large term (articles share terms, text does not) | a `def` over its free variables, one per α-class, unfolded by the kernel when needed |
+
+A name a later article defines again (HOL Light's `recspace`) is a new constant or type: the reader
+keeps definitions apart by identity, not by name.
+
+```
+$ tools/opentheory/fetch.sh base-1.221 otlib > order.txt
+$ ./arlk absorb-hol $(cat order.txt) -o base.arlk
+$ ./arlk check lib/hol.arlk base.arlk
+✓ theorem opentheory.bool_class.thm87: hol.Prf(Data.Bool.forall(hol.bool, (t_7: hol.Tm(hol.bool)) => Data.Bool.or(t_7, Data.Bool.not(t_7))))
+...
+ok: lib/hol.arlk base.arlk (91319 declarations)
+```
+
+What the base library rests on (`axioms` on any of its theorems): room `hol`, HOL's three axioms
+(extensionality, choice and infinity, which the articles assume and the reader reports as
+`axiom_*.axiom*` symbols), and the type definitions (the new types with their `abs_rep`/`rep_abs`
+axioms, each next to its checked `nonempty` theorem).
+
 ### Results
 
 | Library | Declarations checked | Time |
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
-| Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~40 s |
+| Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
-| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~55 s |
+| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 | Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
+| OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
 template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.
@@ -357,7 +401,8 @@ lemma is rejected.
 
 CI (`.github/workflows/ci.yml`) runs [tools/ci.sh](tools/ci.sh) on a pinned toolchain (Almide
 v0.64.0 by checksum, Rust 1.96.1): build, both test suites, the native examples, the committed
-absorbed libraries without any prover, the exact known baseline of Rocq `Corelib.Init` (four
+absorbed libraries without any prover, OpenTheory's base library (fetched by checksum, absorbed
+and checked, with two false statements that must be rejected), the exact known baseline of Rocq `Corelib.Init` (four
 declarations fail, see above), and the inputs in [spec/fixtures/reject](spec/fixtures/reject),
 each of which must be rejected for its stated reason under a timeout. `tools/ci.sh` runs the same
 stages locally. A green run says these checks passed on that commit; it is not a soundness proof
@@ -372,6 +417,8 @@ almide build src/main.almd -o arlk
 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
 ./arlk check absorbed/metamath/set_prop.arlk
 ./arlk absorb-mm set.mm --upto stoic4b -o out.arlk
+./arlk check lib/hol.arlk
+tools/opentheory/fetch.sh base-1.221 otlib > order.txt && ./arlk absorb-hol $(cat order.txt) -o base.arlk
 tools/check-absorbed.sh
 
 almide test            # kernel and absorb tests (spec/): good proofs pass, bad ones are rejected
@@ -419,8 +466,9 @@ The full map of the trusted base, with the code each guarantee rests on, is in
    translation starts from Lean's kernel export, the same way
    [lean4-rust-backend](https://github.com/O6lvl4/lean4-rust-backend) takes Lean's compiler IR out
    as JSON and rebuilds it outside Lean. Metamath has started too (set.mm's propositional
-   calculus); next for it is `$d` and predicate calculus up to ZFC. After that: Isabelle/HOL, Agda, and Dedukti `.dk` files, each
-   into a room of its own.
+   calculus, `$d`, and set.mm well into ZF), and HOL (OpenTheory's standard library). Next: Isabelle's
+   own theories (HOL is its logic; its proof terms are the way in), Agda, and Dedukti `.dk` files,
+   each into a room of its own.
 4. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 
@@ -445,3 +493,7 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 | [almide#3405](https://github.com/almide/almide/issues/3405) two arguments calling a `mut`-param fn share one hoisted value (miscompile) | one `let` per argument in `conv` |
 | [almide#3409](https://github.com/almide/almide/issues/3409) `map.get(m, k) ?? k` borrows and moves `k` in one call | `match` on the lookup |
 | [almide#3410](https://github.com/almide/almide/issues/3410) a lambda capturing a `mut` parameter lowers to `c.get()` | `for` loop with `list.push` in `elab.constant` |
+| [almide#3413](https://github.com/almide/almide/issues/3413) native build panics on a list pattern nested in a variant pattern | `ty_arg` / `pair` helpers in `hol.almd` |
+| [almide#3414](https://github.com/almide/almide/issues/3414) a guard on a variable bound in a nested variant pattern runs before the binding | test the variable in the arm body (`hol.dest_eq`) |
+| [almide#3415](https://github.com/almide/almide/issues/3415) `err(..)` in a let-bound match takes the enclosing `Unit!` type | one small function per object kind (`pop_tyop`, `as_ty`, ...) |
+| [almide#3416](https://github.com/almide/almide/issues/3416) tuple-of-variants match leaves recursive payloads boxed | one value at a time (`as_list`, `as_var`) |

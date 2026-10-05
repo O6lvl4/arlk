@@ -72,10 +72,19 @@ applications, and a recursive call that is not on a constructor argument has no 
   `axioms`.
 * **Imported theories.** [lib/core.arlk](../lib/core.arlk) (the shared foundation for Lean and Rocq),
   the absorbed Lean/Rocq libraries' symbols and rules, Metamath's axioms and the `Apart`/`fresh`
-  facts about Metamath syntax. A check of an absorbed library is relative to these; that the
+  facts about Metamath syntax, and for HOL [lib/hol.arlk](../lib/hol.arlk) (HOL's inference rules as
+  symbols, `trans` and `sym` proved from them), the axioms an OpenTheory article assumes and the
+  type definitions it makes (a symbol for the type, its bijections and their two axioms, each
+  next to a checked proof that the defining predicate is inhabited). A check of an absorbed library is relative to these; that the
   emitted declarations faithfully encode the source logic, and that an emitted statement means
   what the source statement means, are separate obligations (issue #5). The exporters
-  (tools/lean-export, tools/rocq-export) and `arlk absorb`/`absorb-mm` only produce text.
+  (tools/lean-export, tools/rocq-export) and `arlk absorb`/`absorb-mm`/`absorb-hol` only produce
+  text. In particular the OpenTheory reader ([src/hol.almd](../src/hol.almd)) is not trusted: it
+  runs the article and writes proofs, lemmas, term abbreviations (checked `def`s) and constant
+  definitions (checked `def`s); a mistake there is a type error, not a theorem. The statement of an
+  exported HOL theorem is written from the article's own `thm` command, and its HOL meaning rests
+  on the encoding in lib/hol.arlk (a HOL term of type `a` is a value of `Tm(a)`, a theorem
+  `Γ ⊦ φ` is a function from proofs of `Γ` to a proof of `φ`).
 
 ## 6. Below Arlk
 

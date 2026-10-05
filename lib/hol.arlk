@@ -1,0 +1,70 @@
+// Higher-order logic, the logic of the HOL family (HOL4, HOL Light,
+// Isabelle/HOL, ProofPower), as OpenTheory writes it down.
+//
+// HOL has types built from type variables and type operators, terms of the
+// simply typed λ-calculus, and theorems Γ ⊦ φ. Here:
+//
+//   - a HOL type is a value of Ty, a HOL term of type a a value of Tm(a);
+//   - a function type is a function: Tm(arr(a, b)) = Tm(a) -> Tm(b), so HOL's
+//     λ, application, β and α-equivalence are Arlk's own;
+//   - a theorem Γ ⊦ φ is a function from proofs of Γ to a proof of φ, so
+//     hypotheses are variables, and discharging one is a λ.
+//
+// The inference rules of the OpenTheory kernel are the symbols below, apart
+// from those that need nothing: β-conversion and reflexivity of α-equal
+// terms are conversion, and `trans` and `sym` are proved. Type and constant
+// definitions are made by `arlk absorb-hol` as checked `def`s where they can
+// be (constants) and as reported symbols where they cannot (new types).
+
+room hol
+
+symbol Ty: Type
+symbol bool: Ty
+symbol arr(a: Ty, b: Ty) -> Ty
+
+symbol Tm(a: Ty) -> Type
+rule Tm(arr(a, b)) = Tm(a) -> Tm(b)  where a: Ty, b: Ty
+
+// The two primitive constants: equality, and Hilbert's choice.
+symbol eq(a: Ty) -> Tm(arr(a, arr(a, bool)))
+symbol select(a: Ty) -> Tm(arr(arr(a, bool), a))
+
+symbol Prf(p: Tm(bool)) -> Type
+
+// ── The inference rules ────────────────────────────────────────────
+
+// ⊦ t = t
+symbol refl(a: Ty, t: Tm(a)) -> Prf(eq(a, t, t))
+
+// Γ ⊦ φ = ψ  and  Δ ⊦ φ  give  Γ ∪ Δ ⊦ ψ
+symbol eq_mp(p: Tm(bool), q: Tm(bool), h: Prf(eq(bool, p, q)), hp: Prf(p)) -> Prf(q)
+
+// Γ ⊦ f = g  and  Δ ⊦ x = y  give  Γ ∪ Δ ⊦ f x = g y
+symbol mk_comb(a: Ty, b: Ty, f: Tm(arr(a, b)), g: Tm(arr(a, b)), x: Tm(a), y: Tm(a),
+               hf: Prf(eq(arr(a, b), f, g)), hx: Prf(eq(a, x, y))) -> Prf(eq(b, f(x), g(y)))
+
+// Γ ⊦ t = u, for every v not free in Γ, gives  Γ ⊦ (λv. t) = (λv. u)
+symbol abs(a: Ty, b: Ty, f: Tm(arr(a, b)), g: Tm(arr(a, b)),
+           h: (v: Tm(a)) -> Prf(eq(b, f(v), g(v)))) -> Prf(eq(arr(a, b), f, g))
+
+// Γ ⊦ φ  and  Δ ⊦ ψ  give  (Γ - ψ) ∪ (Δ - φ) ⊦ φ = ψ
+symbol deduct_antisym(p: Tm(bool), q: Tm(bool), hq: Prf(q) -> Prf(p), hp: Prf(p) -> Prf(q)) -> Prf(eq(bool, p, q))
+
+// ── Derived rules ──────────────────────────────────────────────────
+
+// Γ ⊦ x = y  and  Δ ⊦ y = z  give  Γ ∪ Δ ⊦ x = z
+theorem trans(a: Ty, x: Tm(a), y: Tm(a), z: Tm(a), h1: Prf(eq(a, x, y)), h2: Prf(eq(a, y, z))) -> Prf(eq(a, x, z)) =
+  eq_mp(eq(a, x, y), eq(a, x, z),
+    mk_comb(a, bool, eq(a, x), eq(a, x), y, z, refl(arr(a, bool), eq(a, x)), h2),
+    h1)
+
+// Γ ⊦ x = y  gives  Γ ⊦ y = x
+theorem sym(a: Ty, x: Tm(a), y: Tm(a), h: Prf(eq(a, x, y))) -> Prf(eq(a, y, x)) =
+  eq_mp(eq(a, x, x), eq(a, y, x),
+    mk_comb(a, bool, eq(a, x), eq(a, y), x, x,
+      mk_comb(a, arr(a, bool), eq(a), eq(a), x, y, refl(arr(a, arr(a, bool)), eq(a)), h),
+      refl(a, x)),
+    refl(a, x))
+
+axioms trans
+axioms sym

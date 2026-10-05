@@ -1,0 +1,1424 @@
+// arlk absorb-hol: OpenTheory articles as Arlk proofs over lib/hol.arlk.
+//
+// OpenTheory is the proof exchange format of the HOL family (HOL4, HOL
+// Light, ProofPower; Isabelle/HOL shares the logic). An article is a
+// program for a stack machine whose commands build types, terms and
+// theorems with the primitive inference rules of higher-order logic. This
+// module runs that program itself (no HOL system or OpenTheory tool is
+// involved) and writes down, for every theorem, a proof in Arlk:
+//
+//   - a theorem Γ ⊦ φ is a proof of Prf(φ) with a variable `h<n>` for each
+//     hypothesis in Γ (hypotheses are numbered up to α-equivalence),
+//     so `assume` is a variable and `deductAntisym` binds one;
+//   - each inference rule becomes its symbol in room hol (refl, mk_comb,
+//     abs, eq_mp, deduct_antisym) or a theorem proved there (trans, sym);
+//     β-conversion and α-equivalence are Arlk's own conversion;
+//   - `subst` applies the proof, abstracted over its type variables, term
+//     variables and hypotheses, to the instances;
+//   - a theorem the article keeps for later (`def`) becomes a lemma, so a
+//     proof used many times is checked once;
+//   - a constant definition becomes a checked `def`, so its defining
+//     theorem is reflexivity; a type definition becomes symbols for the
+//     type and its two bijections with their two axioms (that is HOL's
+//     principle of type definition), next to a checked proof that the
+//     defining predicate is inhabited.
+//
+// The output is checked by the kernel like any other source; nothing here
+// is trusted. What a result rests on beyond lib/hol.arlk is what `axioms`
+// lists: the article's own axioms and its new types.
+
+type HTy =
+  | TV(String)
+  | TOp(String, List[HTy])
+
+// Variables are numbered by name and type (`var_of`), so x: A and x: B
+// are different variables, as in HOL.
+type HTm =
+  | HV(Int)
+  | HC(String, HTy)
+  | HA(HTm, HTm)
+  | HL(Int, HTm)
+
+// A theorem: hypotheses (numbers, see `hyp_of`), conclusion, the text of
+// its proof, and every variable and type variable the proof mentions free.
+type Thm = { hyps: Set[Int], concl: HTm, proof: String, pvars: Set[Int], ptvs: Set[String] }
+
+type Obj =
+  | ONum(Int)
+  | OName(String)
+  | OList(List[Obj])
+  | OTyOp(String)
+  | OTy(HTy)
+  | OConst(String)
+  | OVar(Int)
+  | OTm(HTm)
+  | OThm(Thm)
+  | OGone
+
+// A constant's Arlk name, and its principal type with the order of its
+// type variables (its Arlk parameters).
+type HolConst = { arlk: String, tvs: List[String], ty: HTy }
+
+// A theorem an article exports, for later articles to refer to (`axiom`).
+type Export = { name: String, tvs: List[String], vars: List[Int], hyps: List[Int] }
+
+type St = {
+  vars: List[(String, HTy)],
+  var_ids: Map[String, Int],
+  hyps: List[HTm],
+  hyp_ids: Map[String, Int],
+  tyops: Map[String, String],
+  consts: Map[String, HolConst],
+  taken: Set[String],
+  exports: Map[String, Export],
+  texts: Map[String, String],
+  gens: Map[String, Int],
+  out: List[String],
+  assumed: List[String],
+  article: String,
+  count: Int,
+  last: String,
+}
+
+let ROOM = "opentheory"
+
+fn state() -> St = St {
+  vars: [], var_ids: [:], hyps: [], hyp_ids: [:], tyops: [:], consts: [:],
+  taken: set.from_list(["Ty", "bool", "arr", "Tm", "eq", "select", "Prf", "refl", "eq_mp", "mk_comb", "abs", "deduct_antisym", "trans", "sym"]),
+  exports: [:], texts: [:], gens: [:], out: [], assumed: [], article: "", count: 0, last: "",
+}
+
+// ── Types and terms ─────────────────────────────────────────────────
+
+local fn bool_ty() -> HTy = TOp("bool", [])
+local fn fun_ty(a: HTy, b: HTy) -> HTy = TOp("->", [a, b])
+
+local fn var_ty(st: St, i: Int) -> HTy = match list.get(st.vars, i) {
+  some((_, ty)) => ty,
+  none => TV("?"),
+}
+
+local fn var_raw(st: St, i: Int) -> String = match list.get(st.vars, i) {
+  some((n, _)) => n,
+  none => "?",
+}
+
+fn ty_key(ty: HTy) -> String = match ty {
+  TV(n) => "'" + n,
+  TOp(n, args) => if list.is_empty(args) then n else n + "(" + list.join(args |> list.map((a) => ty_key(a)), ",") + ")",
+}
+
+local fn var_of(mut st: St, name: String, ty: HTy) -> Int = {
+  let k = name + " : " + ty_key(ty)
+  match map.get(st.var_ids, k) {
+    some(i) => i,
+    none => {
+      let i = list.len(st.vars)
+      list.push(st.vars, (name, ty))
+      map.insert(st.var_ids, k, i)
+      i
+    },
+  }
+}
+
+// Terms up to α-equivalence: bound variables by position, free ones by number.
+fn tm_key(st: St, t: HTm, bound: List[Int]) -> String = match t {
+  HV(i) => match list.index_of(bound, i) {
+    some(j) => "#" + int.to_string(j),
+    none => "v" + int.to_string(i),
+  },
+  HC(n, ty) => n + ":" + ty_key(ty),
+  HA(f, x) => "(" + tm_key(st, f, bound) + " " + tm_key(st, x, bound) + ")",
+  HL(i, b) => "\\" + ty_key(var_ty(st, i)) + "." + tm_key(st, b, [i] + bound),
+}
+
+local fn hyp_of(mut st: St, t: HTm) -> Int = {
+  let k = tm_key(st, t, [])
+  match map.get(st.hyp_ids, k) {
+    some(i) => i,
+    none => {
+      let i = list.len(st.hyps)
+      list.push(st.hyps, t)
+      map.insert(st.hyp_ids, k, i)
+      i
+    },
+  }
+}
+
+local fn hyp_tm(st: St, i: Int) -> HTm = list.get(st.hyps, i) ?? HV(0)
+
+fn type_of(st: St, t: HTm) -> HTy = match t {
+  HV(i) => var_ty(st, i),
+  HC(_, ty) => ty,
+  HA(f, _) => ty_arg(type_of(st, f), 1),
+  HL(i, b) => fun_ty(var_ty(st, i), type_of(st, b)),
+}
+
+local fn ty_vars(ty: HTy, mut out: List[String]) -> Unit = match ty {
+  TV(n) => if list.contains(out, n) then () else list.push(out, n),
+  TOp(_, args) => for a in args {
+    ty_vars(a, out)
+  },
+}
+
+local fn tm_tvs(st: St, t: HTm, mut out: List[String]) -> Unit = match t {
+  HV(i) => ty_vars(var_ty(st, i), out),
+  HC(_, ty) => ty_vars(ty, out),
+  HA(f, x) => {
+    tm_tvs(st, f, out)
+    tm_tvs(st, x, out)
+  },
+  HL(i, b) => {
+    ty_vars(var_ty(st, i), out)
+    tm_tvs(st, b, out)
+  },
+}
+
+local fn tm_fvs(t: HTm, bound: List[Int], mut out: List[Int]) -> Unit = match t {
+  HV(i) => if list.contains(bound, i) or list.contains(out, i) then () else list.push(out, i),
+  HC(_, _) => (),
+  HA(f, x) => {
+    tm_fvs(f, bound, out)
+    tm_fvs(x, bound, out)
+  },
+  HL(i, b) => tm_fvs(b, [i] + bound, out),
+}
+
+local fn fvs(t: HTm) -> Set[Int] = {
+  var out: List[Int] = []
+  tm_fvs(t, [], out)
+  set.from_list(out)
+}
+
+local fn tvs(st: St, t: HTm) -> Set[String] = {
+  var out: List[String] = []
+  tm_tvs(st, t, out)
+  set.from_list(out)
+}
+
+local fn ty_tvs(ty: HTy) -> Set[String] = {
+  var out: List[String] = []
+  ty_vars(ty, out)
+  set.from_list(out)
+}
+
+// Arguments of a type operator, taken apart without nested list patterns
+// (almide/almide#3413).
+local fn ty_arg(ty: HTy, i: Int) -> HTy = match ty {
+  TOp(_, args) => list.get(args, i) ?? TV("?"),
+  TV(_) => TV("?"),
+}
+
+// A two-element list object, as a pair (almide/almide#3413).
+local fn pair(o: Obj) -> (Obj, Obj)! = match o {
+  OList(xs) => if list.len(xs) == 2 then ok((list.get(xs, 0) ?? OGone, list.get(xs, 1) ?? OGone)) else err("expected a pair, found a list of " + int.to_string(list.len(xs))),
+  _ => err("expected a pair, found " + kind(o)),
+}
+
+local fn mk_eq(ty: HTy, l: HTm, r: HTm) -> HTm = HA(HA(HC("=", fun_ty(ty, fun_ty(ty, bool_ty()))), l), r)
+
+local fn dest_eq(t: HTm) -> (HTy, HTm, HTm)! = match t {
+  // No guard on c: almide/almide#3414.
+  HA(HA(HC(c, ty), l), r) => if c == "=" then ok((ty_arg(ty, 0), l, r)) else err("an equation was expected"),
+  _ => err("an equation was expected"),
+}
+
+local fn spine(t: HTm) -> (HTm, List[HTm]) = {
+  var head = t
+  var rev: List[HTm] = []
+  var going = true
+  while going {
+    match head {
+      HA(f, a) => {
+        list.push(rev, a)
+        head = f
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (head, list.reverse(rev))
+}
+
+// ── Substitution ────────────────────────────────────────────────────
+
+fn ty_inst(ty: HTy, th: Map[String, HTy]) -> HTy = match ty {
+  TV(n) => match map.get(th, n) {
+    some(u) => u,
+    none => ty,
+  },
+  TOp(n, args) => TOp(n, args |> list.map((a) => ty_inst(a, th))),
+}
+
+local fn ty_match(p: HTy, t: HTy, mut th: Map[String, HTy]) -> Bool = match p {
+  TV(n) => match map.get(th, n) {
+    some(u) => ty_key(u) == ty_key(t),
+    none => {
+      map.insert(th, n, t)
+      true
+    },
+  },
+  TOp(n, args) => match t {
+    TOp(m, targs) => {
+      if n != m or list.len(args) != list.len(targs) then false
+      else {
+        var good = true
+        for (a, b) in list.zip(args, targs) {
+          if good and not ty_match(a, b, th) then good = false else ()
+        }
+        good
+      }
+    },
+    TV(_) => false,
+  },
+}
+
+local fn inst_var(mut st: St, i: Int, th: Map[String, HTy]) -> Int =
+  if map.is_empty(th) then i
+  else {
+    let n = var_raw(st, i)
+    let ty = ty_inst(var_ty(st, i), th)
+    var_of(st, n, ty)
+  }
+
+// Types first, then terms; a bound variable is renamed when it would
+// capture a free variable of a substituted term, or would become the same
+// variable as a free one after the types are instantiated.
+fn inst(mut st: St, t: HTm, th: Map[String, HTy], sg: Map[Int, HTm], ren: Map[Int, Int]) -> HTm = match t {
+  HV(i) => match map.get(ren, i) {
+    some(j) => HV(j),
+    none => {
+      let j = inst_var(st, i, th)
+      match map.get(sg, j) {
+        some(u) => u,
+        none => HV(j),
+      }
+    },
+  },
+  HC(n, ty) => HC(n, ty_inst(ty, th)),
+  HA(f, x) => {
+    let f2 = inst(st, f, th, sg, ren)
+    let x2 = inst(st, x, th, sg, ren)
+    HA(f2, x2)
+  },
+  HL(i, b) => {
+    let j0 = inst_var(st, i, th)
+    // The free variables the body will have, apart from this binder's.
+    var outer: List[Int] = []
+    for u in set.to_list(fvs(b)) {
+      if u == i then ()
+      else match map.get(ren, u) {
+        some(r) => list.push(outer, r),
+        none => {
+          let ui = inst_var(st, u, th)
+          match map.get(sg, ui) {
+            some(s) => for w in set.to_list(fvs(s)) {
+              list.push(outer, w)
+            },
+            none => list.push(outer, ui),
+          }
+        },
+      }
+    }
+    var j = j0
+    var name = var_raw(st, i)
+    let jty = var_ty(st, j0)
+    while list.contains(outer, j) {
+      name = name + "'"
+      j = var_of(st, name, jty)
+    }
+    let b2 = inst(st, b, th, sg, map.set(ren, i, j))
+    HL(j, b2)
+  },
+}
+
+// ── Arlk text ───────────────────────────────────────────────────────
+
+local fn alnum(s: String) -> String = list.join(string.chars(s) |> list.filter((c) => string.is_alphanumeric(c) and string.codepoint(c) ?? 128 < 128), "")
+
+local fn vname(st: St, i: Int) -> String = {
+  let base = alnum(var_raw(st, i))
+  let b = if base == "" or string.is_digit(string.take(base, 1)) then "x" + base else base
+  b + "_" + int.to_string(i)
+}
+
+local fn hname(i: Int) -> String = "h" + int.to_string(i)
+
+local fn tvname(n: String) -> String = {
+  let a = alnum(n)
+  if a == n and a != "" and not string.is_digit(string.take(a, 1)) then a + "'"
+  else "T'" + list.join(string.chars(n) |> list.map((c) => int.to_string(string.codepoint(c) ?? 0)), "'")
+}
+
+fn ty_text(st: St, ty: HTy) -> String = match ty {
+  TV(n) => tvname(n),
+  TOp(n, args) =>
+    if n == "bool" then "bool"
+    else if n == "->" then "arr(" + list.join(args |> list.map((a) => ty_text(st, a)), ", ") + ")"
+    else {
+      let nm = match map.get(st.tyops, n) {
+        some(a) => a,
+        none => "?" + n,
+      }
+      if list.is_empty(args) then nm else nm + "(" + list.join(args |> list.map((a) => ty_text(st, a)), ", ") + ")"
+    },
+}
+
+local fn const_text(st: St, n: String, ty: HTy) -> String =
+  if n == "=" then "eq(" + ty_text(st, ty_arg(ty, 0)) + ")"
+  else if n == "select" then "select(" + ty_text(st, ty_arg(ty, 1)) + ")"
+  else match map.get(st.consts, n) {
+    some(c) => {
+      var th: Map[String, HTy] = [:]
+      let matched = ty_match(c.ty, ty, th)
+      if list.is_empty(c.tvs) then c.arlk
+      else {
+        var args: List[String] = []
+        for v in c.tvs {
+          let a = match map.get(th, v) {
+            some(u) => u,
+            none => TV(v),
+          }
+          list.push(args, ty_text(st, a))
+        }
+        let shown = c.arlk + "(" + list.join(args, ", ") + ")"
+        if matched then shown else shown + "?"
+      }
+    },
+    none => "?" + n,
+  }
+
+// A term's text. Arlk text is a tree but an article's terms are a graph
+// (it refers back to terms it built), so a large term is written once, as
+// a `def` over its free variables and type variables, and referred to by
+// name: one α-class, one definition, which the kernel unfolds when it
+// needs to.
+fn tm_text(mut st: St, t: HTm) -> String = match t {
+  HV(i) => vname(st, i),
+  HC(n, ty) => const_text(st, n, ty),
+  _ => {
+    let k = tm_key(st, t, [])
+    match map.get(st.texts, k) {
+      some(c) => c,
+      none => {
+        let s = structural(st, t)
+        let c = if string.len(s) > ABBREVIATE then abbreviate(st, t, s) else s
+        map.insert(st.texts, k, c)
+        c
+      },
+    }
+  },
+}
+
+let ABBREVIATE = 120
+
+local fn structural(mut st: St, t: HTm) -> String = {
+  let (h, args) = spine(t)
+  let head = match h {
+    HV(i) => vname(st, i),
+    HC(n, ty) => const_text(st, n, ty),
+    HL(_, _) => lam_text(st, h),
+    HA(_, _) => "?",
+  }
+  if list.is_empty(args) then head
+  else {
+    var shown: List[String] = []
+    for a in args {
+      let x = tm_text(st, a)
+      list.push(shown, x)
+    }
+    let f = match h {
+      HL(_, _) => "(" + head + ")",
+      _ => head,
+    }
+    f + "(" + list.join(shown, ", ") + ")"
+  }
+}
+
+local fn lam_text(mut st: St, t: HTm) -> String = {
+  var body = t
+  var bs: List[String] = []
+  var going = true
+  while going {
+    match body {
+      HL(i, b) => {
+        list.push(bs, vname(st, i) + ": Tm(" + ty_text(st, var_ty(st, i)) + ")")
+        body = b
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  let b = tm_text(st, body)
+  "(" + list.join(bs, ", ") + ") => " + b
+}
+
+local fn abbreviate(mut st: St, t: HTm, text: String) -> String = {
+  let name = fresh_name(st, "t")
+  let vs = sorted_ints(fvs(t))
+  let ts = sorted_strs(tvs(st, t))
+  let ps = binders(st, ts, vs, [])
+  let ty = ty_text(st, type_of(st, t))
+  emit(st, "def " + name + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Tm(" + ty + ") =\n  " + text)
+  call_text(st, name, ts, vs, [])
+}
+
+// `name(A', x_1, h2)`: a declaration applied to type variables, variables
+// and hypotheses of the same names.
+local fn call_text(st: St, name: String, ts: List[String], vs: List[Int], hs: List[Int]) -> String = {
+  var args: List[String] = []
+  for a in ts {
+    list.push(args, tvname(a))
+  }
+  for v in vs {
+    list.push(args, vname(st, v))
+  }
+  for h in hs {
+    list.push(args, hname(h))
+  }
+  apply_text(name, args)
+}
+
+local fn sorted_ints(s: Set[Int]) -> List[Int] = list.sort(set.to_list(s))
+local fn sorted_strs(s: Set[String]) -> List[String] = list.sort(set.to_list(s))
+
+local fn witness(st: St, ty: HTy) -> String = {
+  let a = ty_text(st, ty)
+  "select(" + a + ", (z: Tm(" + a + ")) => eq(" + a + ", z, z))"
+}
+
+// Binders for type variables, variables and hypotheses, in that order (a
+// later one's type may mention an earlier one).
+local fn binders(mut st: St, ts: List[String], vs: List[Int], hs: List[Int]) -> List[String] = {
+  var out: List[String] = []
+  for a in ts {
+    list.push(out, tvname(a) + ": Ty")
+  }
+  for v in vs {
+    list.push(out, vname(st, v) + ": Tm(" + ty_text(st, var_ty(st, v)) + ")")
+  }
+  for h in hs {
+    let p = tm_text(st, hyp_tm(st, h))
+    list.push(out, hname(h) + ": Prf(" + p + ")")
+  }
+  out
+}
+
+local fn apply_text(f: String, args: List[String]) -> String =
+  if list.is_empty(args) then f else f + "(" + list.join(args, ", ") + ")"
+
+// The free variables and type variables of a theorem's statement.
+local fn statement_vars(st: St, hyps: Set[Int], concl: HTm) -> (Set[Int], Set[String]) = {
+  var vs: List[Int] = []
+  var ts: List[String] = []
+  tm_fvs(concl, [], vs)
+  tm_tvs(st, concl, ts)
+  for h in set.to_list(hyps) {
+    let t = hyp_tm(st, h)
+    tm_fvs(t, [], vs)
+    tm_tvs(st, t, ts)
+  }
+  (set.from_list(vs), set.from_list(ts))
+}
+
+// ── Names ───────────────────────────────────────────────────────────
+
+local fn char_name(c: String) -> String = match c {
+  "." => "dot", "+" => "plus", "-" => "minus", "*" => "star", "/" => "slash", "\\" => "bslash",
+  "^" => "hat", "~" => "tilde", "|" => "bar", "<" => "lt", ">" => "gt", "=" => "eq",
+  "(" => "lp", ")" => "rp", "\"" => "dq", "," => "comma", "!" => "bang", "?" => "q",
+  "@" => "at", "&" => "amp", "#" => "hash", "%" => "pct", ":" => "colon", "'" => "prime",
+  "$" => "dollar", "[" => "lb", "]" => "rb", "{" => "lc", "}" => "rc", " " => "sp",
+  _ => "u" + int.to_string(string.codepoint(c) ?? 0),
+}
+
+// The components of an OpenTheory name: `\c` is c, an unescaped `.` separates.
+fn components(raw: String) -> List[String] = {
+  var parts: List[String] = []
+  var cur = ""
+  var escaped = false
+  for c in string.chars(raw) {
+    if escaped then {
+      cur = cur + c
+      escaped = false
+    } else if c == "\\" then escaped = true
+    else if c == "." then {
+      list.push(parts, cur)
+      cur = ""
+    } else cur = cur + c
+  }
+  list.push(parts, cur)
+  parts
+}
+
+// Common operators read as words; anything else is spelled out by character.
+local fn operator_word(c: String) -> String? = match c {
+  "!" => some("forall"), "?" => some("exists"), "?!" => some("exists1"), "/\\" => some("and"),
+  "\\/" => some("or"), "==>" => some("imp"), "~" => some("not"), "+" => some("add"), "*" => some("mul"),
+  "-" => some("sub"), "<=" => some("le"), "<" => some("lt"), ">=" => some("ge"), ">" => some("gt"),
+  "^" => some("pow"), "o" => some("comp"), "@" => some("select"), "," => some("pair"), "::" => some("cons"),
+  _ => none,
+}
+
+local fn component(c: String) -> String = match operator_word(c) {
+  some(w) => w,
+  none => spelled(c),
+}
+
+local fn spelled(c: String) -> String = {
+  let s = list.join(string.chars(c) |> list.map((ch) => if (string.is_alphanumeric(ch) and (string.codepoint(ch) ?? 128) < 128) or ch == "_" then ch else "_" + char_name(ch)), "")
+  if s == "" then "op" else if string.starts_with(s, "_") or string.is_digit(string.take(s, 1)) then "op" + s else s
+}
+
+// An Arlk name for a HOL constant or type: its components joined by dots,
+// always with a dot (bound names never have one), never a room's name.
+local fn global_name(mut st: St, raw: String) -> String = {
+  let cs = components(raw) |> list.map((c) => component(c))
+  let first = list.first(cs) ?? ""
+  let base0 = list.join(cs, ".")
+  let base = if list.len(cs) < 2 or first == "hol" or first == ROOM or first == "core" then "ot." + base0 else base0
+  var n = base
+  while set.contains(st.taken, n) {
+    n = n + "'"
+  }
+  st.taken = set.insert(st.taken, n)
+  n
+}
+
+local fn fresh_name(mut st: St, kind: String) -> String = {
+  st.count = st.count + 1
+  global_name(st, st.article + "." + kind + int.to_string(st.count))
+}
+
+local fn emit(mut st: St, decl: String) -> Unit = list.push(st.out, decl)
+
+// ── Theorems ────────────────────────────────────────────────────────
+
+local fn statement_thm(st: St, hyps: Set[Int], concl: HTm, proof: String) -> Thm = {
+  let (vs, ts) = statement_vars(st, hyps, concl)
+  Thm { hyps: hyps, concl: concl, proof: proof, pvars: vs, ptvs: ts }
+}
+
+// A theorem as a lemma: its proof is checked once, under its own name, and
+// the theorem becomes a call. Variables and type variables that only the
+// proof mentions are instantiated (by `select` and `bool`; HOL types are
+// inhabited), so the lemma's parameters are its statement's.
+local fn lift(mut st: St, th: Thm, name: String, hyps: Set[Int]) -> Thm = {
+  let (sv, stv) = statement_vars(st, hyps, th.concl)
+  let ev = sorted_ints(set.difference(th.pvars, sv))
+  let et = sorted_strs(set.difference(th.ptvs, stv))
+  var body = th.proof
+  if not list.is_empty(ev) then {
+    let bs = binders(st, [], ev, [])
+    var ws: List[String] = []
+    for v in ev {
+      list.push(ws, witness(st, var_ty(st, v)))
+    }
+    body = "(" + "(" + list.join(bs, ", ") + ") => " + body + ")(" + list.join(ws, ", ") + ")"
+  } else ()
+  if not list.is_empty(et) then {
+    let bs = binders(st, et, [], [])
+    body = "(" + "(" + list.join(bs, ", ") + ") => " + body + ")(" + list.join(et |> list.map((_) => "bool"), ", ") + ")"
+  } else ()
+  let ts = sorted_strs(stv)
+  let vs = sorted_ints(sv)
+  let hs = sorted_ints(hyps)
+  let ps = binders(st, ts, vs, hs)
+  let head = if list.is_empty(ps) then "theorem " + name + ": " else "theorem " + name + "(" + list.join(ps, ", ") + ") -> "
+  let c = tm_text(st, th.concl)
+  emit(st, head + "Prf(" + c + ") =\n  " + body)
+  let call = call_text(st, name, ts, vs, hs)
+  Thm { hyps: hyps, concl: th.concl, proof: call, pvars: sv, ptvs: stv }
+}
+
+local fn export_key(st: St, hyps: Set[Int], concl: HTm) -> String =
+  tm_key(st, concl, []) + "|" + list.join(sorted_ints(hyps) |> list.map((h) => int.to_string(h)), ",")
+
+local fn remember(mut st: St, name: String, hyps: Set[Int], concl: HTm) -> Unit = {
+  let (sv, stv) = statement_vars(st, hyps, concl)
+  let k = export_key(st, hyps, concl)
+  map.insert(st.exports, k, Export { name: name, tvs: sorted_strs(stv), vars: sorted_ints(sv), hyps: sorted_ints(hyps) })
+}
+
+// Instantiate a theorem: type variables by th, then variables by sg. The
+// proof is applied to the instances; `given` discharges hypotheses with
+// proofs instead of passing them on.
+local fn subst_thm(mut st: St, t: Thm, th: Map[String, HTy], sg: Map[Int, HTm], given: Map[Int, String]) -> Thm = {
+  let ts = sorted_strs(t.ptvs)
+  let vs = sorted_ints(t.pvars)
+  let hs = sorted_ints(t.hyps)
+  var args: List[String] = []
+  var nvars: List[Int] = []
+  var ntvs: List[String] = []
+  for a in ts {
+    let u = ty_inst(TV(a), th)
+    ty_vars(u, ntvs)
+    list.push(args, ty_text(st, u))
+  }
+  for v in vs {
+    let j = inst_var(st, v, th)
+    let u = match map.get(sg, j) {
+      some(s) => s,
+      none => HV(j),
+    }
+    tm_fvs(u, [], nvars)
+    tm_tvs(st, u, ntvs)
+    let x = tm_text(st, u)
+    list.push(args, x)
+  }
+  var nhyps: List[Int] = []
+  let empty: Map[Int, Int] = [:]
+  for h in hs {
+    match map.get(given, h) {
+      some(p) => list.push(args, p),
+      none => {
+        let u = inst(st, hyp_tm(st, h), th, sg, empty)
+        let k = hyp_of(st, u)
+        if list.contains(nhyps, k) then () else list.push(nhyps, k)
+        list.push(args, hname(k))
+      },
+    }
+  }
+  let concl = inst(st, t.concl, th, sg, empty)
+  // A lemma applied to exactly these names is applied to the instances
+  // instead; anything else is abstracted over them and applied.
+  let head = match string.index_of(t.proof, "(") {
+    some(i) => string.slice(t.proof, 0, i),
+    none => t.proof,
+  }
+  let proof = if list.is_empty(args) then t.proof
+    else if call_text(st, head, ts, vs, hs) == t.proof then apply_text(head, args)
+    else {
+      let ps = binders(st, ts, vs, hs)
+      "(" + "(" + list.join(ps, ", ") + ") => " + t.proof + ")(" + list.join(args, ", ") + ")"
+    }
+  let (sv, stv) = statement_vars(st, set.from_list(nhyps), concl)
+  Thm {
+    hyps: set.from_list(nhyps), concl: concl, proof: proof,
+    pvars: set.union(set.from_list(nvars), sv), ptvs: set.union(set.from_list(ntvs), stv),
+  }
+}
+
+local fn union2(a: Thm, b: Thm, hyps: Set[Int], concl: HTm, proof: String) -> Thm =
+  Thm { hyps: hyps, concl: concl, proof: proof, pvars: set.union(a.pvars, b.pvars), ptvs: set.union(a.ptvs, b.ptvs) }
+
+// ── The machine ─────────────────────────────────────────────────────
+
+local fn kind(o: Obj) -> String = match o {
+  ONum(_) => "a number",
+  OName(_) => "a name",
+  OList(_) => "a list",
+  OTyOp(_) => "a type operator",
+  OTy(_) => "a type",
+  OConst(_) => "a constant",
+  OVar(_) => "a variable",
+  OTm(_) => "a term",
+  OThm(_) => "a theorem",
+  OGone => "a removed entry",
+}
+
+local fn pop(mut stack: List[Obj]) -> Obj! = match list.pop(stack) {
+  some(o) => ok(o),
+  none => err("the stack is empty"),
+}
+
+local fn pop_num(mut stack: List[Obj]) -> Int! = match pop(stack)! {
+  ONum(n) => ok(n),
+  o => err("expected a number, found " + kind(o)),
+}
+
+local fn pop_name(mut stack: List[Obj]) -> String! = match pop(stack)! {
+  OName(n) => ok(n),
+  o => err("expected a name, found " + kind(o)),
+}
+
+local fn pop_list(mut stack: List[Obj]) -> List[Obj]! = match pop(stack)! {
+  OList(l) => ok(l),
+  o => err("expected a list, found " + kind(o)),
+}
+
+local fn pop_ty(mut stack: List[Obj]) -> HTy! = match pop(stack)! {
+  OTy(t) => ok(t),
+  o => err("expected a type, found " + kind(o)),
+}
+
+local fn pop_tm(mut stack: List[Obj]) -> HTm! = match pop(stack)! {
+  OTm(t) => ok(t),
+  o => err("expected a term, found " + kind(o)),
+}
+
+local fn pop_var(mut stack: List[Obj]) -> Int! = match pop(stack)! {
+  OVar(v) => ok(v),
+  o => err("expected a variable, found " + kind(o)),
+}
+
+local fn pop_thm(mut stack: List[Obj]) -> Thm! = match pop(stack)! {
+  OThm(t) => ok(t),
+  o => err("expected a theorem, found " + kind(o)),
+}
+
+// The helpers below take objects apart in functions of their own:
+// almide/almide#3415 mistypes `let x = match ... { ..., _ => err(..) }!`
+// inside `command`.
+local fn pop_tyop(mut stack: List[Obj]) -> String! = match pop(stack)! {
+  OTyOp(n) => ok(n),
+  o => err("expected a type operator, found " + kind(o)),
+}
+
+local fn pop_const(mut stack: List[Obj]) -> String! = match pop(stack)! {
+  OConst(n) => ok(n),
+  o => err("expected a constant, found " + kind(o)),
+}
+
+// One value at a time, not `match (a, b)`: almide/almide#3416.
+local fn as_list(o: Obj) -> List[Obj]! = match o {
+  OList(l) => ok(l),
+  _ => err("expected a list, found " + kind(o)),
+}
+
+local fn as_var(o: Obj) -> Int! = match o {
+  OVar(v) => ok(v),
+  _ => err("expected a variable, found " + kind(o)),
+}
+
+local fn as_ty(o: Obj) -> HTy! = match o {
+  OTy(t) => ok(t),
+  _ => err("expected a type, found " + kind(o)),
+}
+
+local fn dest_beta(t: HTm) -> (Int, HTm, HTm)! = match t {
+  HA(f, u) => match f {
+    HL(v, b) => ok((v, b, u)),
+    _ => err("betaConv: not a β-redex"),
+  },
+  _ => err("betaConv: not a β-redex"),
+}
+
+local fn substitution(s: List[Obj]) -> (Map[String, HTy], Map[Int, HTm])! = {
+  let (s1, s2) = pair(OList(s))!
+  let tys = as_list(s1)!
+  let tms = as_list(s2)!
+  var th: Map[String, HTy] = [:]
+  for p in tys {
+    let (a, b) = pair(p)!
+    map.insert(th, as_name(a)!, as_ty(b)!)
+  }
+  var sg: Map[Int, HTm] = [:]
+  for p in tms {
+    let (a, b) = pair(p)!
+    map.insert(sg, as_var(a)!, as_tm(b)!)
+  }
+  ok((th, sg))
+}
+
+local fn as_tm(o: Obj) -> HTm! = match o {
+  OTm(t) => ok(t),
+  _ => err("expected a term, found " + kind(o)),
+}
+
+local fn as_name(o: Obj) -> String! = match o {
+  OName(n) => ok(n),
+  _ => err("expected a name, found " + kind(o)),
+}
+
+// Constants and types are known by identity, not by name: a later article
+// may define a name again (HOL Light's `recspace` is defined by several),
+// and its terms must not be confused with the earlier ones. `name#k` is
+// the k-th definition of name; a reference means the latest.
+local fn generation(st: St, n: String) -> Int = match map.get(st.gens, n) {
+  some(g) => g,
+  none => 0,
+}
+
+local fn ident(st: St, n: String) -> String =
+  if n == "bool" or n == "->" or n == "=" or n == "select" then n
+  else n + "#" + int.to_string(generation(st, n))
+
+local fn fresh_ident(mut st: St, n: String) -> String = {
+  let g = generation(st, n) + 1
+  map.insert(st.gens, n, g)
+  n + "#" + int.to_string(g)
+}
+
+fn raw_of(id: String) -> String = match string.last_index_of(id, "#") {
+  some(i) => string.slice(id, 0, i),
+  none => id,
+}
+
+local fn ensure_tyop(mut st: St, n: String, arity: Int) -> Unit =
+  if n == "bool" or n == "->" or map.contains(st.tyops, n) then ()
+  else {
+    // A type the articles read so far do not define (HOL's `ind`).
+    let a = global_name(st, raw_of(n))
+    var ps: List[String] = []
+    var i = 0
+    while i < arity {
+      list.push(ps, "a" + int.to_string(i + 1) + ": Ty")
+      i = i + 1
+    }
+    emit(st, "symbol " + a + (if arity == 0 then ": Ty" else "(" + list.join(ps, ", ") + ") -> Ty"))
+    map.insert(st.tyops, n, a)
+    list.push(st.assumed, a)
+  }
+
+local fn ensure_const(mut st: St, n: String, ty: HTy) -> Unit =
+  if n == "=" or n == "select" or map.contains(st.consts, n) then ()
+  else {
+    // A constant the articles read so far do not define: declared at the
+    // type of its first use, generalised over its type variables.
+    let a = global_name(st, raw_of(n))
+    let ts = sorted_strs(ty_tvs(ty))
+    let ps = binders(st, ts, [], [])
+    emit(st, "symbol " + a + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Tm(" + ty_text(st, ty) + ")")
+    map.insert(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
+    list.push(st.assumed, a)
+  }
+
+local fn define_const(mut st: St, raw: String, t: HTm) -> (String, Thm)! = {
+  guard set.is_empty(fvs(t)) else err("the definition of " + raw + " has free variables")
+  let ty = type_of(st, t)
+  let ts = sorted_strs(ty_tvs(ty))
+  let a = global_name(st, raw)
+  let n = fresh_ident(st, raw)
+  let ps = binders(st, ts, [], [])
+  let body = tm_text(st, t)
+  emit(st, "def " + a + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Tm(" + ty_text(st, ty) + ") =\n  " + body)
+  map.insert(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
+  let c = HC(n, ty)
+  ok((n, Thm { hyps: set.new(), concl: mk_eq(ty, c, t), proof: "refl(" + ty_text(st, ty) + ", " + const_text(st, n, ty) + ")", pvars: set.new(), ptvs: set.from_list(ts) }))
+}
+
+local fn axiom(mut st: St, hs: List[HTm], phi: HTm) -> Thm = {
+  var ids: List[Int] = []
+  for h in hs {
+    let k = hyp_of(st, h)
+    if list.contains(ids, k) then () else list.push(ids, k)
+  }
+  let hyps = set.from_list(ids)
+  let k = export_key(st, hyps, phi)
+  match map.get(st.exports, k) {
+    some(e) => statement_thm(st, hyps, phi, call_text(st, e.name, e.tvs, e.vars, e.hyps)),
+    none => {
+      // Not a theorem of an earlier article: an assumption, reported.
+      let name = fresh_name(st, "axiom")
+      let (sv, stv) = statement_vars(st, hyps, phi)
+      let ts = sorted_strs(stv)
+      let vs = sorted_ints(sv)
+      let hl = sorted_ints(hyps)
+      let ps = binders(st, ts, vs, hl)
+      let c = tm_text(st, phi)
+      emit(st, "symbol " + name + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Prf(" + c + ")")
+      list.push(st.assumed, name)
+      remember(st, name, hyps, phi)
+      statement_thm(st, hyps, phi, call_text(st, name, ts, vs, hl))
+    },
+  }
+}
+
+local fn define_type(mut st: St, rawn: String, rawabs: String, rawrep: String, names: List[String], th: Thm) -> (String, String, String, Thm, Thm)! = {
+  let n = rawn
+  guard set.is_empty(th.hyps) else err("the type definition of " + n + " has hypotheses")
+  let (phi, t) = match th.concl {
+    HA(p, x) => ok((p, x)),
+    _ => err("the type definition of " + n + " is not of the form P t"),
+  }!
+  guard set.is_empty(fvs(phi)) else err("the predicate defining " + n + " has free variables")
+  let tau = type_of(st, t)
+  let a = global_name(st, rawn)
+  // The predicate is inhabited: checked.
+  let nonempty = a + ".nonempty"
+  st.taken = set.insert(st.taken, nonempty)
+  let lifted = lift(st, th, nonempty, set.new())
+  let ps = binders(st, names, [], [])
+  let params = if list.is_empty(ps) then "" else "(" + list.join(ps, ", ") + ")"
+  let arrow = if list.is_empty(ps) then ": " else params + " -> "
+  emit(st, "symbol " + a + arrow + "Ty")
+  let tid = fresh_ident(st, rawn)
+  map.insert(st.tyops, tid, a)
+  let newty = TOp(tid, names |> list.map((x) => TV(x)))
+  let absa = global_name(st, rawabs)
+  let repa = global_name(st, rawrep)
+  let absn = fresh_ident(st, rawabs)
+  let repn = fresh_ident(st, rawrep)
+  emit(st, "symbol " + absa + arrow + "Tm(" + ty_text(st, fun_ty(tau, newty)) + ")")
+  emit(st, "symbol " + repa + arrow + "Tm(" + ty_text(st, fun_ty(newty, tau)) + ")")
+  map.insert(st.consts, absn, HolConst { arlk: absa, tvs: names, ty: fun_ty(tau, newty) })
+  map.insert(st.consts, repn, HolConst { arlk: repa, tvs: names, ty: fun_ty(newty, tau) })
+  let absc = HC(absn, fun_ty(tau, newty))
+  let repc = HC(repn, fun_ty(newty, tau))
+  let av = var_of(st, "a", newty)
+  let rv = var_of(st, "r", tau)
+  let c1 = mk_eq(fun_ty(newty, newty), HL(av, HA(absc, HA(repc, HV(av)))), HL(av, HV(av)))
+  let c2 = mk_eq(fun_ty(tau, bool_ty()), HL(rv, mk_eq(tau, HA(repc, HA(absc, HV(rv))), HV(rv))), HL(rv, HA(phi, HV(rv))))
+  let ax1 = a + ".abs_rep"
+  let ax2 = a + ".rep_abs"
+  st.taken = set.insert(set.insert(st.taken, ax1), ax2)
+  let s1 = tm_text(st, c1)
+  emit(st, "symbol " + ax1 + arrow + "Prf(" + s1 + ")")
+  let s2 = tm_text(st, c2)
+  emit(st, "symbol " + ax2 + arrow + "Prf(" + s2 + ")")
+  for x in [a, absa, repa, ax1, ax2] {
+    list.push(st.assumed, x)
+  }
+  let targs = names |> list.map((x) => tvname(x))
+  let _ = lifted
+  ok((tid, absn, repn, statement_thm(st, set.new(), c1, apply_text(ax1, targs)), statement_thm(st, set.new(), c2, apply_text(ax2, targs))))
+}
+
+local fn define_const_list(mut st: St, pairs: List[Obj], th: Thm) -> (List[Obj], Thm)! = {
+  var consts: List[Obj] = []
+  var sg: Map[Int, HTm] = [:]
+  var defined: List[(Int, String)] = []
+  for p in pairs {
+    let (a, b) = pair(p)!
+    let n = as_name(a)!
+    let v = as_var(b)!
+    defined = defined + [(v, n)]
+  }
+  // Each hypothesis v = t defines the constant named for v.
+  var given: Map[Int, String] = [:]
+  var ids: Map[String, String] = [:]
+  for h in sorted_ints(th.hyps) {
+    let (ty, l, r) = dest_eq(hyp_tm(st, h))!
+    let v = match l {
+      HV(v) => ok(v),
+      _ => err("defineConstList: a hypothesis is not of the form v = t"),
+    }!
+    let n = match list.find(defined, ((w, _)) => w == v) {
+      some((_, n)) => ok(n),
+      none => err("defineConstList: no name for a defined variable"),
+    }!
+    let (id, _) = define_const(st, n, r)!
+    map.insert(ids, n, id)
+    map.insert(sg, v, HC(id, ty))
+    map.insert(given, h, "refl(" + ty_text(st, ty) + ", " + const_text(st, id, ty) + ")")
+  }
+  for (v, n) in defined {
+    let id = match map.get(ids, n) {
+      some(i) => ok(i),
+      none => err("defineConstList: " + n + " has no defining hypothesis"),
+    }!
+    let _ = v
+    list.push(consts, OConst(id))
+  }
+  let empty: Map[String, HTy] = [:]
+  ok((consts, subst_thm(st, th, empty, sg, given)))
+}
+
+local fn parse_int(s: String) -> Int? =
+  if s == "0" then some(0)
+  else {
+    let digits = if string.starts_with(s, "-") then string.drop(s, 1) else s
+    if digits == "" or string.starts_with(digits, "0") or not list.all(string.chars(digits), (c) => string.is_digit(c)) then none
+    else match int.parse(s) {
+      ok(n) => some(n),
+      err(_) => none,
+    }
+  }
+
+fn step(mut st: St, mut stack: List[Obj], mut dict: Map[Int, Obj], cmd: String) -> Unit! = {
+  if string.starts_with(cmd, "\"") then {
+    guard string.len(cmd) >= 2 and string.ends_with(cmd, "\"") else err("a malformed name: " + cmd)
+    list.push(stack, OName(string.slice(cmd, 1, string.len(cmd) - 1)))
+    ok(())
+  } else match parse_int(cmd) {
+    some(n) => {
+      list.push(stack, ONum(n))
+      ok(())
+    },
+    none => command(st, stack, dict, cmd),
+  }
+}
+
+local fn push_thm(mut stack: List[Obj], t: Thm) -> Unit! = {
+  list.push(stack, OThm(t))
+  ok(())
+}
+
+local fn command(mut st: St, mut stack: List[Obj], mut dict: Map[Int, Obj], cmd: String) -> Unit! = match cmd {
+  "version" => {
+    let v = pop_num(stack)!
+    guard v == 6 or v == 5 else err("article version " + int.to_string(v) + " is not supported")
+    ok(())
+  },
+  "nil" => {
+    list.push(stack, OList([]))
+    ok(())
+  },
+  "cons" => {
+    let t = pop_list(stack)!
+    let h = pop(stack)!
+    list.push(stack, OList([h] + t))
+    ok(())
+  },
+  "hdTl" => {
+    let l = pop_list(stack)!
+    match l {
+      [h, ..t] => {
+        list.push(stack, h)
+        list.push(stack, OList(t))
+        ok(())
+      },
+      _ => err("hdTl of an empty list"),
+    }
+  },
+  "pop" => {
+    let _ = pop(stack)!
+    ok(())
+  },
+  "pragma" => {
+    let _ = pop(stack)!
+    ok(())
+  },
+  "def" => {
+    let k = pop_num(stack)!
+    let x = pop(stack)!
+    // A theorem kept for later becomes a lemma (unless its proof is short).
+    let y = match x {
+      OThm(t) => if string.len(t.proof) > 60 then {
+        let name = fresh_name(st, "l")
+        OThm(lift(st, t, name, t.hyps))
+      } else x,
+      _ => x,
+    }
+    list.push(stack, y)
+    map.insert(dict, k, y)
+    ok(())
+  },
+  "ref" => {
+    let k = pop_num(stack)!
+    match map.get(dict, k) {
+      some(OGone) => err("ref " + int.to_string(k) + ": removed"),
+      some(o) => {
+        list.push(stack, o)
+        ok(())
+      },
+      none => err("ref " + int.to_string(k) + ": not in the dictionary"),
+    }
+  },
+  "remove" => {
+    let k = pop_num(stack)!
+    match map.get(dict, k) {
+      some(OGone) => err("remove " + int.to_string(k) + ": removed"),
+      some(o) => {
+        list.push(stack, o)
+        map.insert(dict, k, OGone)
+        ok(())
+      },
+      none => err("remove " + int.to_string(k) + ": not in the dictionary"),
+    }
+  },
+  "typeOp" => {
+    let n = pop_name(stack)!
+    list.push(stack, OTyOp(ident(st, n)))
+    ok(())
+  },
+  "opType" => {
+    let args = pop_list(stack)!
+    let op = pop_tyop(stack)!
+    var tys: List[HTy] = []
+    for a in args {
+      list.push(tys, as_ty(a)!)
+    }
+    ensure_tyop(st, op, list.len(tys))
+    list.push(stack, OTy(TOp(op, tys)))
+    ok(())
+  },
+  "varType" => {
+    let n = pop_name(stack)!
+    list.push(stack, OTy(TV(n)))
+    ok(())
+  },
+  "var" => {
+    let ty = pop_ty(stack)!
+    let n = pop_name(stack)!
+    let v = var_of(st, n, ty)
+    list.push(stack, OVar(v))
+    ok(())
+  },
+  "varTerm" => {
+    let v = pop_var(stack)!
+    list.push(stack, OTm(HV(v)))
+    ok(())
+  },
+  "const" => {
+    let n = pop_name(stack)!
+    list.push(stack, OConst(ident(st, n)))
+    ok(())
+  },
+  "constTerm" => {
+    let ty = pop_ty(stack)!
+    let c = pop_const(stack)!
+    ensure_const(st, c, ty)
+    list.push(stack, OTm(HC(c, ty)))
+    ok(())
+  },
+  "appTerm" => {
+    let x = pop_tm(stack)!
+    let f = pop_tm(stack)!
+    list.push(stack, OTm(HA(f, x)))
+    ok(())
+  },
+  "absTerm" => {
+    let b = pop_tm(stack)!
+    let v = pop_var(stack)!
+    list.push(stack, OTm(HL(v, b)))
+    ok(())
+  },
+  "refl" => {
+    let t = pop_tm(stack)!
+    let ty = type_of(st, t)
+    let x = tm_text(st, t)
+    push_thm(stack, Thm { hyps: set.new(), concl: mk_eq(ty, t, t), proof: "refl(" + ty_text(st, ty) + ", " + x + ")", pvars: fvs(t), ptvs: tvs(st, t) })
+  },
+  "assume" => {
+    let t = pop_tm(stack)!
+    let h = hyp_of(st, t)
+    push_thm(stack, Thm { hyps: set.from_list([h]), concl: t, proof: hname(h), pvars: fvs(t), ptvs: tvs(st, t) })
+  },
+  "betaConv" => {
+    let t = pop_tm(stack)!
+    let (v, b, u) = dest_beta(t)!
+    let empty: Map[String, HTy] = [:]
+    let none_ren: Map[Int, Int] = [:]
+    let r = inst(st, b, empty, map.set([:], v, u), none_ren)
+    let ty = type_of(st, t)
+    let x = tm_text(st, t)
+    push_thm(stack, Thm { hyps: set.new(), concl: mk_eq(ty, t, r), proof: "refl(" + ty_text(st, ty) + ", " + x + ")", pvars: fvs(t), ptvs: tvs(st, t) })
+  },
+  "appThm" => {
+    let tx = pop_thm(stack)!
+    let tf = pop_thm(stack)!
+    let (fty, f, g) = dest_eq(tf.concl)!
+    let (_, x, y) = dest_eq(tx.concl)!
+    let a = ty_arg(fty, 0)
+    let b = ty_arg(fty, 1)
+    let sf = tm_text(st, f)
+    let sg = tm_text(st, g)
+    let sx = tm_text(st, x)
+    let sy = tm_text(st, y)
+    let proof = "mk_comb(" + list.join([ty_text(st, a), ty_text(st, b), sf, sg, sx, sy, tf.proof, tx.proof], ", ") + ")"
+    push_thm(stack, union2(tf, tx, set.union(tf.hyps, tx.hyps), mk_eq(b, HA(f, x), HA(g, y)), proof))
+  },
+  "absThm" => {
+    let t = pop_thm(stack)!
+    let v = pop_var(stack)!
+    let (b, l, r) = dest_eq(t.concl)!
+    for h in set.to_list(t.hyps) {
+      guard not set.contains(fvs(hyp_tm(st, h)), v) else err("absThm: the variable is free in a hypothesis")
+    }
+    let a = var_ty(st, v)
+    let fl = HL(v, l)
+    let fr = HL(v, r)
+    let sl = tm_text(st, fl)
+    let sr = tm_text(st, fr)
+    let proof = "abs(" + list.join([ty_text(st, a), ty_text(st, b), sl, sr, "(" + vname(st, v) + ": Tm(" + ty_text(st, a) + ")) => " + t.proof], ", ") + ")"
+    push_thm(stack, Thm { hyps: t.hyps, concl: mk_eq(fun_ty(a, b), fl, fr), proof: proof, pvars: set.remove(t.pvars, v), ptvs: set.union(t.ptvs, ty_tvs(a)) })
+  },
+  "deductAntisym" => {
+    let tq = pop_thm(stack)!
+    let tp = pop_thm(stack)!
+    let hp = hyp_of(st, tp.concl)
+    let hq = hyp_of(st, tq.concl)
+    let p = tm_text(st, tp.concl)
+    let q = tm_text(st, tq.concl)
+    let proof = "deduct_antisym(" + p + ", " + q + ", (" + hname(hq) + ": Prf(" + q + ")) => " + tp.proof + ", (" + hname(hp) + ": Prf(" + p + ")) => " + tq.proof + ")"
+    let hyps = set.union(set.remove(tp.hyps, hq), set.remove(tq.hyps, hp))
+    push_thm(stack, union2(tp, tq, hyps, mk_eq(bool_ty(), tp.concl, tq.concl), proof))
+  },
+  "eqMp" => {
+    let tp = pop_thm(stack)!
+    let te = pop_thm(stack)!
+    let (_, p, q) = dest_eq(te.concl)!
+    guard tm_key(st, p, []) == tm_key(st, tp.concl, []) else err("eqMp: the theorem does not match the equation")
+    let sp = tm_text(st, p)
+    let sq = tm_text(st, q)
+    let proof = "eq_mp(" + list.join([sp, sq, te.proof, tp.proof], ", ") + ")"
+    push_thm(stack, union2(te, tp, set.union(te.hyps, tp.hyps), q, proof))
+  },
+  "trans" => {
+    let t2 = pop_thm(stack)!
+    let t1 = pop_thm(stack)!
+    let (a, x, y) = dest_eq(t1.concl)!
+    let (_, y2, z) = dest_eq(t2.concl)!
+    guard tm_key(st, y, []) == tm_key(st, y2, []) else err("trans: the middle terms differ")
+    let sx = tm_text(st, x)
+    let sy = tm_text(st, y)
+    let sz = tm_text(st, z)
+    let proof = "trans(" + list.join([ty_text(st, a), sx, sy, sz, t1.proof, t2.proof], ", ") + ")"
+    push_thm(stack, union2(t1, t2, set.union(t1.hyps, t2.hyps), mk_eq(a, x, z), proof))
+  },
+  "sym" => {
+    let t = pop_thm(stack)!
+    let (a, x, y) = dest_eq(t.concl)!
+    let sx = tm_text(st, x)
+    let sy = tm_text(st, y)
+    let proof = "sym(" + list.join([ty_text(st, a), sx, sy, t.proof], ", ") + ")"
+    push_thm(stack, Thm { ...t, concl: mk_eq(a, y, x), proof: proof })
+  },
+  "proveHyp" => {
+    let td = pop_thm(stack)!
+    let tg = pop_thm(stack)!
+    let h = hyp_of(st, tg.concl)
+    let sg = tm_text(st, tg.concl)
+    let proof = "((" + hname(h) + ": Prf(" + sg + ")) => " + td.proof + ")(" + tg.proof + ")"
+    push_thm(stack, union2(tg, td, set.union(tg.hyps, set.remove(td.hyps, h)), td.concl, proof))
+  },
+  "subst" => {
+    let t = pop_thm(stack)!
+    let s = pop_list(stack)!
+    let (th, sg) = substitution(s)!
+    let given: Map[Int, String] = [:]
+    push_thm(stack, subst_thm(st, t, th, sg, given))
+  },
+  "axiom" => {
+    let phi = pop_tm(stack)!
+    let hs = pop_list(stack)!
+    var ts: List[HTm] = []
+    for h in hs {
+      list.push(ts, as_tm(h)!)
+    }
+    push_thm(stack, axiom(st, ts, phi))
+  },
+  "thm" => {
+    let phi = pop_tm(stack)!
+    let hs = pop_list(stack)!
+    let t = pop_thm(stack)!
+    var ids: List[Int] = []
+    for h in hs {
+      let k = hyp_of(st, as_tm(h)!)
+      if list.contains(ids, k) then () else list.push(ids, k)
+    }
+    let hyps = set.from_list(ids)
+    guard tm_key(st, phi, []) == tm_key(st, t.concl, []) else err("thm: the stated conclusion is not the theorem's")
+    guard set.is_subset(t.hyps, hyps) else err("thm: the theorem has hypotheses the statement does not list")
+    let name = fresh_name(st, "thm")
+    let _ = lift(st, Thm { ...t, concl: phi }, name, hyps)
+    remember(st, name, hyps, phi)
+    st.last = name
+    ok(())
+  },
+  "defineConst" => {
+    let t = pop_tm(stack)!
+    let n = pop_name(stack)!
+    let (id, th) = define_const(st, n, t)!
+    list.push(stack, OConst(id))
+    push_thm(stack, th)
+  },
+  "defineConstList" => {
+    let t = pop_thm(stack)!
+    let pairs = pop_list(stack)!
+    let (cs, th) = define_const_list(st, pairs, t)!
+    list.push(stack, OList(cs))
+    push_thm(stack, th)
+  },
+  "defineTypeOp" => {
+    let t = pop_thm(stack)!
+    let names = pop_list(stack)!
+    let repn = pop_name(stack)!
+    let absn = pop_name(stack)!
+    let n = pop_name(stack)!
+    var ns: List[String] = []
+    for x in names {
+      list.push(ns, as_name(x)!)
+    }
+    let (tid, absid, repid, t1, t2) = define_type(st, n, absn, repn, ns, t)!
+    list.push(stack, OTyOp(tid))
+    list.push(stack, OConst(absid))
+    list.push(stack, OConst(repid))
+    list.push(stack, OThm(t1))
+    push_thm(stack, t2)
+  },
+  _ => err("unknown command " + cmd),
+}
+
+// One article: its commands in order, then its theorems are exported.
+fn read_article(mut st: St, name: String, text: String) -> Unit! = {
+  st.article = component(string.replace(name, "-", "_"))
+  st.count = 0
+  var stack: List[Obj] = []
+  var dict: Map[Int, Obj] = [:]
+  var line = 0
+  for raw in string.lines(text) {
+    line = line + 1
+    let cmd = string.trim(raw)
+    if cmd == "" or string.starts_with(cmd, "#") then ()
+    else step(st, stack, dict, cmd) |> result.map_err((e) => name + ":" + int.to_string(line) + ": " + cmd + ": " + e)!
+  }
+  ok(())
+}
+
+fn header() -> String = "// Absorbed from OpenTheory articles by `arlk absorb-hol`; check with lib/hol.arlk.\n\nroom " + ROOM + " uses hol\n"
+
+fn source(st: St) -> String = {
+  let tail = if st.last == "" then "" else "\naxioms " + st.last + "\n"
+  header() + "\n" + list.join(st.out, "\n") + "\n" + tail
+}
+
+// ── Tests ───────────────────────────────────────────────────────────
+
+local fn run(lines: List[String]) -> St! = {
+  var st = state()
+  read_article(st, "t", list.join(lines, "\n"))!
+  ok(st)
+}
+
+test "names: components, escapes, and a dot in every global name" {
+  assert_eq(components("Data.Bool.\\/\\\\"), ["Data", "Bool", "/\\"])
+  var st = state()
+  assert_eq(global_name(st, "Data.Bool.T"), "Data.Bool.T")
+  assert_eq(global_name(st, "Data.Bool.T"), "Data.Bool.T'")
+  assert_eq(global_name(st, "Data.Bool.~"), "Data.Bool.not")
+  assert_eq(global_name(st, "Data.Bool.~~"), "Data.Bool.op_tilde_tilde")
+  assert_eq(global_name(st, "T"), "ot.T")
+}
+
+test "α-equivalent hypotheses are one hypothesis" {
+  var st = state()
+  let x = var_of(st, "x", bool_ty())
+  let y = var_of(st, "y", bool_ty())
+  let a = hyp_of(st, mk_eq(fun_ty(bool_ty(), bool_ty()), HL(x, HV(x)), HL(x, HV(x))))
+  let b = hyp_of(st, mk_eq(fun_ty(bool_ty(), bool_ty()), HL(y, HV(y)), HL(y, HV(y))))
+  assert_eq(a, b)
+}
+
+test "substitution renames a binder that would capture" {
+  var st = state()
+  let x = var_of(st, "x", bool_ty())
+  let y = var_of(st, "y", bool_ty())
+  // (λy. x)[y/x] is λy'. y
+  let r = inst(st, HL(y, HV(x)), [:], map.set([:], x, HV(y)), [:])
+  match r {
+    HL(j, HV(k)) => {
+      assert(j != y)
+      assert_eq(k, y)
+    },
+    _ => assert(false),
+  }
+}
+
+test "a small article: a definition and its theorem" {
+  // T = ((λp. p) = (λp. p)); the defining theorem is exported.
+  let st = run([
+    "6", "version",
+    "\"Data.Bool.T\"",
+    "\"p\"", "\"bool\"", "typeOp", "nil", "opType", "0", "def", "var", "1", "def", "pop",
+    "1", "ref", "1", "ref", "varTerm", "absTerm", "2", "def", "pop",
+    "\"->\"", "typeOp", "0", "ref", "0", "ref", "nil", "cons", "cons", "opType", "3", "def", "pop",
+    "\"->\"", "typeOp", "3", "ref", "0", "ref", "nil", "cons", "cons", "opType", "4", "def", "pop",
+    "\"=\"", "const", "\"->\"", "typeOp", "3", "ref", "4", "ref", "nil", "cons", "cons", "opType", "constTerm",
+    "2", "ref", "appTerm", "2", "ref", "appTerm", "5", "def",
+    "defineConst",
+    "\"Data.Bool.T\"", "const", "0", "ref", "constTerm", "5", "ref", "\"=\"", "const", "\"->\"", "typeOp",
+    "0", "ref", "\"->\"", "typeOp", "0", "ref", "0", "ref", "nil", "cons", "cons", "opType", "nil", "cons", "cons", "opType",
+    "constTerm", "pop", "pop", "pop",
+    "nil", "\"=\"", "const", "\"->\"", "typeOp", "0", "ref", "\"->\"", "typeOp", "0", "ref", "0", "ref", "nil", "cons", "cons", "opType", "nil", "cons", "cons", "opType",
+    "constTerm", "\"Data.Bool.T\"", "const", "0", "ref", "constTerm", "appTerm", "5", "ref", "appTerm",
+    "thm",
+  ])!
+  let text = source(st)
+  assert(string.contains(text, "def Data.Bool.T: Tm(bool) ="))
+  assert(string.contains(text, "theorem t.thm1: Prf(eq(bool)(Data.Bool.T, eq(arr(bool, bool))((p_0: Tm(bool)) => p_0, (p_0: Tm(bool)) => p_0))) ="))
+}
