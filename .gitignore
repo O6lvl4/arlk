@@ -13,3 +13,5 @@ tools/rocq-export/src/arlk_export.ml
 # Lean build output
 tools/lean-export/.lake/
 ci-logs/
+/arlk-*
+__pycache__/
