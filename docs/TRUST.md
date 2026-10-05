@@ -87,11 +87,13 @@ defines from the recursor of `Acc`; both, and the unfolding law, are checked by 
 elaborator also accepts two proofs of one proposition as equal (`elab.proofs_agree`, asking the
 kernel's `irrelevant_eq`), which only helps it find terms the kernel then checks.
 
-## 4a. Proof search — not trusted
+## 4a. Proof search and rewriting — not trusted
 
 `search` ([src/search.almd](../src/search.almd)) only proposes a term; the declaration is then
 checked by part 1 like a written proof (`check` in `checker.examine`). It uses only hypotheses
-in scope and the lemmas listed, and adds no declarations.
+in scope and the lemmas listed, and adds no declarations. `by simp` ([src/simp.almd](../src/simp.almd))
+builds a proof from the listed equations, the equations in scope and definitions' cases (proved by
+`refl`, so the kernel computes them); the term is checked by part 1 like any other.
 
 ## 4b. Views and translation — not trusted
 
@@ -118,10 +120,12 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   emitted declarations faithfully encode the source logic, and that an emitted statement means
   what the source statement means, are separate obligations (issue #5). The exporters
   (tools/lean-export, tools/rocq-export) and `arlk absorb`/`absorb-mm`/`absorb-hol`/`absorb-agda` only
-  produce text. `absorb-agda` ([src/agda.almd](../src/agda.almd)) reads Agda source, not Agda's
+  produce text. `absorb-agda` ([src/agda.almd](../src/agda.almd)) and `absorb-isabelle`
+  ([src/isabelle.almd](../src/isabelle.almd), whose proofs are re-found by `simp`) read source, not Agda's
   checked terms: its output is ordinary types and definitions, so it rests on no assumption at
-  all, and whether it means what the Agda module means is the translation's obligation (Agda
-  accepting the source, tools/agda-export/check.sh, is evidence, not proof). In particular the OpenTheory reader ([src/hol.almd](../src/hol.almd)) is not trusted: it
+  all, and whether it means what the Agda module or Isabelle theory means is the translation's obligation
+  (the prover accepting the source, tools/agda-export and tools/isabelle-export, is evidence, not
+  proof). In particular the OpenTheory reader ([src/hol.almd](../src/hol.almd)) is not trusted: it
   runs the article and writes proofs, lemmas, term abbreviations (checked `def`s) and constant
   definitions (checked `def`s); a mistake there is a type error, not a theorem. The statement of an
   exported HOL theorem is written from the article's own `thm` command, and its HOL meaning rests

@@ -1,0 +1,466 @@
+// Isabelle/HOL, absorbed from its source: `arlk absorb-isabelle FILE.thy`
+// reads a theory written in a subset of Isabelle and writes the same
+// development as Arlk declarations, checked by the kernel like any other.
+//
+//   datatype num = Z | S num               type num: Type = | Z | S(x1: num)
+//   fun add :: "num ⇒ num ⇒ num" where      def add(x1: num, n: num) -> num = match x1 { ... }
+//     "add Z n = n"
+//   | "add (S m) n = S (add m n)"
+//   lemma add_Z [simp]: "add n Z = n"      theorem add_Z(n: num) -> Eq(_, add(n, num.Z), n) =
+//     by (induction n) auto                  by induction n simp
+//
+// A lemma's proof method is replayed by Arlk's own `simp` (simp.almd):
+// `simp`, `auto`, `force` and the like rewrite with the lemmas marked
+// [simp] so far, those given with `simp add:`, the equations of every
+// function, and the induction hypotheses; `(induction x)` or `(induct x)`
+// first splits on x. Nothing of Isabelle is trusted or needed: a proof
+// method that Arlk's simp cannot replay is a failed check, and a wrong
+// lemma cannot be proved. Equality is the native one (lib/std/eq.arlk).
+//
+// The subset: `theory ... begin ... end`, `datatype` (with type variables),
+// `fun`/`primrec`/`definition` by equations, `lemma`/`theorem` with a
+// statement `"l = r"` (free variables are universally quantified, their
+// types inferred from the functions and constructors they are passed to),
+// `[simp]` and `declare ... [simp]`, proofs `by m`, `by m1 m2`, and
+// `apply m ... done`. Function names are curried applications; no infix
+// syntax, no Main types (a theory defines what it uses).
+
+import self.agda.{AExpr, APat, AData, ACtor, AScope, ACx}
+import self.agda
+
+// Prefixed types: almide/almide#3439.
+type IThm = { name: String, lhs: AExpr, rhs: AExpr, induct: String, add: List[String], line: Int }
+
+// ── Lexing (outer syntax) ───────────────────────────────────────────
+
+type ITok = { text: String, quoted: Bool, line: Int }
+
+local fn ident_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'" or c == "." or c == "?"
+
+fn lex(src: String) -> List[ITok] = {
+  let cs = string.chars(src)
+  let n = list.len(cs)
+  var out: List[ITok] = []
+  var i = 0
+  var line = 1
+  var depth = 0
+  while i < n {
+    let c = list.get(cs, i) ?? ""
+    let c2 = c + (list.get(cs, i + 1) ?? "")
+    if c == "\n" then {
+      line = line + 1
+      i = i + 1
+    } else if c2 == "(*" then {
+      depth = depth + 1
+      i = i + 2
+    } else if depth > 0 then {
+      if c2 == "*)" then {
+        depth = depth - 1
+        i = i + 2
+      } else {
+        i = i + 1
+      }
+    } else if c == " " or c == "\t" or c == "\r" then {
+      i = i + 1
+    } else if c == "\"" then {
+      var j = i + 1
+      var text = ""
+      while j < n and (list.get(cs, j) ?? "\"") != "\"" {
+        let d = list.get(cs, j) ?? ""
+        if d == "\n" then {
+          line = line + 1
+        } else ()
+        text = text + d
+        j = j + 1
+      }
+      list.push(out, ITok { text: text, quoted: true, line: line })
+      i = j + 1
+    } else if c == "‹" then {
+      // A cartouche (text ‹...›): kept as one quoted token.
+      var j = i + 1
+      var text = ""
+      var level = 1
+      while j < n and level > 0 {
+        let d = list.get(cs, j) ?? ""
+        if d == "‹" then {
+          level = level + 1
+        } else if d == "›" then {
+          level = level - 1
+        } else ()
+        if level > 0 then {
+          text = text + d
+        } else ()
+        if d == "\n" then {
+          line = line + 1
+        } else ()
+        j = j + 1
+      }
+      list.push(out, ITok { text: text, quoted: true, line: line })
+      i = j
+    } else if ident_char(c) then {
+      var j = i
+      var text = ""
+      while j < n and ident_char(list.get(cs, j) ?? "") {
+        text = text + (list.get(cs, j) ?? "")
+        j = j + 1
+      }
+      list.push(out, ITok { text: text, quoted: false, line: line })
+      i = j
+    } else if c2 == "::" then {
+      list.push(out, ITok { text: "::", quoted: false, line: line })
+      i = i + 2
+    } else {
+      list.push(out, ITok { text: c, quoted: false, line: line })
+      i = i + 1
+    }
+  }
+  out
+}
+
+let COMMANDS = ["theory", "imports", "begin", "end", "datatype", "fun", "primrec", "definition", "lemma", "theorem", "corollary", "declare", "text", "section", "subsection", "subsubsection", "chapter", "by", "apply", "done"]
+
+// ── Inner syntax: terms and types ───────────────────────────────────
+
+// Tokens of a quoted term or type.
+local fn inner(s: String) -> List[String] = {
+  let cs = string.chars(s)
+  var out: List[String] = []
+  var cur = ""
+  for c in cs {
+    if ident_char(c) then {
+      cur = cur + c
+    } else {
+      if cur != "" then {
+        list.push(out, cur)
+        cur = ""
+      } else ()
+      if c != " " and c != "\t" and c != "\n" and c != "\r" then list.push(out, c) else ()
+    }
+  }
+  if cur != "" then list.push(out, cur) else ()
+  // `=>` and `\<Rightarrow>` as `⇒`.
+  var merged: List[String] = []
+  var i = 0
+  while i < list.len(out) {
+    let t = list.get(out, i) ?? ""
+    if t == "=" and (list.get(out, i + 1) ?? "") == ">" then {
+      list.push(merged, "⇒")
+      i = i + 2
+    } else {
+      list.push(merged, t)
+      i = i + 1
+    }
+  }
+  merged
+}
+
+local fn at(ts: List[String], i: Int) -> String = list.get(ts, i) ?? ""
+
+local fn close_at(ts: List[String], i: Int) -> Int = {
+  var depth = 0
+  var j = i
+  var found = -1
+  while found < 0 and j < list.len(ts) {
+    let t = at(ts, j)
+    if t == "(" then {
+      depth = depth + 1
+    } else if t == ")" then {
+      depth = depth - 1
+      if depth == 0 then {
+        found = j
+      } else ()
+    } else ()
+    j = j + 1
+  }
+  found
+}
+
+// An application: atoms side by side.
+fn parse_term(ts: List[String]) -> AExpr! = {
+  var atoms: List[AExpr] = []
+  var i = 0
+  while i < list.len(ts) {
+    let t = at(ts, i)
+    if t == "(" then {
+      let e = close_at(ts, i)
+      guard e > i else err("unclosed ( in a term")
+      list.push(atoms, parse_term(list.slice(ts, i + 1, e))!)
+      i = e + 1
+    } else {
+      guard t != ")" and t != "=" else err("unexpected '${t}' in a term")
+      list.push(atoms, EVar(t))
+      i = i + 1
+    }
+  }
+  guard not list.is_empty(atoms) else err("empty term")
+  let head = list.first(atoms) ?? EHole
+  ok(if list.len(atoms) == 1 then head else EApp(head, list.drop(atoms, 1)))
+}
+
+// An equation `l = r` at the top level of the tokens.
+fn parse_eq(ts: List[String]) -> (AExpr, AExpr)! = {
+  var depth = 0
+  var at_eq = -1
+  for (i, t) in list.enumerate(ts) {
+    if t == "(" then {
+      depth = depth + 1
+    } else if t == ")" then {
+      depth = depth - 1
+    } else if t == "=" and depth == 0 and at_eq < 0 then {
+      at_eq = i
+    } else ()
+  }
+  guard at_eq > 0 else err("expected an equation `l = r`")
+  ok((parse_term(list.take(ts, at_eq))!, parse_term(list.drop(ts, at_eq + 1))!))
+}
+
+// A type: `a ⇒ b`, `'a list`, `('a, 'b) pair`, `(a ⇒ b)`.
+fn parse_type(ts: List[String]) -> AExpr! = {
+  var depth = 0
+  var arrow = -1
+  for (i, t) in list.enumerate(ts) {
+    if t == "(" then {
+      depth = depth + 1
+    } else if t == ")" then {
+      depth = depth - 1
+    } else if t == "⇒" and depth == 0 and arrow < 0 then {
+      arrow = i
+    } else ()
+  }
+  if arrow >= 0 then ok(EArrow(parse_type(list.take(ts, arrow))!, parse_type(list.drop(ts, arrow + 1))!))
+  else {
+    // Postfix application: arguments first, the type constructor last.
+    var cur: List[AExpr] = []
+    var i = 0
+    while i < list.len(ts) {
+      let t = at(ts, i)
+      if t == "(" then {
+        let e = close_at(ts, i)
+        guard e > i else err("unclosed ( in a type")
+        var parts: List[List[String]] = []
+        var part: List[String] = []
+        var d = 0
+        for u in list.slice(ts, i + 1, e) {
+          if u == "(" then {
+            d = d + 1
+          } else if u == ")" then {
+            d = d - 1
+          } else ()
+          if u == "," and d == 0 then {
+            list.push(parts, part)
+            part = []
+          } else list.push(part, u)
+        }
+        list.push(parts, part)
+        var parsed: List[AExpr] = []
+        for q in parts {
+          list.push(parsed, parse_type(q)!)
+        }
+        cur = parsed
+        i = e + 1
+      } else {
+        let base = EVar(type_name(t))
+        cur = [if list.is_empty(cur) then base else EApp(base, cur)]
+        i = i + 1
+      }
+    }
+    guard list.len(cur) == 1 else err("cannot read this type")
+    ok(list.first(cur) ?? EHole)
+  }
+}
+
+local fn type_name(t: String) -> String = if string.starts_with(t, "'") then string.drop(t, 1) else t
+
+
+// ── The theory ──────────────────────────────────────────────────────
+
+// Isabelle's ASCII names for symbols, as the characters they stand for.
+let SYMBOLS = [("\\<open>", "‹"), ("\\<close>", "›"), ("\\<Rightarrow>", "⇒"), ("\\<equiv>", "≡"), ("\\<forall>", "∀"), ("\\<lambda>", "λ"), ("\\<longrightarrow>", "⟶"), ("\\<Longrightarrow>", "⟹")]
+
+fn absorb(src0: String, file: String) -> String! = {
+  let src = list.fold(SYMBOLS, src0, (acc, (a, b)) => string.replace(acc, a, b))
+  let ts = lex(src)
+  let words = ts |> list.map((t) => t.text)
+  guard at(words, 0) == "theory" else err("${file}: expected `theory Name imports ... begin`")
+  let thy = at(words, 1)
+  var i = (list.index_of(words, "begin") ?? 0) + 1
+  var sc = AScope { datas: [], funs: [], fixes: [], own: "" }
+  var type_names: List[String] = []
+  var sigs: List[(String, AExpr)] = []
+  var out: List[String] = []
+  var simps: List[String] = []
+  var unnamed = 0
+  while i < list.len(ts) and at(words, i) != "end" {
+    let t = list.get(ts, i) ?? ITok { text: "", quoted: false, line: 0 }
+    let cmd = t.text
+    let line = t.line
+    // The command's tokens, up to the next command.
+    var j = i + 1
+    while j < list.len(ts) and not (is_command(list.get(ts, j)) and not list.contains(["by", "apply", "done"], at(words, j))) {
+      j = j + 1
+    }
+    let body = list.slice(ts, i + 1, j)
+    let bw = body |> list.map((x) => x.text)
+    if cmd == "datatype" then {
+      let d = datatype(body, line)!
+      list.push(type_names, d.name)
+      sc = { ...sc, datas: sc.datas + [d] }
+      list.push(out, agda.emit_data(sc, d))
+    } else if cmd == "fun" or cmd == "primrec" or cmd == "definition" then {
+      let name = at(bw, 0)
+      let colon = list.index_of(bw, "::") ?? -1
+      guard colon == 1 else err("${file}:${int.to_string(line)}: ${cmd} ${name}: give its type (`${name} :: \"...\"`)")
+      let ty0 = parse_type(inner(at(bw, 2)))!
+      let tvs = list.unique(agda.type_vars(ty0, type_names))
+      let ty = list.fold(list.reverse(tvs), ty0, (acc, v) => EPi([(v, ESet(0))], true, acc))
+      list.push(sigs, (name, ty0))
+      sc = { ...sc, funs: sc.funs + [(name, [])] }
+      var clauses: List[(List[APat], AExpr)] = []
+      for b in body {
+        if b.quoted and b.text != at(bw, 2) then {
+          let (lhs, rhs) = parse_eq(inner(b.text))!
+          let (f, args) = agda.head_args(lhs)
+          guard f == name else err("${file}:${int.to_string(b.line)}: an equation of ${name} must define ${name}")
+          var ps: List[APat] = []
+          for a in args {
+            list.push(ps, agda.to_pat(sc, a)!)
+          }
+          list.push(clauses, (ps, rhs))
+        } else ()
+      }
+      list.push(out, agda.emit_fun(sc, name, ty, clauses)!)
+    } else if cmd == "lemma" or cmd == "theorem" or cmd == "corollary" then {
+      let th = lemma(bw, body, unnamed, line)!
+      if at(bw, 0) == ":" or (list.first(body) ?? t).quoted then {
+        unnamed = unnamed + 1
+      } else ()
+      list.push(out, emit_theorem(sc, sigs, type_names, th, simps)!)
+      if list.contains(bw, "simp") and list.index_of(bw, "simp") ?? 99 < (list.index_of(bw, ":") ?? 0) then list.push(simps, th.name) else ()
+    } else if cmd == "declare" then {
+      if list.contains(bw, "simp") then {
+        for w in bw {
+          if w != "[" and w != "]" and w != "simp" and w != "," then list.push(simps, w) else ()
+        }
+      } else ()
+    } else {
+      guard cmd == "text" or cmd == "section" or cmd == "subsection" or cmd == "subsubsection" or cmd == "chapter" else err("${file}:${int.to_string(line)}: `${cmd}` is not supported")
+    }
+    i = j
+  }
+  let header = """
+    // Absorbed from Isabelle by `arlk absorb-isabelle`: theory ${thy} (${file}).
+    // Isabelle is not needed to check it: the types and functions are
+    // ordinary Arlk declarations, and each lemma's proof method is replayed
+    // by Arlk's `simp`, checked by the kernel.
+    """
+  ok(header + "\nroom isabelle." + agda.mangle(thy) + " uses eq\n\n" + list.join(out, "\n\n") + "\n")
+}
+
+local fn is_command(t: ITok?) -> Bool = match t {
+  some(x) => not x.quoted and list.contains(COMMANDS, x.text),
+  none => false,
+}
+
+// `datatype ('a, 'b) name = C1 t1 "t2" | C2`
+local fn datatype(body: List[ITok], line: Int) -> AData! = {
+  let ws = body |> list.map((t) => t.text)
+  let eq = list.index_of(ws, "=") ?? -1
+  guard eq > 0 else err("line ${int.to_string(line)}: datatype: expected `=`")
+  let head = list.take(ws, eq) |> list.filter((w) => w != "(" and w != ")" and w != ",")
+  let name = match list.last(head) {
+    some(n) => n,
+    none => "",
+  }
+  let params = list.take(head, list.len(head) - 1) |> list.map((p) => type_name(p))
+  let self_ty = if list.is_empty(params) then EVar(name) else EApp(EVar(name), params |> list.map((p) => EVar(p)))
+  var ctors: List[ACtor] = []
+  var cur: List[ITok] = []
+  for t in list.drop(body, eq + 1) {
+    if t.text == "|" and not t.quoted then {
+      list.push(ctors, ctor_of(cur, self_ty)!)
+      cur = []
+    } else list.push(cur, t)
+  }
+  list.push(ctors, ctor_of(cur, self_ty)!)
+  ok(AData { name: name, params: params |> list.map((p) => (p, ESet(0), false)), arity: ESet(0), ctors: ctors })
+}
+
+local fn ctor_of(ts: List[ITok], self_ty: AExpr) -> ACtor! = {
+  let c = match list.first(ts) {
+    some(t) => ok(t.text),
+    none => err("datatype: an empty constructor"),
+  }!
+  var args: List[(String, AExpr, Bool)] = []
+  for t in list.drop(ts, 1) {
+    list.push(args, ("_", parse_type(if t.quoted then inner(t.text) else [t.text])!, false))
+  }
+  ok(ACtor { name: c, args: args, result: self_ty })
+}
+
+// `lemma name [simp]: "l = r" by (induction n) auto`
+local fn lemma(bw: List[String], body: List[ITok], unnamed: Int, line: Int) -> IThm! = {
+  let stmt_at = match list.index_of(body |> list.map((t) => t.quoted), true) {
+    some(k) => ok(k),
+    none => err("line ${int.to_string(line)}: lemma: expected a statement in quotes"),
+  }!
+  let named = stmt_at > 0 and at(bw, 0) != ":" and at(bw, 0) != "["
+  let name = if named then at(bw, 0) else "lemma_" + int.to_string(unnamed + 1)
+  let stmt = list.get(body, stmt_at) ?? ITok { text: "", quoted: true, line: line }
+  let (lhs, rhs) = parse_eq(inner(stmt.text))!
+  // The proof: `by m [m]` or `apply m ... done`.
+  let rest = list.drop(bw, stmt_at + 1)
+  guard list.contains(rest, "by") or list.contains(rest, "apply") else err("line ${int.to_string(line)}: ${name}: expected a proof (`by ...`)")
+  guard not list.contains(rest, "arbitrary") else err("line ${int.to_string(line)}: ${name}: `arbitrary:` is not supported")
+  guard not list.contains(rest, "sorry") and not list.contains(rest, "oops") else err("line ${int.to_string(line)}: ${name}: an unfinished proof")
+  var induct = ""
+  for (k, w) in list.enumerate(rest) {
+    if (w == "induction" or w == "induct" or w == "cases") and induct == "" then {
+      induct = at(rest, k + 1)
+    } else ()
+  }
+  var add: List[String] = []
+  var in_add = false
+  for w in rest {
+    if w == ":" then () else if w == "add" or w == "simp" and in_add then {
+      in_add = true
+    } else if w == ")" or w == "by" or w == "apply" or w == "done" or w == "del" or w == "only" then {
+      in_add = false
+    } else if in_add and w != "add" then list.push(add, w) else ()
+  }
+  ok(IThm { name: name, lhs: lhs, rhs: rhs, induct: induct, add: add, line: line })
+}
+
+local fn emit_theorem(sc: AScope, sigs: List[(String, AExpr)], type_names: List[String], th: IThm, simps: List[String]) -> String! = {
+  let order = list.unique(agda.var_order(sc, sigs, th.lhs) + agda.var_order(sc, sigs, th.rhs))
+  let found = agda.infer_vars(sc, sigs, th.rhs, agda.infer_vars(sc, sigs, th.lhs, []))
+  var vars: List[(String, AExpr)] = []
+  for v in order {
+    guard list.any(found, ((x, _)) => x == v) else err("${th.name}: cannot tell the type of ${v} (pass it to a function or constructor)")
+    match list.find(found, ((x, _)) => x == v) {
+      some(p) => list.push(vars, p),
+      none => (),
+    }
+  }
+  let tvs = list.unique(vars |> list.flat_map(((_, t)) => agda.type_vars(t, type_names)))
+  guard th.induct == "" or list.any(vars, ((v, _)) => v == th.induct) else err("${th.name}: induction on ${th.induct}, which is not a variable of the statement")
+  let cx = ACx { sc: sc, ren: [], bound: order + tvs }
+  let generics = if list.is_empty(tvs) then "" else "[" + list.join(tvs |> list.map((v) => agda.mangle(v) + ": Type"), ", ") + "]"
+  let params = if list.is_empty(vars) then "" else "(" + list.join(vars |> list.map(((v, t)) => agda.mangle(v) + ": " + agda.emit(cx, t)), ", ") + ")"
+  let arrow = if list.is_empty(vars) and list.is_empty(tvs) then ": " else " -> "
+  let rules = list.unique(simps + th.add) |> list.map((n) => agda.mangle(n))
+  let using = if list.is_empty(rules) then "" else "(" + list.join(rules, ", ") + ")"
+  let proof = if th.induct == "" then "by simp" + using else "by induction " + agda.mangle(th.induct) + " simp" + using
+  ok("theorem ${agda.mangle(th.name)}${generics}${params}${arrow}Eq(_, ${agda.emit(cx, th.lhs)}, ${agda.emit(cx, th.rhs)}) =\n  ${proof}")
+}
+
+test "a lemma's proof method becomes simp, after induction if asked" {
+  let src = "theory T imports Main begin\ndatatype n = Z | S n\ndatatype ('a, 'b) pair = P 'a 'b\nfun fst :: \"('a, 'b) pair ⇒ 'a\" where\n  \"fst (P x y) = x\"\nfun d :: \"n ⇒ n\" where\n  \"d Z = Z\"\n| \"d (S m) = S (S (d m))\"\nlemma d_Z [simp]: \"d Z = Z\"\n  by simp\nlemma l: \"d (d m) = d (d m)\"\n  by (induction m) auto\nend\n"
+  match absorb(src, "T.thy") {
+    ok(text) => {
+      assert(string.contains(text, "theorem d_Z: Eq(_, d(n.Z), n.Z) =\n  by simp"))
+      assert(string.contains(text, "theorem l(m: n) -> Eq(_, d(d(m)), d(d(m))) =\n  by induction m simp(d_Z)"))
+      assert(string.contains(text, "def fst[a: Type, b: Type](x3: pair(a, b)) -> a = match x3 {"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}

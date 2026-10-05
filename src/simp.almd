@@ -1,0 +1,530 @@
+// Rewriting with equations: `by simp(l1, l2, ...)`, Isabelle's `simp`.
+//
+//   theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = by induction n simp
+//
+// The goal must be an equation `E(A, l, r)`, E an equality type (an
+// inductive family with two parameters, one index and one constructor,
+// like Eq). Both sides are rewritten, innermost first, with the listed
+// equations and the equations in scope (so an induction hypothesis is
+// used), left to right, until none applies; then the two results must be
+// convertible. Each step is a proof: a lemma's instance, carried into its
+// position by `cong`, chained by `trans`, all built from E's recursor. The
+// proof is an ordinary term, checked by the kernel; nothing here is trusted.
+// A lemma whose left side does not determine all its variables is not
+// used; rewriting does not go under binders.
+
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, level_eq, occurs, consts}
+import self.kernel.{Env, Ctx, Budget, whnf, conv, infer, show}
+
+// Types are prefixed: same-named types elsewhere would shadow them
+// (almide/almide#3439).
+
+// The equality the goal is stated with: its type former, constructor and
+// recursor, and the levels.
+type SEquality = { ty: String, refl: String, rec: String, large: Bool }
+
+// A rewrite rule: a proof (applied to the rule's variables gives the
+// equation), its number of variables, the equation's type and sides under
+// them, and the universe parameters to fill by matching.
+// `defeq`: an equation that holds by computation (a definition's case);
+// its proof is `refl`, and `head` is unused.
+type SRule = { head: Term, n: Int, eq: String, lhs: Term, rhs: Term, lparams: List[String], defeq: Bool }
+
+let MAX_STEPS = 400
+
+fn equality(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> (SEquality, List[Level], List[Term])? = {
+  let (h, args) = spine(whnf(env, ctx, t, bu))
+  match h {
+    Const(e, ls) => match map.get(env.inductives, e) {
+      some(info) => if info.params == 2 and info.indices == 1 and list.len(info.ctors) == 1 and list.len(args) == 3 then {
+        let rec = e + ".rec"
+        let large = list.len(map.get(env.lparams, rec) ?? []) > list.len(map.get(env.lparams, e) ?? [])
+        some((SEquality { ty: e, refl: list.first(info.ctors) ?? "", rec: rec, large: large }, ls, args))
+      } else none,
+      none => none,
+    },
+    _ => none,
+  }
+}
+
+local fn sort_level(env: Env, ctx: Ctx, ty: Term, mut bu: Budget) -> Level = match infer(env, ctx, ty, bu) {
+  ok(s) => match whnf(env, ctx, s, bu) {
+    Sort(l) => l,
+    _ => LZero,
+  },
+  err(_) => LZero,
+}
+
+// ── Building proofs ─────────────────────────────────────────────────
+
+local fn eq_at(q: SEquality, u: Level, a: Term, x: Term, y: Term) -> Term = apply(Const(q.ty, [u]), [a, x, y])
+
+local fn refl_at(q: SEquality, u: Level, a: Term, x: Term) -> Term = apply(Const(q.refl, [u]), [a, x])
+
+// E.rec at the motive's sort v: `E.rec(A, x, motive, minor, y, h)`.
+local fn rec_at(q: SEquality, u: Level, v: Level, a: Term, x: Term, motive: Term, minor: Term, y: Term, h: Term) -> Term =
+  apply(Const(q.rec, if q.large then [v, u] else [u]), [a, x, motive, minor, y, h])
+
+// The motive `(y': A, e: E(A, x, y')) => body(y')`, body given with y' as Var(0)
+// in the context extended by y' (then shifted past e).
+local fn motive(q: SEquality, u: Level, a: Term, x: Term, body: Term) -> Term =
+  Lam("y'", a, Lam("e", eq_at(q, u, shift(a, 1, 0), shift(x, 1, 0), Var(0)), shift(body, 1, 0)))
+
+// h: E(A, x, y) gives E(A, y, x).
+fn symm(env: Env, ctx: Ctx, q: SEquality, u: Level, a: Term, x: Term, y: Term, h: Term, mut bu: Budget) -> Term = {
+  let v = sort_level(env, ctx, eq_at(q, u, a, x, x), bu)
+  let body = eq_at(q, u, shift(a, 1, 0), Var(0), shift(x, 1, 0))
+  rec_at(q, u, v, a, x, motive(q, u, a, x, body), refl_at(q, u, a, x), y, h)
+}
+
+// h: E(A, x, y), k: E(A, y, z) give E(A, x, z).
+fn trans(env: Env, ctx: Ctx, q: SEquality, u: Level, a: Term, x: Term, y: Term, z: Term, h: Term, k: Term, mut bu: Budget) -> Term = {
+  let v = sort_level(env, ctx, eq_at(q, u, a, x, x), bu)
+  let body = eq_at(q, u, shift(a, 1, 0), shift(x, 1, 0), Var(0))
+  rec_at(q, u, v, a, y, motive(q, u, a, y, body), h, z, k)
+}
+
+// f: A -> B (a function term), h: E(A, x, y) give E(B, f(x), f(y)).
+fn cong(env: Env, ctx: Ctx, q: SEquality, ua: Level, ub: Level, a: Term, b: Term, f: Term, x: Term, y: Term, h: Term, mut bu: Budget) -> Term = {
+  let v = sort_level(env, ctx, eq_at(q, ub, b, apply(f, [x]), apply(f, [x])), bu)
+  let fx = beta(apply(f, [x]))
+  let body = eq_at(q, ub, shift(b, 1, 0), shift(fx, 1, 0), beta(App(shift(f, 1, 0), Var(0))))
+  rec_at(q, ua, v, a, x, motive(q, ua, a, x, body), refl_at(q, ub, b, fx), y, h)
+}
+
+local fn beta(t: Term) -> Term = match t {
+  App(Lam(_, _, body), arg) => subst(body, arg),
+  other => other,
+}
+
+// ── Matching ────────────────────────────────────────────────────────
+
+type SBind = { terms: Map[Int, Term], levels: Map[String, Level] }
+
+// Does t (in the goal's context) match the rule's side p, whose variables
+// are Var(0..n-1) at depth 0?
+local fn matches(p: Term, t: Term, n: Int, lps: List[String], b: SBind) -> SBind? = match p {
+  Var(j) => if j < n then match map.get(b.terms, j) {
+      some(prev) => if prev == t then some(b) else none,
+      none => some({ ...b, terms: map.set(b.terms, j, t) }),
+    } else if t == Var(j - n) then some(b) else none,
+  Const(c, ls) => match t {
+    Const(d, ms) => if c == d and list.len(ls) == list.len(ms) then match_levels(ls, ms, lps, b) else none,
+    _ => none,
+  },
+  App(f, x) => match t {
+    App(g, y) => match matches(f, g, n, lps, b) {
+      some(b2) => matches(x, y, n, lps, b2),
+      none => none,
+    },
+    _ => none,
+  },
+  Sort(l) => match t {
+    Sort(m) => match_levels([l], [m], lps, b),
+    _ => none,
+  },
+  // No matching under binders: the side must be closed there.
+  other => if other == t then some(b) else none,
+}
+
+local fn match_levels(ls: List[Level], ms: List[Level], lps: List[String], b: SBind) -> SBind? = {
+  var cur: SBind? = some(b)
+  for (l, m) in list.zip(ls, ms) {
+    cur = match cur {
+      some(c) => match l {
+        LParam(u) if list.contains(lps, u) => match map.get(c.levels, u) {
+          some(prev) => if level_eq(prev, m) then some(c) else none,
+          none => some({ ...c, levels: map.set(c.levels, u, m) }),
+        },
+        _ => if level_eq(l, m) then some(c) else none,
+      },
+      none => none,
+    }
+  }
+  cur
+}
+
+// The rule's equation as an instance at t: its right side and the proof.
+local fn apply_rule(r: SRule, t: Term) -> (Term, Term)? = {
+  let none_yet: Map[Int, Term] = [:]
+  let no_levels: Map[String, Level] = [:]
+  match matches(r.lhs, t, r.n, r.lparams, SBind { terms: none_yet, levels: no_levels }) {
+    none => none,
+    some(b) => if map.len(b.terms) != r.n or list.any(r.lparams, (u) => not map.contains(b.levels, u)) then none
+      else {
+        let vals = list.map(0..<r.n, (j) => map.get(b.terms, j) ?? Var(0))
+        let lvals = r.lparams |> list.map((u) => map.get(b.levels, u) ?? LZero)
+        let head = inst_levels(r.head, r.lparams, lvals)
+        let proof = apply(head, list.reverse(vals))
+        some((inst_levels(instantiate(r.rhs, vals, 0), r.lparams, lvals), proof))
+      },
+  }
+}
+
+// A rule from a proof and its type `(x1, ..., xn) -> E(B, lhs, rhs)`.
+fn rule_of(env: Env, ctx: Ctx, head: Term, ty: Term, lparams: List[String], mut bu: Budget) -> SRule? = {
+  var c = ctx
+  var t = whnf(env, ctx, ty, bu)
+  var n = 0
+  var going = true
+  while going {
+    match t {
+      Pi(x, dom, body) => {
+        c = [(x, dom)] + c
+        t = whnf(env, c, body, bu)
+        n = n + 1
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  match equality(env, c, t, bu) {
+    some((q, _, args)) => some(SRule { head: head, n: n, eq: q.ty, lhs: list.get(args, 1) ?? Var(0), rhs: list.get(args, 2) ?? Var(0), lparams: lparams, defeq: false }),
+    none => none,
+  }
+}
+
+// ── Rewriting ───────────────────────────────────────────────────────
+
+type SStep = { term: Term, proof: Term }
+
+// One rewrite inside t (of type ty): an argument first, else t itself.
+local fn step(env: Env, ctx: Ctx, q: SEquality, rules: List[SRule], t: Term, ty: Term, mut bu: Budget) -> SStep? = {
+  let (h, args) = spine(t)
+  var found: SStep? = none
+  var i = 0
+  while found == none and i < list.len(args) {
+    let a = list.get(args, i) ?? Var(0)
+    match infer(env, ctx, a, bu) {
+      ok(aty) => match step(env, ctx, q, rules, a, aty, bu) {
+        some(s) => {
+          // t with z at position i: it must not depend on z for its type.
+          let before = list.take(args, i) |> list.map((x) => shift(x, 1, 0))
+          let after = list.drop(args, i + 1) |> list.map((x) => shift(x, 1, 0))
+          let body = apply(shift(h, 1, 0), before + [Var(0)] + after)
+          match infer(env, [("z", aty)] + ctx, body, bu) {
+            ok(bty) => if mentions0(bty) then () else {
+              let f = Lam("z", aty, body)
+              let ua = sort_level(env, ctx, aty, bu)
+              let ub = sort_level(env, ctx, ty, bu)
+              found = some(SStep { term: apply(h, list.take(args, i) + [s.term] + list.drop(args, i + 1)), proof: cong(env, ctx, q, ua, ub, aty, ty, f, a, s.term, s.proof, bu) })
+            },
+            err(_) => (),
+          }
+        },
+        none => (),
+      },
+      err(_) => (),
+    }
+    i = i + 1
+  }
+  match found {
+    some(s) => some(s),
+    none => {
+      var at_root: SStep? = none
+      let eqs = match h {
+        Const(f, _) => def_equations(env, f, q),
+        _ => [],
+      }
+      for r in rules + eqs {
+        if at_root == none then match apply_rule(r, t) {
+          // A permutative rule (`add(m, n) = add(n, m)`) only makes the term
+          // smaller in a fixed order, as Isabelle's ordered rewriting.
+          some((rhs, proof)) => if rhs == t or (permutative(r) and not (term_key(env, ctx, rhs) < term_key(env, ctx, t))) then () else {
+            let pf = if r.defeq then refl_at(q, sort_level(env, ctx, ty, bu), ty, t) else proof
+            at_root = some(SStep { term: rhs, proof: pf })
+          },
+          none => (),
+        } else ()
+      }
+      at_root
+    },
+  }
+}
+
+local fn mentions0(t: Term) -> Bool = occurs(t, 0)
+
+// Rewrite until nothing applies: the result and a proof of t = result
+// (none when nothing applied).
+local fn normalize(env: Env, ctx: Ctx, q: SEquality, u: Level, rules: List[SRule], t: Term, ty: Term, mut bu: Budget) -> (Term, Term?)! = {
+  var cur = t
+  var proof: Term? = none
+  var k = 0
+  var going = true
+  while going {
+    guard k < MAX_STEPS else err("simp: more than ${int.to_string(MAX_STEPS)} rewrites (a rule that loops?), at ${show(env, ctx, cur)}")
+    match step(env, ctx, q, rules, cur, ty, bu) {
+      some(s) => {
+        proof = match proof {
+          none => some(s.proof),
+          some(p) => some(trans(env, ctx, q, u, ty, t, cur, s.term, p, s.proof, bu)),
+        }
+        cur = s.term
+        k = k + 1
+      },
+      none => {
+        going = false
+      },
+    }
+  }
+  ok((cur, proof))
+}
+
+// The proof of `goal` from the rules.
+fn prove(env: Env, ctx: Ctx, goal: Term, rules: List[SRule], mut bu: Budget) -> Term! = {
+  let (q, ls, args) = match equality(env, ctx, goal, bu) {
+    some(x) => ok(x),
+    none => err("simp: the goal must be an equation, not ${show(env, ctx, goal)}"),
+  }!
+  let u = list.first(ls) ?? LZero
+  let a = list.first(args) ?? Var(0)
+  let l = list.get(args, 1) ?? Var(0)
+  let r = list.get(args, 2) ?? Var(0)
+  // Rules about another equality type are not used.
+  let usable = rules |> list.filter((x) => x.eq == q.ty)
+  let (l1, pl) = normalize(env, ctx, q, u, usable, l, a, bu)!
+  let (r1, pr) = normalize(env, ctx, q, u, usable, r, a, bu)!
+  guard conv(env, ctx, l1, r1, bu) else err("simp could not prove it: the sides rewrite to\n    ${show(env, ctx, l1)}\n  and\n    ${show(env, ctx, r1)}")
+  let to_l1 = pl ?? refl_at(q, u, a, l)
+  ok(match pr {
+    none => match pl {
+      none => refl_at(q, u, a, l),
+      some(p) => p,
+    },
+    some(p) => trans(env, ctx, q, u, a, l, l1, r, to_l1, symm(env, ctx, q, u, a, r, r1, p, bu), bu),
+  })
+}
+
+
+// ── A definition's equations ────────────────────────────────────────
+//
+// A definition by `match` is `(params) => T.rec(motive, cases..., x)(others)`.
+// Each case gives an equation that holds by computation:
+//   f(..., c(fields), others) = the case's body,
+// where an induction hypothesis in the body is read back as the recursive
+// call `f(..., field)` it stands for. As in Isabelle, simp uses these
+// equations of every definition it meets.
+fn def_equations(env: Env, f: String, q: SEquality) -> List[SRule] = match map.get(env.bodies, f) {
+  none => [],
+  some(body) => if not map.contains(env.defs, f) then [] else {
+    var m = 0
+    var inner = body
+    var going = true
+    while going {
+      match inner {
+        Lam(_, _, b) => {
+          inner = b
+          m = m + 1
+        },
+        _ => {
+          going = false
+        },
+      }
+    }
+    let (h, args) = spine(inner)
+    match h {
+      Const(rec, ls) => if not string.ends_with(rec, ".rec") then [] else {
+        let tq = string.drop_end(rec, 4)
+        match map.get(env.inductives, tq) {
+          none => [],
+          some(info) => if info.indices != 0 or not list.is_empty(info.nested) then [] else {
+            let np = info.params
+            let nc = list.len(info.ctors)
+            let tparams = list.take(args, np)
+            let minors = list.take(list.drop(args, np + 1), nc)
+            let rest = list.drop(args, np + 1 + nc)
+            match list.first(rest) {
+              some(Var(jx)) => {
+                let px = m - 1 - jx
+                let others = list.drop(rest, 1)
+                let mo = list.len(others)
+                // The others must be the parameters after x, in order.
+                let others_ok = mo == m - 1 - px and list.all(list.enumerate(others), ((i, o)) => o == Var(mo - 1 - i))
+                if not others_ok or px < 0 then [] else {
+                  let lps = map.get(env.lparams, f) ?? []
+                  var out: List[SRule] = []
+                  // The constructors' levels: the recursor's, without the motive's.
+                  let nt = list.len(map.get(env.lparams, tq) ?? [])
+                  let tls = list.drop(ls, list.len(ls) - nt)
+                  for (ci, mk) in list.zip(info.ctors, minors) {
+                    match case_equation(env, f, lps, tq, ci, tls, tparams, mk, m, px, mo, q) {
+                      some(r) => list.push(out, r),
+                      none => (),
+                    }
+                  }
+                  out
+                }
+              },
+              _ => [],
+            }
+          },
+        }
+      },
+      _ => [],
+    }
+  },
+}
+
+// The equation of one case: its variables are the parameters other than x
+// (in order) and then the constructor's fields.
+local fn case_equation(env: Env, f: String, lps: List[String], tq: String, c: String, ls: List[Level], tparams: List[Term], minor: Term, m: Int, px: Int, mo: Int, q: SEquality) -> SRule? = {
+  // The constructor's fields, and which are recursive (directly of type T).
+  var cty = map.get(env.types, c) ?? Sort(LZero)
+  var k = 0
+  var nfields = 0
+  var recs: List[Int] = []
+  var ok_shape = true
+  let ctor_params = list.len(tparams)
+  var going = true
+  while going {
+    match cty {
+      Pi(_, dom, b) => {
+        if k >= ctor_params then {
+          match dom {
+            Pi(_, _, _) => if list.contains(consts(dom), tq) then {
+              ok_shape = false
+            } else (),
+            _ => {
+              let (dh, _) = spine(dom)
+              if dh == Const(tq, ls) or (match dh {
+                Const(d, _) => d == tq,
+                _ => false,
+              }) then list.push(recs, nfields) else ()
+            },
+          }
+          nfields = nfields + 1
+        } else ()
+        k = k + 1
+        cty = b
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  if not ok_shape then none else {
+    let nrec = list.len(recs)
+    // Peel the case: fields, induction hypotheses, the others.
+    var b = minor
+    var peeled = 0
+    var good = true
+    while good and peeled < nfields + nrec + mo {
+      match b {
+        Lam(_, _, inner) => {
+          b = inner
+          peeled = peeled + 1
+        },
+        _ => {
+          good = false
+        },
+      }
+    }
+    if not good then none else {
+      let n = m - 1 + nfields
+      // Rule variable of parameter i (not x), and of field j.
+      let pvar = (i: Int, depth: Int) => Var(depth + (n - 1 - (if i < px then i else i - 1)))
+      let fvar = (j: Int, depth: Int) => Var(depth + (n - 1 - (m - 1 + j)))
+      let before = list.map(0..<px, (i) => pvar(i, 0))
+      let fields = list.map(0..<nfields, (j) => fvar(j, 0))
+      let tps = tparams |> list.map((t) => from_params(t, 0, m, px, pvar))
+      if list.any(tps, (t) => t == none) then none else {
+        let built = apply(Const(c, ls), (tps |> list.map((t) => t ?? Var(0))) + fields)
+        let lhs = apply(Const(f, lps |> list.map((u) => LParam(u))), before + [built] + list.map(0..<mo, (o) => pvar(px + 1 + o, 0)))
+        let rhs = from_case(b, 0, f, lps, m, px, mo, nfields, recs, pvar, fvar)
+        match rhs {
+          some(r) => some(SRule { head: Var(0), n: n, eq: q.ty, lhs: lhs, rhs: r, lparams: lps, defeq: true }),
+          none => none,
+        }
+      }
+    }
+  }
+}
+
+// A term over the parameters (depth `d` binders inside), over the rule's variables.
+local fn from_params(t: Term, d: Int, m: Int, px: Int, pvar: (Int, Int) -> Term) -> Term? = match t {
+  Var(i) => if i < d then some(t) else {
+    let pi = m - 1 - (i - d)
+    if pi == px or pi < 0 then none else some(pvar(pi, d))
+  },
+  App(a, b) => match from_params(a, d, m, px, pvar) {
+    some(x) => match from_params(b, d, m, px, pvar) {
+      some(y) => some(App(x, y)),
+      none => none,
+    },
+    none => none,
+  },
+  Lam(x, ty, b) => match from_params(ty, d, m, px, pvar) {
+    some(t2) => match from_params(b, d + 1, m, px, pvar) {
+      some(b2) => some(Lam(x, t2, b2)),
+      none => none,
+    },
+    none => none,
+  },
+  Pi(x, ty, b) => match from_params(ty, d, m, px, pvar) {
+    some(t2) => match from_params(b, d + 1, m, px, pvar) {
+      some(b2) => some(Pi(x, t2, b2)),
+      none => none,
+    },
+    none => none,
+  },
+  other => some(other),
+}
+
+// The case's body (inside fields, hypotheses and others, then `d` more
+// binders) over the rule's variables, each hypothesis read back as the
+// recursive call `f(params before x, field)`.
+local fn from_case(t: Term, d: Int, f: String, lps: List[String], m: Int, px: Int, mo: Int, nf: Int, recs: List[Int], pvar: (Int, Int) -> Term, fvar: (Int, Int) -> Term) -> Term? = match t {
+  Var(i) => if i < d then some(t) else {
+    let j = i - d
+    let nrec = list.len(recs)
+    if j < mo then some(pvar(px + 1 + (mo - 1 - j), d))
+    else if j < mo + nrec then {
+      let r = nrec - 1 - (j - mo)
+      let field = list.get(recs, r) ?? 0
+      some(apply(Const(f, lps |> list.map((u) => LParam(u))), list.map(0..<px, (i2) => pvar(i2, d)) + [fvar(field, d)]))
+    } else if j < mo + nrec + nf then some(fvar(nf - 1 - (j - mo - nrec), d))
+    else {
+      let pi = m - 1 - (j - mo - nrec - nf)
+      if pi == px or pi < 0 then none else some(pvar(pi, d))
+    }
+  },
+  App(a, b) => match from_case(a, d, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+    some(x) => match from_case(b, d, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+      some(y) => some(App(x, y)),
+      none => none,
+    },
+    none => none,
+  },
+  Lam(x, ty, b) => match from_case(ty, d, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+    some(t2) => match from_case(b, d + 1, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+      some(b2) => some(Lam(x, t2, b2)),
+      none => none,
+    },
+    none => none,
+  },
+  Pi(x, ty, b) => match from_case(ty, d, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+    some(t2) => match from_case(b, d + 1, f, lps, m, px, mo, nf, recs, pvar, fvar) {
+      some(b2) => some(Pi(x, t2, b2)),
+      none => none,
+    },
+    none => none,
+  },
+  other => some(other),
+}
+
+// Are the two sides the same up to renaming the variables?
+fn permutative(r: SRule) -> Bool = {
+  let none_yet: Map[Int, Term] = [:]
+  let no_levels: Map[String, Level] = [:]
+  let renames = (a: Term, b: Term) => match matches(a, b, r.n, [], SBind { terms: none_yet, levels: no_levels }) {
+    some(bd) => list.all(map.entries(bd.terms), ((_, v)) => match v {
+      Var(j) => j < r.n,
+      _ => false,
+    }) and list.len(list.unique(map.values(bd.terms))) == map.len(bd.terms),
+    none => false,
+  }
+  r.lhs != r.rhs and renames(r.lhs, r.rhs) and renames(r.rhs, r.lhs)
+}
+
+local fn term_key(env: Env, ctx: Ctx, t: Term) -> String = show(env, ctx, t)

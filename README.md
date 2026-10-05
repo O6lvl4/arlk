@@ -197,6 +197,23 @@ never adds anything. The result is printed (`✓ found by search: compose = ... 
 can replace the `search`, and it is checked by the kernel like a written proof. A failure is
 reported as inconclusive within the budget, not as a proof that no proof exists.
 
+**Rewriting: `by simp`.** Isabelle's `simp`, for equations:
+
+```
+theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = by induction n simp
+theorem add_comm(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = by induction m simp(add_zero, add_succ)
+```
+
+`by simp(l1, ...)` proves an equation by rewriting both sides, innermost first, with the listed
+equations, the equations in scope (an induction hypothesis among them) and the cases of every
+definition it meets (`add(succ(k), n) = succ(add(k, n))`, read back from the definition), until
+nothing applies; the results must then be convertible. A rule whose sides differ only by the order
+of their variables (`add(m, n) = add(n, m)`) is used only when it makes the term smaller in a fixed
+order, as Isabelle does, so it cannot loop. `by induction x simp(...)` is a `match` on x with that
+proof in every case. The proof is an ordinary term built from `cong`, `trans` and `symm` over the
+equality's recursor (src/simp.almd), checked by the kernel; a failure shows what each side
+rewrote to.
+
 **Inference.** The elaborator (src/elab.almd) fills in implicit arguments, universe levels and `_`
 holes by unification (higher-order patterns with pruning, first-order approximation, postponed
 equations, as in Lean and Agda): `List.cons(x, xs)` is
@@ -432,6 +449,28 @@ $ ./arlk check absorbed/agda/arith.arlk
 ok: absorbed/agda/arith.arlk (27 declarations)
 ```
 
+### Isabelle/HOL
+
+`arlk absorb-isabelle` ([src/isabelle.almd](src/isabelle.almd)) reads an Isabelle theory's source,
+in a subset (`datatype` with type variables, `fun`/`primrec`/`definition` by equations,
+`lemma`s stating equations, `[simp]`, `declare`), and writes Arlk types, definitions and theorems.
+A lemma's proof is its Isabelle proof method replayed by Arlk's own `simp`: `by (induction xs)
+auto` becomes `by induction xs simp(...)` with the lemmas marked `[simp]` so far and those given by
+`simp add:`; every function's equations are used, as in Isabelle. A method that Arlk's `simp`
+cannot replay is a failed check, so a false lemma cannot get through, and nothing of Isabelle is
+trusted. Equality is Arlk's native one (lib/std/eq.arlk), not lib/hol.arlk's encoding: the HOL
+room reads OpenTheory articles (proofs in HOL's own rules), this one reads Isabelle source (proofs
+re-found by rewriting). [tools/isabelle-export/check.sh](tools/isabelle-export/check.sh) runs
+Isabelle on the theory when it is installed, regenerates the translation, checks it, and checks
+that a false lemma is rejected.
+
+```
+$ ./arlk absorb-isabelle absorbed/isabelle/Arith.thy -o absorbed/isabelle/arith.arlk
+$ ./arlk check lib/std/eq.arlk absorbed/isabelle/arith.arlk
+✓ theorem isabelle.Arith.rev_rev: (a: Type, xs: seq(a)) -> eq.Eq[1](seq(a), rev(rev(xs)), xs)
+ok: lib/std/eq.arlk absorbed/isabelle/arith.arlk (29 declarations)
+```
+
 ### Results
 
 | Library | Declarations checked | Time |
@@ -442,6 +481,7 @@ ok: absorbed/agda/arith.arlk (27 declarations)
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Agda `Arith` (naturals, lists, equality and their laws; from source) | 27, all of them | < 0.1 s |
+| Isabelle `Arith` (naturals, sequences, append, reverse; proofs replayed by `simp`) | 29, all of them | < 0.5 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 | Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |

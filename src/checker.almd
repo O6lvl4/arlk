@@ -632,6 +632,37 @@ local fn wf_calls(r: Raw, f: String, n: Int, pos: Int, rec: String) -> Raw! = {
   }
 }
 
+// `by induction x simp(...)`: a match on x with that proof in every case
+// (the recursive cases get their induction hypotheses in scope).
+local fn induction_arms(env: Env, sig: Sig, body: Raw) -> Raw! = {
+  let (params, _, b) = def_parts(sig, body)
+  match b {
+    // The mark is tested in the arm, not a guard: almide/almide#3414.
+    RApp(RApp(RName(mark), RName(x)), proof) => if mark != "%induction" then ok(body) else {
+      let dom = match list.find(params, ((p, _)) => p == x) {
+        some((_, d)) => ok(d),
+        none => err("by induction ${x}: ${x} is not a parameter of ${sig.name}"),
+      }!
+      let target = match_target(env, dom)!
+      let taken = params |> list.map(((p, _)) => p)
+      var arms: List[syntax.Arm] = []
+      for ci in target.ctors {
+        let short = match list.last(string.split(ci.name, ".")) {
+          some(s) => s,
+          none => ci.name,
+        }
+        var subs: List[syntax.Sub] = []
+        for k in 0..<ci.nargs {
+          list.push(subs, SName(inductive.fresh("a" + int.to_string(k + 1), taken)))
+        }
+        list.push(arms, syntax.Arm { ctor: short, subs: subs, body: proof })
+      }
+      ok(list.fold(list.reverse(params), RMatch(RName(x), arms), (acc, (p, pty)) => RLam(p, pty, acc)))
+    }
+    _ => ok(body),
+  }
+}
+
 // A definition's parameters, its result type and the body under them.
 local fn def_parts(sig: Sig, body: Raw) -> (List[(String, Raw)], Raw, Raw) = {
   var params: List[(String, Raw)] = []
@@ -1938,7 +1969,7 @@ local fn needs_elab(env: Env, r: Raw) -> Bool =
   else uses_inference(env, r)
 
 local fn has_hole(r: Raw) -> Bool = match r {
-  RName(x) => x == "_" or x == "?",
+  RName(x) => x == "_" or x == "?" or x == "%simp",
   RApp(f, a) => has_hole(f) or has_hole(a),
   RLam(_, ty, b) => has_hole(ty) or has_hole(b),
   RPi(_, ty, b) => has_hole(ty) or has_hole(b),
@@ -1946,7 +1977,7 @@ local fn has_hole(r: Raw) -> Bool = match r {
 }
 
 local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
-  RName(x) => x == "_" or x == "?" or match resolve_const(env, x) {
+  RName(x) => x == "_" or x == "?" or x == "%simp" or match resolve_const(env, x) {
     ok(c) => map.contains(env.implicits, c) or map.contains(env.lparams, c),
     // `p.x` (a field of a local p) is the elaborator's to read.
     err(_) => string.contains(x, "."),
@@ -1977,7 +2008,8 @@ local fn surface_term(mut env: Env, lv: List[String], r: Raw, ty: Term) -> Term!
 
 // A body that is `match x { ... }` (under the parameters' lambdas) is
 // compiled to x's recursor first.
-local fn compile_match(env: Env, sig: Sig, body: Raw) -> Raw! = {
+local fn compile_match(env: Env, sig: Sig, body0: Raw) -> Raw! = {
+  let body = induction_arms(env, sig, body0)!
   var params: List[(String, Raw)] = []
   var ty = sig.ty
   var b = body

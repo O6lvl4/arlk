@@ -407,7 +407,17 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
     let (as, p3) = arms(ts, p2, [])!
     ok((RMatch(scrut, as), p3))
   }
-  if t.kind == "ident" then {
+  // `by simp(l1, l2)`: rewriting, by elab (see simp.almd); `by induction x
+  // simp(...)`: a match on x whose every case is that. The words are not
+  // reserved.
+  if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "simp" then ok((RName("%simp"), p + 2))
+  else if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "induction" then {
+    let (x, p1) = ident(ts, p + 2)!
+    guard tok(ts, p1).text == "simp" else err(fail_at(ts, p1, "by induction ${x}: expected `simp` (by induction ${x} simp(...))"))
+    let (s, p2) = calls(ts, p1 + 1, RName("%simp"))!
+    ok((RApp(RApp(RName("%induction"), RName(x)), s), p2))
+  }
+  else if t.kind == "ident" then {
     // `Point { x: ...`: a record value (a match's arms never start `name:`).
     if is_sym(ts, p + 1, "{") and tok(ts, p + 2).kind == "ident" and is_sym(ts, p + 3, ":") then {
       let (fs, p1) = field_values(ts, p + 2, [])!

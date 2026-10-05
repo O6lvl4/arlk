@@ -17,6 +17,7 @@ import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_lev
 import self.syntax.{Raw}
 import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
+import self.simp
 
 // `typed`: holes for implicit arguments with the type their solution must
 // have, checked once solved (that is how levels like the u in `id[u]` are
@@ -40,9 +41,11 @@ type ElabState = {
   postponed: List[(Ctx, Term, Term, Term)],
   // `?`: goals left open on purpose, reported with their types
   goals: List[(Ctx, Term, Term)],
+  // `by simp` whose goal still had holes: run once everything else is solved
+  simps: List[(Ctx, Term, Term, Raw)],
 }
 
-fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], trail: [], ltrail: [], next: 0, bu: budget(), typed: [], postponed: [], goals: [] }
+fn state() -> ElabState = ElabState { metas: [:], lmetas: [:], trail: [], ltrail: [], next: 0, bu: budget(), typed: [], postponed: [], goals: [], simps: [] }
 
 // ── Holes ───────────────────────────────────────────────────────────
 
@@ -769,6 +772,7 @@ fn sort_of(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, L
 }
 
 fn check(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = match r {
+  _ if simp_head(r) => by_simp(env, sc, st, ctx, r, expected),
   RName("_") => {
     let m = new_meta(st, ctx)
     list.push(st.typed, (ctx, m, expected))
@@ -790,6 +794,80 @@ fn check(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Ter
     _ => infer_then_unify(env, sc, st, ctx, r, expected),
   },
   _ => infer_then_unify(env, sc, st, ctx, r, expected),
+}
+
+// `by simp(rules...)`: the expected type, complete, is proved by
+// rewriting (simp.almd) with the rules given and the equations in scope.
+local fn simp_head(r: Raw) -> Bool = match r {
+  RName(x) => x == "%simp",
+  RApp(f, _) => simp_head(f),
+  _ => false,
+}
+
+local fn raw_args(r: Raw) -> List[Raw] = match r {
+  RApp(f, a) => raw_args(f) + [a],
+  _ => [],
+}
+
+local fn by_simp(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
+  // What unification can already decide (a level in the goal, say).
+  settle(env, sc, st)!
+  let goal = zonk(st, expected)
+  let zctx = ctx |> list.map(((x, ty)) => (x, zonk(st, ty)))
+  if has_meta(goal) or list.any(zctx, ((_, ty)) => has_meta(ty)) then {
+    // Later arguments may fix the goal (a match's type parameters come
+    // from the matched value): a hole now, the proof at the end.
+    let m = new_meta(st, ctx)
+    list.push(st.simps, (ctx, m, expected, r))
+    ok(m)
+  } else run_simp(env, sc, st, ctx, r, expected)
+}
+
+local fn run_simp(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
+  let goal = zonk(st, expected)
+  let zctx = ctx |> list.map(((x, ty)) => (x, zonk(st, ty)))
+  guard not has_meta(goal) and not list.any(zctx, ((_, ty)) => has_meta(ty)) else err("simp: the goal is not known here (${show(env, zctx, goal)}); give its type")
+  var rules: List[simp.SRule] = []
+  // Equations in scope, the most recent first (an induction hypothesis).
+  for (i, b) in list.enumerate(zctx) {
+    let (_, ty) = b
+    match simp.rule_of(env, zctx, Var(i), shift(ty, i + 1, 0), [], st.bu) {
+      some(rl) => list.push(rules, rl),
+      none => (),
+    }
+  }
+  for a in raw_args(r) {
+    let local_name = match a {
+      RName(x) => index_in(names(zctx), x, 0) != none,
+      _ => true,
+    }
+    let as_const = match a {
+      RName(x) => if local_name then none else match resolve_const(env, x) {
+        ok(c) => some(c),
+        err(_) => none,
+      },
+      _ => none,
+    }
+    let found = match as_const {
+      some(c) => {
+        let ps = map.get(env.lparams, c) ?? []
+        simp.rule_of(env, zctx, Const(c, ps |> list.map((u) => LParam(u))), map.get(env.types, c) ?? type0(), ps, st.bu)
+      },
+      none => {
+        let (t, ty) = infer(env, sc, st, ctx, a)!
+        let zt = zonk(st, t)
+        let zty = zonk(st, ty)
+        guard not has_meta(zt) and not has_meta(zty) else err("simp: cannot tell every part of the rule ${show(env, zctx, zt)}")
+        simp.rule_of(env, zctx, zt, zty, [], st.bu)
+      },
+    }
+    guard found != none else err("simp: a rule must prove an equation (possibly for all values of its arguments)")
+    match found {
+      some(rl) => list.push(rules, rl),
+      none => (),
+    }
+  }
+  simp.prove(env, zctx, goal, rules, st.bu)
 }
 
 local fn mismatch(env: Env, st: ElabState, ctx: Ctx, t: Term, expected: Term, ty: Term) -> String =
@@ -857,6 +935,17 @@ local fn settle(env: Env, sc: Scope, mut st: ElabState) -> Unit! = {
 
 local fn complete(env: Env, sc: Scope, mut st: ElabState, t: Term, what: String) -> Term! = {
   settle(env, sc, st)!
+  // The deferred `by simp`s, now that their goals are known.
+  while not list.is_empty(st.simps) {
+    let jobs = st.simps
+    let none_yet: List[(Ctx, Term, Term, Raw)] = []
+    st.simps = none_yet
+    for (ctx, m, expected, r) in jobs {
+      let proof = run_simp(env, sc, st, ctx, r, expected)!
+      guard unify(env, st, ctx, m, proof) else err("simp: its proof does not fit here")
+    }
+    settle(env, sc, st)!
+  }
   guard list.is_empty(st.goals) else err(goal_report(env, sc, st))
   let z = zonk(st, t)
   guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(env, [], z)} (write the missing arguments, or the universe levels in [...])")

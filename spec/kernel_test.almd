@@ -1512,3 +1512,32 @@ test "a structure declaration is checked against its projections" {
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst)\n", "must build"))
   assert(rejects_with(STRUCT_BASE + "\nroom other uses st\nstructure P = P.mk(P.fst, P.snd)\n", "symbol of this room"))
 }
+
+// ── simp: rewriting with equations ─────────────────────────────────
+
+let SIMP_BASE = """
+room simpt uses eq, logic, nat
+theorem add_zero'(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = by induction n simp
+theorem add_succ'(m: Nat, n: Nat) -> Eq(Nat, add(m, Nat.succ(n)), Nat.succ(add(m, n))) = by induction m simp
+"""
+
+test "simp proves equations by rewriting, with definitions' cases and induction hypotheses" {
+  assert_eq(run_wf(SIMP_BASE + "\n" + """
+theorem comm(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = by induction m simp(add_zero', add_succ')
+theorem assoc(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(a, add(b, c))) = by induction a simp
+theorem ordered(a: Nat, b: Nat) -> Eq(Nat, add(add(a, Nat.zero), b), add(b, a)) = by simp(add_zero', comm)
+""")!, none)
+}
+
+test "simp rejects what it cannot rewrite to the same term" {
+  let false_law = SIMP_BASE + "\ntheorem bad(n: Nat) -> Eq(Nat, add(n, Nat.zero), Nat.succ(n)) = by induction n simp\n"
+  assert(match run_wf(false_law)! {
+    some(e) => string.contains(e, "simp could not prove it"),
+    none => false,
+  })
+  let not_eq = SIMP_BASE + "\ntheorem bad(n: Nat) -> Nat = by simp\n"
+  assert(match run_wf(not_eq)! {
+    some(e) => string.contains(e, "must be an equation"),
+    none => false,
+  })
+}

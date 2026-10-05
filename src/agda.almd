@@ -830,3 +830,75 @@ test "clauses become a case tree on the first constructor column" {
     err(e) => assert_eq(e, ""),
   }
 }
+
+// ── Helpers for isabelle.almd ───────────────────────────────────────
+// They match on AExpr here, in its own module: in another module the
+// native test build leaves its recursive payloads boxed.
+
+fn type_vars(e: AExpr, names: List[String]) -> List[String] = match e {
+  EVar(n) => if list.contains(names, n) then [] else [n],
+  EApp(f, args) => type_vars(f, names) + (args |> list.flat_map((a) => type_vars(a, names))),
+  EArrow(a, b) => type_vars(a, names) + type_vars(b, names),
+  _ => [],
+}
+
+// Free variables' types, from the functions and constructors they are
+// passed to.
+fn infer_vars(sc: AScope, sigs: List[(String, AExpr)], e: AExpr, acc: List[(String, AExpr)]) -> List[(String, AExpr)] = match e {
+  EApp(EVar(f), args) => {
+    let arg_tys = match list.find(sigs, ((g, _)) => g == f) {
+      some((_, ty)) => arrow_args(ty),
+      none => ctor_args(sc, f),
+    }
+    var out = acc
+    for (k, a) in list.enumerate(args) {
+      match a {
+        EVar(v) => if is_free(sc, sigs, v) and not list.any(out, ((x, _)) => x == v) then match list.get(arg_tys, k) {
+          some(t) => list.push(out, (v, t)),
+          none => (),
+        } else (),
+        _ => {
+          out = infer_vars(sc, sigs, a, out)
+        },
+      }
+    }
+    out
+  },
+  _ => acc,
+}
+
+local fn is_free(sc: AScope, sigs: List[(String, AExpr)], v: String) -> Bool =
+  not list.any(sigs, ((g, _)) => g == v) and ctor_args_known(sc, v) == false
+
+local fn ctor_args_known(sc: AScope, v: String) -> Bool = list.any(sc.datas, (d) => list.any(d.ctors, (c) => c.name == v))
+
+local fn ctor_args(sc: AScope, c: String) -> List[AExpr] = {
+  var out: List[AExpr] = []
+  for d in sc.datas {
+    for k in d.ctors {
+      if k.name == c then {
+        out = k.args |> list.map(((_, t, _)) => t)
+      } else ()
+    }
+  }
+  out
+}
+
+local fn arrow_args(t: AExpr) -> List[AExpr] = match t {
+  EArrow(a, b) => [a] + arrow_args(b),
+  _ => [],
+}
+
+fn var_order(sc: AScope, sigs: List[(String, AExpr)], e: AExpr) -> List[String] = match e {
+  EVar(v) => if is_free(sc, sigs, v) then [v] else [],
+  EApp(f, args) => var_order(sc, sigs, f) + (args |> list.flat_map((a) => var_order(sc, sigs, a))),
+  _ => [],
+}
+
+
+// A name applied to arguments: the name and the arguments ("" if not).
+fn head_args(e: AExpr) -> (String, List[AExpr]) = match e {
+  EApp(EVar(g), xs) => (g, xs),
+  EVar(g) => (g, []),
+  _ => ("", []),
+}

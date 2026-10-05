@@ -1,0 +1,60 @@
+// Absorbed from Isabelle by `arlk absorb-isabelle`: theory Arith (Arith.thy).
+// Isabelle is not needed to check it: the types and functions are
+// ordinary Arlk declarations, and each lemma's proof method is replayed
+// by Arlk's `simp`, checked by the kernel.
+room isabelle.Arith uses eq
+
+type num: Type =
+  | Z: num
+  | S(x1: num): num
+
+def add(x1: num, n: num) -> num = match x1 {
+  Z => n,
+  S(m) => num.S(add(m, n)),
+}
+
+theorem add_Z(n: num) -> Eq(_, add(n, num.Z), n) =
+  by induction n simp
+
+theorem add_S(m: num, n: num) -> Eq(_, add(m, num.S(n)), num.S(add(m, n))) =
+  by induction m simp(add_Z)
+
+theorem add_comm(m: num, n: num) -> Eq(_, add(m, n), add(n, m)) =
+  by induction m simp(add_Z, add_S)
+
+theorem add_assoc(a: num, b: num, c: num) -> Eq(_, add(add(a, b), c), add(a, add(b, c))) =
+  by induction a simp(add_Z, add_S)
+
+type seq(a: Type): Type =
+  | Nil: seq(a)
+  | Cons(x1: a, x2: seq(a)): seq(a)
+
+def app[a: Type](x2: seq(a), ys: seq(a)) -> seq(a) = match x2 {
+  Nil => ys,
+  Cons(x, xs) => seq.Cons(x, app(xs, ys)),
+}
+
+def rev[a: Type](x2: seq(a)) -> seq(a) = match x2 {
+  Nil => seq.Nil,
+  Cons(x, xs) => app(rev(xs), seq.Cons(x, seq.Nil)),
+}
+
+def len[a: Type](x2: seq(a)) -> num = match x2 {
+  Nil => num.Z,
+  Cons(x, xs) => num.S(len(xs)),
+}
+
+theorem app_Nil[a: Type](xs: seq(a)) -> Eq(_, app(xs, seq.Nil), xs) =
+  by induction xs simp(add_Z, add_S)
+
+theorem app_assoc[a: Type](xs: seq(a), ys: seq(a), zs: seq(a)) -> Eq(_, app(app(xs, ys), zs), app(xs, app(ys, zs))) =
+  by induction xs simp(add_Z, add_S, app_Nil)
+
+theorem rev_app[a: Type](xs: seq(a), ys: seq(a)) -> Eq(_, rev(app(xs, ys)), app(rev(ys), rev(xs))) =
+  by induction xs simp(add_Z, add_S, app_Nil, app_assoc)
+
+theorem rev_rev[a: Type](xs: seq(a)) -> Eq(_, rev(rev(xs)), xs) =
+  by induction xs simp(add_Z, add_S, app_Nil, app_assoc, rev_app)
+
+theorem len_app[a: Type](xs: seq(a), ys: seq(a)) -> Eq(_, len(app(xs, ys)), add(len(xs), len(ys))) =
+  by induction xs simp(add_Z, add_S, app_Nil, app_assoc, rev_app)
