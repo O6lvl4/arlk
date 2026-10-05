@@ -1,0 +1,194 @@
+// The kernel must accept good proofs and, more importantly, reject bad ones.
+import self.syntax
+import self.kernel
+
+let PRELUDE = """
+  room logic.
+  symbol Prop : Type.
+  symbol Prf : Prop -> Type.
+  symbol imp : Prop -> Prop -> Prop.
+  rule [a : Prop, b : Prop] Prf (imp a b) --> Prf a -> Prf b.
+  """
+
+// none = accepted; some(msg) = rejected with msg.
+fn run(src: String) -> String? = match syntax.parse(PRELUDE + "\n" + src) {
+  err(e) => some("parse: " + e),
+  ok(ds) => kernel.check_all(kernel.empty(), ds).error,
+}
+
+fn accepts(src: String) -> Bool = run(src) == none
+
+fn rejects_with(src: String, needle: String) -> Bool = match run(src) {
+  some(e) => string.contains(e, needle),
+  none => false,
+}
+
+test "a correct proof is accepted" {
+  assert(accepts("theorem k : (a b : Prop) -> Prf (imp a (imp b a)) := fun (a b : Prop) (x : Prf a) (y : Prf b) => x."))
+}
+
+test "returning the wrong hypothesis is rejected" {
+  assert(rejects_with(
+    "theorem k : (a b : Prop) -> Prf (imp a (imp b a)) := fun (a b : Prop) (x : Prf a) (y : Prf b) => y.",
+    "type mismatch",
+  ))
+}
+
+test "a proof of a different proposition is rejected" {
+  assert(rejects_with(
+    "theorem bad : (a b : Prop) -> Prf (imp a b) := fun (a b : Prop) (x : Prf a) => x.",
+    "type mismatch",
+  ))
+}
+
+test "Type is not a Type" {
+  assert(rejects_with("def t : Type := Type.", "type mismatch"))
+}
+
+test "inner binders shadow outer ones" {
+  assert(accepts("symbol A : Type. symbol B : Type. def f : A -> B -> B := fun (x : A) (x : B) => x."))
+  assert(rejects_with(
+    "symbol A : Type. symbol B : Type. def f : A -> B -> A := fun (x : A) (x : B) => x.",
+    "type mismatch",
+  ))
+}
+
+test "dependent application substitutes the argument into the result type" {
+  assert(accepts("""
+    symbol a : Prop.
+    symbol refl_imp : (p : Prop) -> Prf (imp p p).
+    def r : Prf (imp a a) := refl_imp a.
+    """))
+}
+
+test "defs unfold during conversion but theorems stay opaque" {
+  assert(accepts("""
+    symbol a : Prop.
+    def p : Prop := a.
+    def q : Prf p -> Prf a := fun (h : Prf p) => h.
+    """))
+  assert(rejects_with(
+    """
+    symbol a : Prop.
+    symbol pa : Prf a.
+    theorem p : Prop := a.
+    def q : Prf p -> Prf a := fun (h : Prf p) => h.
+    """,
+    "type mismatch",
+  ))
+}
+
+test "a rule must preserve types" {
+  assert(rejects_with(
+    """
+    symbol f : Prop -> Prop.
+    rule [x : Prop] f x --> Prf x.
+    """,
+    "rule does not preserve types",
+  ))
+}
+
+test "a rule can only extend a symbol of the current room" {
+  assert(rejects_with(
+    """
+    room other uses logic.
+    symbol a : Prop.
+    rule [x : Prop] Prf (imp x x) --> Prf a.
+    """,
+    "rules can only be added to symbols of the current room",
+  ))
+}
+
+test "rules cannot be attached to defs or theorems" {
+  assert(rejects_with(
+    """
+    symbol a : Prop.
+    def d : Prop -> Prop := fun (p : Prop) => p.
+    rule [x : Prop] d x --> a.
+    """,
+    "only symbols can have rules",
+  ))
+}
+
+test "non-linear and unbound pattern variables are rejected" {
+  assert(rejects_with("symbol f : Prop -> Prop -> Prop. rule [x : Prop] f x x --> x.", "at most once"))
+  assert(rejects_with(
+    "symbol f : Prop -> Prop. symbol a : Prop. rule [x : Prop, y : Prop] f x --> a.",
+    "must appear",
+  ))
+}
+
+test "rooms are sealed once left" {
+  assert(rejects_with("room other uses logic. room logic.", "sealed"))
+}
+
+test "a room only sees the rooms it uses" {
+  assert(rejects_with("room island. symbol x : logic.Prop.", "does not use"))
+  assert(rejects_with("room island. symbol x : Prop.", "unknown name Prop"))
+  assert(accepts("room shore uses logic. symbol x : Prop."))
+}
+
+test "visibility is transitive through uses" {
+  assert(accepts("room mid uses logic. room top uses mid. symbol x : Prop."))
+}
+
+test "duplicate declarations are rejected" {
+  assert(rejects_with("symbol Prop : Type.", "already declared"))
+}
+
+test "rewriting computes inside the kernel" {
+  assert(accepts("""
+    room nat uses logic.
+    symbol Nat : Type.
+    symbol z : Nat.
+    symbol s : Nat -> Nat.
+    symbol add : Nat -> Nat -> Nat.
+    rule [n : Nat] add z n --> n.
+    rule [m : Nat, n : Nat] add (s m) n --> s (add m n).
+    symbol eq : Nat -> Nat -> Prop.
+    symbol refl : (n : Nat) -> Prf (eq n n).
+    theorem t : Prf (eq (add (s z) (s z)) (s (s z))) := refl (s (s z)).
+    """))
+  assert(rejects_with(
+    """
+    room nat uses logic.
+    symbol Nat : Type.
+    symbol z : Nat.
+    symbol s : Nat -> Nat.
+    symbol eq : Nat -> Nat -> Prop.
+    symbol refl : (n : Nat) -> Prf (eq n n).
+    theorem t : Prf (eq (s z) z) := refl z.
+    """,
+    "type mismatch",
+  ))
+}
+
+test "eta: a function equals its own expansion" {
+  assert(accepts("""
+    symbol f : Prop -> Prop.
+    symbol P : (Prop -> Prop) -> Prop.
+    symbol pf : Prf (P f).
+    def g : Prf (P (fun (x : Prop) => f x)) := pf.
+    """))
+}
+
+test "#axioms reports only what a theorem actually uses" {
+  let src = PRELUDE + "\n" + """
+    room classical uses logic.
+    symbol bot : Prop.
+    symbol em : (p : Prop) -> Prf p.
+    theorem plain : (a : Prop) -> Prf (imp a a) := fun (a : Prop) (h : Prf a) => h.
+    theorem uses_em : (a : Prop) -> Prf a := fun (a : Prop) => em a.
+    """
+  match syntax.parse(src) {
+    ok(ds) => {
+      let out = kernel.check_all(kernel.empty(), ds)
+      assert_eq(out.error, none)
+      let plain = kernel.deps(out.env, "classical.plain")
+      assert(not list.contains(plain.symbols, "classical.em"))
+      let used = kernel.deps(out.env, "classical.uses_em")
+      assert(list.contains(used.symbols, "classical.em"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}

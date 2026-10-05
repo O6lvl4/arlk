@@ -1,0 +1,44 @@
+// arlk — the Arlk proof checker.
+//
+//   arlk check FILE.arlk     check every declaration, print theorems and commands
+import fs
+import process
+import self.syntax
+import self.kernel
+
+effect fn main() -> Unit = {
+  let args = process.args()
+  match (list.get(args, 1), list.get(args, 2)) {
+    (some("check"), some(path)) => run_check(path)!,
+    _ => {
+      println("usage: arlk check FILE.arlk")
+      process.exit(2)
+    },
+  }
+}
+
+effect fn run_check(path: String) -> Unit = {
+  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match syntax.parse(src) {
+    err(e) => {
+      println("${path}:${e}")
+      process.exit(1)
+    },
+    ok(ds) => {
+      let out = kernel.check_all(kernel.empty(), ds)
+      for line in out.output {
+        println(line)
+      }
+      match out.error {
+        some(e) => {
+          println("✗ ${path}:${e}")
+          process.exit(1)
+        },
+        none => {
+          let n = list.len(out.env.order)
+          println("ok: ${path} (${int.to_string(n)} declarations)")
+        },
+      }
+    },
+  }
+}

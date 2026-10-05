@@ -1,0 +1,496 @@
+// The Arlk kernel: λΠ-calculus modulo rewriting, organised into rooms.
+//
+// Everything a proof may rely on is either
+//   - a symbol   (an assumption, opaque),
+//   - a rule     (a trusted rewrite attached to a symbol of the same room),
+//   - a def      (transparent, unfolds during conversion), or
+//   - a theorem  (checked like a def, but opaque afterwards).
+// Rooms are sealed once left: no later room can add symbols or rules to
+// them, so a room's assumptions are fixed by its own text.
+import self.term.{Term, shift, instantiate, subst, spine, apply, occurs, consts}
+import self.pretty
+import self.syntax.{Raw, Decl, Located}
+
+type Entry = { name: String, room: String, kind: String, ty: Term, body: Term? }
+
+type Rule = { id: String, head: String, room: String, arity: Int, nvars: Int, var_tys: List[Term], lhs_args: List[Term], rhs: Term, text: String }
+
+type Env = {
+  entries: Map[String, Entry],
+  rules: Map[String, List[Rule]],
+  rooms: Map[String, List[String]],
+  // room → every room it can see (transitively)
+  room: String,
+  order: List[String],
+}
+
+// A typing context: innermost binder first.
+type Ctx = List[(String, Term)]
+
+let FUEL = 1_000_000
+
+fn empty() -> Env = Env {
+  entries: [:],
+  rules: [:],
+  rooms: [
+    "main": []
+  ],
+  room: "main",
+  order: [],
+}
+
+local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
+
+local fn show(env: Env, ctx: Ctx, t: Term) -> String = pretty.show(env.room, names_of(ctx), t)
+
+// ── Reduction ───────────────────────────────────────────────────────
+// Weak-head normal form: β, δ (defs) and the rewrite rules.
+// Out of fuel, the term is returned as it stands: conversion then fails,
+// so a looping rule set makes the kernel incomplete, never unsound.
+fn whnf(env: Env, t: Term) -> Term = whnf_fuel(env, t, FUEL)
+
+local fn whnf_fuel(env: Env, t: Term, fuel: Int) -> Term = if fuel <= 0 then t
+else {
+  let (h, args) = spine(t)
+  match h {
+    Lam(_, _, body) => match list.first(args) {
+      some(a) => whnf_fuel(env, apply(subst(body, a), list.drop(args, 1)), fuel - 1),
+      none => t,
+    },
+    Const(c) => match unfold(env, c) {
+      some(body) => whnf_fuel(env, apply(body, args), fuel - 1),
+      none => match rewrite(env, c, args) {
+        some(t2) => whnf_fuel(env, t2, fuel - 1),
+        none => t,
+      },
+    },
+    _ => t,
+  }
+}
+
+local fn unfold(env: Env, c: String) -> Term? = match map.get(env.entries, c) {
+  some(e) => if e.kind == "def" then e.body
+  else none,
+  none => none,
+}
+
+local fn rewrite(env: Env, c: String, args: List[Term]) -> Term? = {
+  let rules = map.get(env.rules, c) ?? []
+  first_rewrite(env, rules, args)
+}
+
+local fn first_rewrite(env: Env, rules: List[Rule], args: List[Term]) -> Term? = match rules {
+  [] => none,
+  [r, ..rest] => match try_rule(env, r, args) {
+    some(t) => some(t),
+    none => first_rewrite(env, rest, args),
+  },
+}
+
+local fn try_rule(env: Env, r: Rule, args: List[Term]) -> Term? = if list.len(args) < r.arity then none
+else {
+  let pairs = list.zip(r.lhs_args, list.take(args, r.arity))
+  match match_all(env, pairs, [:]) {
+    some(sub) => {
+      let vals = list.map(0..<r.nvars, (k) => map.get(sub, k) ?? Var(k))
+      some(apply(instantiate(r.rhs, vals, 0), list.drop(args, r.arity)))
+    },
+    none => none,
+  }
+}
+
+local fn match_all(env: Env, pairs: List[(Term, Term)], sub: Map[Int, Term]) -> Map[Int, Term]? = match pairs {
+  [] => some(sub),
+  [(p, t), ..rest] => match match_pat(env, p, t, sub) {
+    some(sub2) => match_all(env, rest, sub2),
+    none => none,
+  },
+}
+
+// Patterns are first-order: pattern variables, or a symbol applied to patterns.
+local fn match_pat(env: Env, p: Term, t: Term, sub: Map[Int, Term]) -> Map[Int, Term]? = match p {
+  Var(k) => some(map.set(sub, k, t)),
+  _ => {
+    let (ph, pargs) = spine(p)
+    let (th, targs) = spine(whnf(env, t))
+    match (ph, th) {
+      (Const(a), Const(b)) => if a == b and list.len(pargs) == list.len(targs) then match_all(
+        env,
+        list.zip(pargs, targs),
+        sub,
+      )
+      else none,
+      _ => none,
+    }
+  },
+}
+
+// Full normal form, for #eval.
+fn nf(env: Env, t: Term) -> Term = {
+  let w = whnf(env, t)
+  match w {
+    Lam(x, ty, b) => Lam(x, nf(env, ty), nf(env, b)),
+    Pi(x, ty, b) => Pi(x, nf(env, ty), nf(env, b)),
+    _ => {
+      let (h, args) = spine(w)
+      apply(h, args |> list.map((a) => nf(env, a)))
+    },
+  }
+}
+
+// ── Conversion ──────────────────────────────────────────────────────
+fn conv(env: Env, a: Term, b: Term) -> Bool = if a == b then true
+else {
+  let wa = whnf(env, a)
+  let wb = whnf(env, b)
+  // Nested matches rather than `match (wa, wb)`: almide/almide#3390.
+  match wa {
+    Sort(i) => match wb {
+      Sort(j) => i == j,
+      _ => false,
+    },
+    Pi(_, t1, b1) => match wb {
+      Pi(_, t2, b2) => conv(env, t1, t2) and conv(env, b1, b2),
+      _ => false,
+    },
+    // η: (fun x => f x) ≡ f
+    Lam(_, t1, b1) => match wb {
+      Lam(_, t2, b2) => conv(env, t1, t2) and conv(env, b1, b2),
+      _ => conv(env, b1, App(shift(wb, 1, 0), Var(0))),
+    },
+    _ => match wb {
+      Lam(_, _, b2) => conv(env, App(shift(wa, 1, 0), Var(0)), b2),
+      _ => conv_spines(env, wa, wb),
+    },
+  }
+}
+
+local fn conv_spines(env: Env, a: Term, b: Term) -> Bool = {
+  let (ha, xs) = spine(a)
+  let (hb, ys) = spine(b)
+  let heads = match (ha, hb) {
+    (Var(i), Var(j)) => i == j,
+    (Const(c), Const(d)) => c == d,
+    _ => false,
+  }
+  heads and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, x, y))
+}
+
+// ── Typing ──────────────────────────────────────────────────────────
+fn infer(env: Env, ctx: Ctx, t: Term) -> Term! = match t {
+  Sort(0) => ok(Sort(1)),
+  Sort(_) => err("Kind has no type"),
+  Var(i) => match list.get(ctx, i) {
+    some((_, ty)) => ok(shift(ty, i + 1, 0)),
+    none => err("unbound variable #${int.to_string(i)}"),
+  },
+  Const(c) => match map.get(env.entries, c) {
+    some(e) => ok(e.ty),
+    none => err("unknown constant ${c}"),
+  },
+  App(f, a) => {
+    let tf = infer(env, ctx, f)!
+    match whnf(env, tf) {
+      Pi(_, dom, cod) => {
+        check(env, ctx, a, dom)!
+        ok(subst(cod, a))
+      },
+      other => err("${show(env, ctx, f)} is applied to an argument, but its type is ${show(env, ctx, other)}"),
+    }
+  },
+  Lam(x, ty, b) => {
+    expect_sort(env, ctx, ty, false)!
+    let tb = infer(env, [(x, ty)] + ctx, b)!
+    guard tb != Sort(1) else err("a function cannot return Kind")
+    ok(Pi(x, ty, tb))
+  },
+  Pi(x, ty, b) => {
+    expect_sort(env, ctx, ty, false)!
+    let s = expect_sort(env, [(x, ty)] + ctx, b, true)!
+    ok(s)
+  },
+}
+
+// The type of `t` must be a sort. Domains must live in Type (λΠ has no
+// polymorphism); codomains may be Type or Kind.
+local fn expect_sort(env: Env, ctx: Ctx, t: Term, allow_kind: Bool) -> Term! = {
+  let s = whnf(env, infer(env, ctx, t)!)
+  match s {
+    Sort(0) => ok(s),
+    Sort(_) => if allow_kind then ok(s)
+    else err("${show(env, ctx, t)} is a kind, but a type was expected here"),
+    other => err("${show(env, ctx, t)} is not a type (its type is ${show(env, ctx, other)})"),
+  }
+}
+
+fn check(env: Env, ctx: Ctx, t: Term, expected: Term) -> Unit! = {
+  let actual = infer(env, ctx, t)!
+  guard conv(env, actual, expected) else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(
+    env,
+    ctx,
+    actual,
+  )}")
+  ok(())
+}
+
+// ── Rooms and names ─────────────────────────────────────────────────
+local fn room_of(name: String) -> String = match string.index_of(name, ".") {
+  some(i) => string.slice(name, 0, i),
+  none => "",
+}
+
+local fn visible(env: Env) -> List[String] = [
+  env.room
+] + (map.get(env.rooms, env.room) ?? [])
+
+fn resolve_const(env: Env, x: String) -> String! = {
+  let rooms = visible(env)
+  if string.contains(x, ".") then {
+    guard map.contains(env.entries, x) else err("unknown name ${x}")
+    let r = room_of(x)
+    guard list.contains(rooms, r) else err("${x} lives in room ${r}, which ${env.room} does not use (add `uses ${r}`)")
+    ok(x)
+  } else {
+    let own = env.room + "." + x
+    if map.contains(env.entries, own) then ok(own)
+    else {
+      let found = rooms |> list.map((r) => r + "." + x) |> list.filter((q) => map.contains(env.entries, q))
+      match found {
+        [] => err("unknown name ${x}"),
+        [q] => ok(q),
+        many => err("${x} is ambiguous: ${list.join(many, ", ")}"),
+      }
+    }
+  }
+}
+
+local fn index_in(scope: List[String], x: String, i: Int) -> Int? = match scope {
+  [] => none,
+  [y, ..rest] => if y == x and x != "_" then some(i)
+  else index_in(rest, x, i + 1),
+}
+
+// Named surface terms → de Bruijn terms. `scope` is innermost first.
+fn resolve(env: Env, scope: List[String], r: Raw) -> Term! = match r {
+  RName(x) => match index_in(scope, x, 0) {
+    some(i) => ok(Var(i)),
+    none => ok(Const(resolve_const(env, x)!)),
+  },
+  RType => ok(Sort(0)),
+  RApp(f, a) => ok(App(resolve(env, scope, f)!, resolve(env, scope, a)!)),
+  RLam(x, ty, b) => ok(Lam(x, resolve(env, scope, ty)!, resolve(env, [x] + scope, b)!)),
+  RPi(x, ty, b) => ok(Pi(x, resolve(env, scope, ty)!, resolve(env, [x] + scope, b)!)),
+}
+
+// ── Declarations ────────────────────────────────────────────────────
+local fn declare(env: Env, name: String, kind: String, ty: Term, body: Term?) -> Env! = {
+  guard not string.contains(name, ".") else err("a declared name cannot contain '.': ${name}")
+  let q = env.room + "." + name
+  guard not map.contains(env.entries, q) else err("${q} is already declared")
+  ok({ ...env, entries: map.set(
+    env.entries,
+    q,
+    Entry { name: q, room: env.room, kind: kind, ty: ty, body: body },
+  ), order: env.order + [q] })
+}
+
+local fn enter_room(env: Env, name: String, uses: List[String]) -> Env! = {
+  guard not map.contains(env.rooms, name) else err("room ${name} already exists; rooms are sealed once left")
+  let missing = uses |> list.filter((u) => not map.contains(env.rooms, u))
+  guard list.is_empty(missing) else err("unknown room ${list.join(missing, ", ")}")
+  let seen = uses + (uses |> list.flat_map((u) => map.get(env.rooms, u) ?? []))
+  ok({ ...env, rooms: map.set(env.rooms, name, list.unique(seen)), room: name })
+}
+
+// `match` rather than `?.kind`: almide/almide#3391 (wasm).
+local fn is_symbol(env: Env, c: String) -> Bool = match map.get(env.entries, c) {
+  some(e) => e.kind == "symbol",
+  none => false,
+}
+
+// A rule pattern is a pattern variable or a symbol of any visible room
+// applied to patterns. Returns the pattern variables it binds, in order.
+local fn pattern_vars(env: Env, p: Term, nvars: Int) -> List[Int]! = match p {
+  Var(k) => if k < nvars then ok([k])
+  else err("patterns cannot mention bound variables"),
+  _ => {
+    let (h, args) = spine(p)
+    match h {
+      Const(c) => {
+        guard is_symbol(env, c) else err("${c} is not a symbol, so it cannot appear in a pattern")
+        let nested = args |> list.map((a) => pattern_vars(env, a, nvars)!)!
+        ok(list.flatten(nested))
+      },
+      _ => err("patterns must be built from symbols and pattern variables"),
+    }
+  },
+}
+
+local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> (Env, String)! = {
+  // Build the rule context left to right; Var(0) is the last variable.
+  var ctx: Ctx = []
+  var scope: List[String] = []
+  for (x, ty_raw) in vars {
+    let ty = resolve(env, scope, ty_raw)!
+    expect_sort(env, ctx, ty, true)!
+    ctx = [(x, ty)] + ctx
+    scope = [x] + scope
+  }
+  let n = list.len(vars)
+  let lhs = resolve(env, scope, lhs_raw)!
+  let rhs = resolve(env, scope, rhs_raw)!
+  let (h, args) = spine(lhs)
+  let head = match h {
+    Const(c) => ok(c),
+    _ => err("the left-hand side of a rule must start with a symbol"),
+  }!
+  guard is_symbol(env, head) else err("${head} is not a symbol; only symbols can have rules")
+  guard room_of(head) == env.room else err("${head} belongs to room ${room_of(head)}; rules can only be added to symbols of the current room (${env.room})")
+  guard not list.is_empty(args) else err("a rule needs at least one argument pattern")
+  let bound = list.flatten(args |> list.map((a) => pattern_vars(env, a, n)!)!)
+  guard list.len(list.unique(bound)) == list.len(bound) else err("pattern variables must be used at most once on the left")
+  let unbound = list.map(0..<n, (k) => k) |> list.filter((k) => not list.contains(bound, k))
+  guard list.is_empty(unbound) else err("every rule variable must appear on the left-hand side")
+  let tl = infer(env, ctx, lhs)!
+  let tr = infer(env, ctx, rhs)!
+  let text = "${show(env, ctx, lhs)} --> ${show(env, ctx, rhs)}"
+  guard conv(env, tl, tr) else err("rule does not preserve types: ${text}\n    left:  ${show(env, ctx, tl)}\n    right: ${show(
+    env,
+    ctx,
+    tr,
+  )}")
+  let existing = map.get(env.rules, head) ?? []
+  let r = Rule {
+    id: "${env.room}:${int.to_string(line)}",
+    head: head,
+    room: env.room,
+    arity: list.len(args),
+    nvars: n,
+    var_tys: ctx |> list.map(((_, ty)) => ty),
+    lhs_args: args,
+    rhs: rhs,
+    text: text,
+  }
+  ok(({ ...env, rules: map.set(env.rules, head, existing + [r]) }, text))
+}
+
+// Process one declaration; returns the new environment and lines to print.
+fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
+  DRoom(name, uses) => ok((enter_room(env, name, uses)!, [])),
+  DSymbol(name, ty_raw) => {
+    let ty = resolve(env, [], ty_raw)!
+    expect_sort(env, [], ty, true)!
+    ok((declare(env, name, "symbol", ty, none)!, []))
+  },
+  DDef(name, ty_raw, body_raw) => {
+    let (ty, body) = typed_body(env, ty_raw, body_raw)!
+    ok((declare(env, name, "def", ty, some(body))!, []))
+  },
+  DTheorem(name, ty_raw, body_raw) => {
+    let (ty, body) = typed_body(env, ty_raw, body_raw)!
+    let env2 = declare(env, name, "theorem", ty, some(body))!
+    ok((env2, [
+      "✓ theorem ${env.room}.${name} : ${show(env, [], ty)}"
+    ]))
+  },
+  DRule(vars, lhs, rhs) => {
+    let (env2, _) = add_rule(env, vars, lhs, rhs, d.line)!
+    ok((env2, []))
+  },
+  DCheck(e_raw) => {
+    let e = resolve(env, [], e_raw)!
+    let ty = infer(env, [], e)!
+    ok((env, [
+      "${show(env, [], e)} : ${show(env, [], ty)}"
+    ]))
+  },
+  DEval(e_raw) => {
+    let e = resolve(env, [], e_raw)!
+    infer(env, [], e)!
+    ok((env, [
+      "${show(env, [], e)} ⇝ ${show(env, [], nf(env, e))}"
+    ]))
+  },
+  DAxioms(name) => {
+    let q = resolve_const(env, name)!
+    ok((env, report_axioms(env, q)))
+  },
+}
+
+local fn typed_body(env: Env, ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
+  let ty = resolve(env, [], ty_raw)!
+  expect_sort(env, [], ty, true)!
+  let body = resolve(env, [], body_raw)!
+  check(env, [], body, ty)!
+  ok((ty, body))
+}
+
+// ── Dependency tracking ─────────────────────────────────────────────
+type Deps = { symbols: List[String], rules: List[Rule], lemmas: List[String] }
+
+// Everything `name` rests on: the symbols it assumes, the rules attached to
+// them, and the defs/theorems it goes through. Transitive.
+fn deps(env: Env, name: String) -> Deps = deps_walk(
+  env,
+  [name],
+  [],
+  Deps { symbols: [], rules: [], lemmas: [] },
+  name,
+)
+
+local fn deps_walk(env: Env, queue: List[String], seen: List[String], acc: Deps, root: String) -> Deps = match queue {
+  [] => acc,
+  [c, ..rest] => if list.contains(seen, c) then deps_walk(env, rest, seen, acc, root)
+  else match map.get(env.entries, c) {
+    none => deps_walk(env, rest, seen + [c], acc, root),
+    some(e) => {
+      let body_consts = match e.body {
+        some(b) => consts(b),
+        none => [],
+      }
+      let rules = if e.kind == "symbol" then map.get(env.rules, c) ?? []
+      else []
+      let rule_consts = rules |> list.flat_map((r) => (r.var_tys |> list.flat_map((t) => consts(t))) + (r.lhs_args |> list.flat_map((t) => consts(t))) + consts(r.rhs))
+      let acc2 = match e.kind {
+        "symbol" => { ...acc, symbols: acc.symbols + [c], rules: acc.rules + rules },
+        _ => if c == root then acc
+        else { ...acc, lemmas: acc.lemmas + [c] },
+      }
+      deps_walk(env, rest + consts(e.ty) + body_consts + rule_consts, seen + [c], acc2, root)
+    },
+  },
+}
+
+local fn report_axioms(env: Env, q: String) -> List[String] = {
+  let d = deps(env, q)
+  let rooms = list.unique((d.symbols |> list.map((s) => room_of(s))) + (d.rules |> list.map((r) => r.room)))
+  let header = ["#axioms ${q}", "  rooms:   ${list.join(rooms, ", ")}"]
+  let syms = if list.is_empty(d.symbols) then ["  symbols: (none)"]
+  else [
+    "  symbols: ${list.join(d.symbols, ", ")}"
+  ]
+  let rules = if list.is_empty(d.rules) then ["  rules:   (none)"]
+  else d.rules |> list.enumerate |> list.map(((i, r)) => (if i == 0 then "  rules:   " else "           ") + "[${r.id}] ${r.text}")
+  let lemmas = if list.is_empty(d.lemmas) then []
+  else [
+    "  through: ${list.join(d.lemmas, ", ")}"
+  ]
+  header + syms + rules + lemmas
+}
+
+// ── Whole files ─────────────────────────────────────────────────────
+type Outcome = { env: Env, output: List[String], error: String? }
+
+// Check declarations in order, stopping at the first failure.
+fn check_all(env: Env, ds: List[Located]) -> Outcome = {
+  let out: List[String] = []
+  check_from(env, ds, out)
+}
+
+local fn check_from(env: Env, ds: List[Located], out: List[String]) -> Outcome = match ds {
+  [] => Outcome { env: env, output: out, error: none },
+  [d, ..rest] => match process(env, d) {
+    ok((env2, lines)) => check_from(env2, rest, out + lines),
+    err(e) => Outcome { env: env, output: out, error: some("${int.to_string(d.line)}: ${e}") },
+  },
+}

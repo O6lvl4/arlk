@@ -1,0 +1,62 @@
+// Printing kernel terms back into Arlk surface syntax.
+import self.term.{Term, spine, occurs}
+
+// `room` is the room the reader is in: its own names print unqualified.
+fn show(room: String, names: List[String], t: Term) -> String = pp(room, names, t, 0)
+
+local fn fresh(names: List[String], x: String) -> String = {
+  let base = if x == "_" then "x" else x
+  if list.contains(names, base) then fresh(names, base + "'") else base
+}
+
+local fn paren(cond: Bool, s: String) -> String = if cond then "(" + s + ")" else s
+
+local fn short(room: String, c: String) -> String = string.strip_prefix(c, room + ".") ?? c
+
+// prec 0: binders and arrows, 1: application, 2: atoms.
+local fn pp(room: String, names: List[String], t: Term, prec: Int) -> String = match t {
+  Sort(0) => "Type",
+  Sort(_) => "Kind",
+  Var(i) => list.get(names, i) ?? "#${int.to_string(i)}",
+  Const(c) => short(room, c),
+  App(_, _) => {
+    let (h, args) = spine(t)
+    let parts = [
+      pp(room, names, h, 2)
+    ] + (args |> list.map((a) => pp(room, names, a, 2)))
+    paren(prec > 1, list.join(parts, " "))
+  },
+  Lam(x, ty, b) => {
+    let y = fresh(names, x)
+    let s = "fun (${y} : ${pp(room, names, ty, 0)}) => ${pp(room, [y] + names, b, 0)}"
+    paren(prec > 0, s)
+  },
+  Pi(x, ty, b) => {
+    if x == "_" and not occurs(b, 0) then {
+      let s = "${pp(room, names, ty, 1)} -> ${pp(room, ["_"] + names, b, 0)}"
+      paren(prec > 0, s)
+    } else {
+      let y = fresh(names, x)
+      let s = "(${y} : ${pp(room, names, ty, 0)}) -> ${pp(room, [y] + names, b, 0)}"
+      paren(prec > 0, s)
+    }
+  },
+}
+
+test "arrows and applications print with minimal parentheses" {
+  let t = Pi(
+    "_",
+    App(Const("r.P"), Var(0)),
+    Pi("_", Pi("_", Const("r.A"), Const("r.B")), Const("r.C")),
+  )
+  assert_eq(show("r", ["x"], t), "P x -> (A -> B) -> C")
+}
+
+test "dependent binders keep their names and foreign rooms stay qualified" {
+  let t = Pi("n", Const("nat.Nat"), App(Const("logic.Prf"), Var(0)))
+  assert_eq(show("nat", [], t), "(n : Nat) -> logic.Prf n")
+}
+
+test "shadowed names are freshened" {
+  assert_eq(show("r", ["x"], Lam("x", Const("r.A"), Var(1))), "fun (x' : A) => x")
+}

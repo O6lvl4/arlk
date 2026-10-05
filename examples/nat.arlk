@@ -1,0 +1,36 @@
+-- Natural numbers with addition defined by rewrite rules.
+-- Computation happens inside the kernel: `refl` proves 2 + 2 = 4
+-- because both sides rewrite to the same numeral.
+
+room logic.
+symbol Prop : Type.
+symbol Prf : Prop -> Type.
+
+room nat uses logic.
+
+symbol Nat : Type.
+symbol zero : Nat.
+symbol succ : Nat -> Nat.
+
+symbol plus : Nat -> Nat -> Nat.
+rule [n : Nat] plus zero n --> n.
+rule [m : Nat, n : Nat] plus (succ m) n --> succ (plus m n).
+
+symbol mult : Nat -> Nat -> Nat.
+rule [n : Nat] mult zero n --> zero.
+rule [m : Nat, n : Nat] mult (succ m) n --> plus n (mult m n).
+
+symbol eq : Nat -> Nat -> Prop.
+symbol refl : (n : Nat) -> Prf (eq n n).
+
+def two : Nat := succ (succ zero).
+def four : Nat := succ (succ two).
+
+#eval plus two two.
+#eval mult two (succ two).
+
+theorem two_plus_two : Prf (eq (plus two two) four) := refl four.
+
+theorem two_times_two : Prf (eq (mult two two) (plus two two)) := refl four.
+
+#axioms two_times_two.

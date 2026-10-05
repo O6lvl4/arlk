@@ -1,0 +1,78 @@
+// Core terms of the Arlk kernel: the λΠ-calculus with de Bruijn indices.
+//
+// Var(0) is the innermost binder. Sort(0) is `Type`, Sort(1) is `Kind`.
+// Binder names are kept only for printing; the kernel never looks at them.
+type Term = | Sort(Int) | Var(Int) | Const(String) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term)
+
+// Add `d` to every free index at or above `cutoff`.
+fn shift(t: Term, d: Int, cutoff: Int) -> Term = match t {
+  Var(i) => if i >= cutoff then Var(i + d) else Var(i),
+  App(f, a) => App(shift(f, d, cutoff), shift(a, d, cutoff)),
+  Lam(x, ty, b) => Lam(x, shift(ty, d, cutoff), shift(b, d, cutoff + 1)),
+  Pi(x, ty, b) => Pi(x, shift(ty, d, cutoff), shift(b, d, cutoff + 1)),
+  other => other,
+}
+
+// Replace the n outermost free indices with `vals` (vals[k] fills index k)
+// and close the gap they leave. `depth` counts binders crossed so far.
+fn instantiate(t: Term, vals: List[Term], depth: Int) -> Term = match t {
+  Var(i) => {
+    let n = list.len(vals)
+    if i < depth then Var(i)
+    else if i - depth < n then shift(list.get(vals, i - depth) ?? Var(i), depth, 0)
+    else Var(i - n)
+  },
+  App(f, a) => App(instantiate(f, vals, depth), instantiate(a, vals, depth)),
+  Lam(x, ty, b) => Lam(x, instantiate(ty, vals, depth), instantiate(b, vals, depth + 1)),
+  Pi(x, ty, b) => Pi(x, instantiate(ty, vals, depth), instantiate(b, vals, depth + 1)),
+  other => other,
+}
+
+// β-substitution: the body of a binder with Var(0) := v.
+fn subst(body: Term, v: Term) -> Term = instantiate(body, [v], 0)
+
+// Split `f a1 .. an` into its head and arguments, in application order.
+fn spine(t: Term) -> (Term, List[Term]) = spine_acc(t, [])
+
+local fn spine_acc(t: Term, args: List[Term]) -> (Term, List[Term]) = match t {
+  App(f, a) => spine_acc(f, [a] + args),
+  other => (other, args),
+}
+
+fn apply(head: Term, args: List[Term]) -> Term = list.fold(args, head, (acc, a) => App(acc, a))
+
+// Does free index `i` occur in t?
+fn occurs(t: Term, i: Int) -> Bool = match t {
+  Var(j) => j == i,
+  App(f, a) => occurs(f, i) or occurs(a, i),
+  Lam(_, ty, b) => occurs(ty, i) or occurs(b, i + 1),
+  Pi(_, ty, b) => occurs(ty, i) or occurs(b, i + 1),
+  _ => false,
+}
+
+// Every constant name mentioned in t (with repeats).
+fn consts(t: Term) -> List[String] = match t {
+  Const(c) => [c],
+  App(f, a) => consts(f) + consts(a),
+  Lam(_, ty, b) => consts(ty) + consts(b),
+  Pi(_, ty, b) => consts(ty) + consts(b),
+  _ => [],
+}
+
+test "subst replaces the bound variable and lowers the rest" {
+  // (λ. Var1 Var0)[0 := c]  →  Var0 c
+  assert_eq(subst(App(Var(1), Var(0)), Const("c")), App(Var(0), Const("c")))
+}
+
+test "subst shifts the value under binders" {
+  // Π_. Var1  with Var0 := Var5  →  Π_. Var6
+  assert_eq(subst(Pi("_", Sort(0), Var(1)), Var(5)), Pi("_", Sort(0), Var(6)))
+}
+
+test "spine and apply are inverse" {
+  let t = App(App(Const("f"), Var(0)), Const("a"))
+  let (h, args) = spine(t)
+  assert_eq(h, Const("f"))
+  assert_eq(list.len(args), 2)
+  assert_eq(apply(h, args), t)
+}
