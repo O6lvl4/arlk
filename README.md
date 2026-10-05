@@ -231,8 +231,10 @@ mutual recursor (`Tree.rec` takes a motive per type and a minor per constructor)
 definition that the kernel checks, and the recursors compute. A group of functions becomes one
 structurally recursive definition on the family, whose result type is picked by the tag, so
 recursion stays structural. A proposition group (`Even`/`Odd`) can only be matched to build proofs,
-as in Lean and Rocq. For now the types of a group share their parameters and indices, and there is
-one function per type. See [examples/mutual.arlk](examples/mutual.arlk).
+as in Lean and Rocq. Types of a group may have different indices (at most one each, for now): the
+family is then indexed by the tag and a value of that tag's index type. A function may cover only
+some types of a group, or match on just one of them. The types of a group share their parameters
+and live in one universe. See [examples/mutual.arlk](examples/mutual.arlk).
 
 Next on this road: unification of indices and course-of-values recursion in `match`, nested types,
 and reading Lean and Rocq libraries directly into these native features instead of through the

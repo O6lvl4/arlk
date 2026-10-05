@@ -76,3 +76,23 @@ theorem even_plus_two(n: Nat, h: Even(n)) -> Even(Nat.succ(Nat.succ(n))) =
     n, h)
 
 axioms even_ev
+
+// Types of a group may have different indices: A is indexed by a number,
+// B is not.
+type A: (n: Nat) -> Type =
+  | a0: A(Nat.zero)
+  | a1(n: Nat, b: B): A(Nat.succ(n))
+type B: Type =
+  | b0
+  | b1(n: Nat, a: A(n))
+
+def a_size(n: Nat, a: A(n)) -> Nat = match a {
+  a0 => Nat.zero,
+  a1(m, b) => Nat.succ(b_size(b)),
+}
+def b_size(b: B) -> Nat = match b {
+  b0 => Nat.zero,
+  b1(m, a) => Nat.succ(a_size(m, a)),
+}
+
+theorem b_size_deep: Eq(Nat, b_size(B.b1(Nat.succ(Nat.zero), A.a1(Nat.zero, B.b1(Nat.zero, A.a0)))), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl

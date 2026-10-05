@@ -563,7 +563,24 @@ local fn mutual_member(env: Env, n: String) -> Option[mutual.Member] = {
     Const(fam, _) => match map.get(env.inductives, fam) {
       some(info) => if not string.ends_with(fam, ".mutual") or info.indices < 1 then none
         else match list.get(args, info.params) {
-          some(Const(tag, _)) => some(mutual.Member { family: fam, tag: tag, nparams: info.params }),
+          some(Const(tag, _)) => {
+            let varied = map.contains(env.types, fam + ".index")
+            var n = 0
+            var body = map.get(env.bodies, q) ?? type0()
+            var going2 = true
+            while going2 {
+              match body {
+                Lam(_, _, inner) => {
+                  n = n + 1
+                  body = inner
+                },
+                _ => {
+                  going2 = false
+                },
+              }
+            }
+            some(mutual.Member { family: fam, tag: tag, nparams: info.params, varied: varied, nidx: n - info.params })
+          },
           _ => none,
         },
       none => none,
@@ -589,7 +606,7 @@ local fn add_mutual(mut env: Env, line: Int, inds: List[Inductive]) -> List[Stri
   let g = env.room + "." + mutual.group_name(inds)
   let own = list.len((list.first(inds) ?? mutual.empty_ind()).levels)
   let large = list.len(map.get(env.lparams, g + ".rec") ?? []) > own
-  for decl in mutual.recursors(inds, large) {
+  for decl in (if mutual.varied(inds) then mutual.recursors_varied(inds, large) else mutual.recursors(inds, large)) {
     process(env, Located { line: line, decl: decl })!
   }
   ok(["✓ types ${list.join(names |> list.map((n) => env.room + "." + n), ", ")}: mutual, encoded as the family ${g} (recursors ${list.join(names |> list.map((n) => n + ".rec"), ", ")}${if large then " into any universe" else " into Prop"})"])

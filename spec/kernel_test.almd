@@ -1237,3 +1237,56 @@ def forest_len(f: Forest) -> Nat = match f {
 """
   assert(rejects_with(src, "structural recursion"))
 }
+
+let VARIED = """
+room mv
+type Nat: Type = | zero | succ(pred: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+type A: (n: Nat) -> Type =
+  | a0: A(Nat.zero)
+  | a1(n: Nat, b: B): A(Nat.succ(n))
+type B: Type =
+  | b0
+  | b1(n: Nat, a: A(n))
+"""
+
+test "mutual types with different indices, and functions on them" {
+  let src = VARIED + """
+def a_size(n: Nat, a: A(n)) -> Nat = match a {
+  a0 => Nat.zero,
+  a1(m, b) => Nat.succ(b_size(b)),
+}
+def b_size(b: B) -> Nat = match b {
+  b0 => Nat.zero,
+  b1(m, a) => Nat.succ(a_size(m, a)),
+}
+def deep: B = B.b1(Nat.succ(Nat.zero), A.a1(Nat.zero, B.b1(Nat.zero, A.a0)))
+theorem three: Eq(Nat, b_size(deep), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+theorem by_rec: Eq(Nat, B.rec((n: Nat, a: A(n)) => Nat, (b: B) => Nat, Nat.zero, (n: Nat, b: B, ih: Nat) => Nat.succ(ih), Nat.zero, (n: Nat, a: A(n), ih: Nat) => Nat.succ(ih), deep), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+"""
+  assert_eq(run(src), none)
+}
+
+test "a wrong value on a varied group is rejected" {
+  let src = VARIED + """
+def b_size(b: B) -> Nat = match b {
+  b0 => Nat.zero,
+  b1(m, a) => Nat.succ(Nat.zero),
+}
+theorem wrong: Eq(Nat, b_size(B.b0), Nat.succ(Nat.zero)) = Eq.refl
+"""
+  assert(rejects_with(src, "mismatch"))
+}
+
+test "mutual types in different universes are refused with a reason" {
+  let src = """
+room mu
+type Nat: Type = | zero | succ(pred: Nat)
+type P: (n: Nat) -> Sort(0) =
+  | p(q: Q)
+type Q: Type =
+  | q0
+  | q1(n: Nat, x: P(n))
+"""
+  assert(rejects_with(src, "same universe"))
+}
