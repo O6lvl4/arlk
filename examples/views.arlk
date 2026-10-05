@@ -1,0 +1,36 @@
+// Views, found and composed: room a (a logic with implication as a symbol)
+// is read in b, b is read in c (Arlk's own propositions), and the route
+// a -> b -> c is found, composed into one checked view, and used.
+
+room a
+symbol Prop: Type
+symbol Prf(p: Prop) -> Sort(0)
+symbol imp(p: Prop, q: Prop) -> Prop
+rule Prf(imp(p, q)) = Prf(p) -> Prf(q)  where p: Prop, q: Prop
+theorem k(p: Prop, q: Prop) -> Prf(imp(p, imp(q, p))) = (x: Prf(p), y: Prf(q)) => x
+
+room b
+symbol Form: Type
+symbol Holds(f: Form) -> Sort(0)
+symbol arrow(f: Form, g: Form) -> Form
+rule Holds(arrow(f, g)) = Holds(f) -> Holds(g)  where f: Form, g: Form
+view ab from a {
+  Prop = Form,
+  Prf = Holds,
+  imp = arrow,
+}
+translate ab a.k
+
+room c
+view bc from b {
+  Form = Sort(0),
+  Holds = (p: Sort(0)) => p,
+  arrow = (p: Sort(0), q: Sort(0)) => p -> q,
+}
+routes from a
+view ac from a via ab, bc
+translate ac a.k
+translate bc b.ab.a.k
+theorem agree(p: Sort(0), q: Sort(0)) -> p -> q -> p = ac.a.k(p, q)
+theorem agree2(p: Sort(0), q: Sort(0)) -> p -> q -> p = bc.b.ab.a.k(p, q)
+views

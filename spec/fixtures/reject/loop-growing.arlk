@@ -1,0 +1,10 @@
+// expect: out of budget
+// A rule that grows the term at every step: each rewrite pays for the size
+// of what it builds, so the checker stops with an error instead of copying
+// ever larger terms.
+room loopy
+symbol A: Type
+symbol a: A
+symbol f(x: A) -> A
+rule f(x) = f(f(x))  where x: A
+eval f(a)

@@ -506,6 +506,7 @@ almide build src/main.almd -o arlk
 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
 ./arlk check absorbed/metamath/set_prop.arlk
 ./arlk absorb-mm set.mm --upto stoic4b -o out.arlk
+./arlk bundle CLAIM FILE... -o DIR && ./arlk replay DIR
 ./arlk check lib/hol.arlk
 tools/opentheory/fetch.sh base-1.221 otlib > order.txt && ./arlk absorb-hol $(cat order.txt) -o base.arlk
 tools/check-absorbed.sh
@@ -513,6 +514,32 @@ tools/check-absorbed.sh
 almide test            # kernel and absorb tests (spec/): good proofs pass, bad ones are rejected
 almide test src/       # unit tests of term, syntax, pretty, absorb
 ```
+
+## Proof bundles: a result that travels
+
+```
+arlk bundle transport.rocq_add_comm lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
+            absorbed/rocq/init_peano.arlk examples/transport.arlk -o add_comm
+arlk replay add_comm --expect d2c2fb9e...      # elsewhere, later: no Lean, Rocq, network or search
+```
+
+A bundle is data: the source files a result was checked from, and a manifest with their SHA-256,
+the claim and its statement, a hash of every declaration it depends on, its assumption inventory
+(what `axioms` prints) and a claim identity over all of these. The recorded "checked" is only
+metadata: `replay` verifies the hashes, checks every file again from scratch (inductive types are
+admitted again, views checked again), recomputes the statement, dependencies, assumptions and
+identity, and compares them with the manifest. Each kind of failure has its own exit status: 1 the
+proof does not check, 3 a file does not match its hash or is not a bundled source, 4 the claim,
+a dependency, the assumptions or the expected identity differ, 5 an unsupported format or checker
+semantics (`--revalidate` checks it again under this checker, and says so), 6 a file is missing, 7
+a budget ran out. Nothing in a bundle is run. [tools/bundle-check.sh](tools/bundle-check.sh),
+run by CI, bundles the Lean→Rocq arithmetic result and a composed-view result, replays them from
+a clean directory, and tampers with a proof, a claim, a view image, a dependency hash, the
+assumption inventory, the paths and the versions, each of which must fail as stated.
+
+A matching identity means: the same claim, resting on the same declarations and assumptions,
+checked by a checker of the same semantics. It does not mean that the sources say what their
+authors meant; that is the separate obligation described in [docs/TRUST.md](docs/TRUST.md).
 
 ## What the kernel trusts (read this before believing a result)
 

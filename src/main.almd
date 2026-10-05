@@ -8,12 +8,14 @@
 import env
 import fs
 import process
+import hash
 import self.syntax
 import self.kernel
 import self.checker
 import self.absorb
 import self.metamath
 import self.hol
+import self.bundle
 
 let USAGE = """
   usage:
@@ -24,6 +26,12 @@ let USAGE = """
     arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export (tools/) into Arlk source
     arlk absorb-mm DB.mm [--upto LABEL] [-o OUT]
                                          turn a Metamath database (up to LABEL) into Arlk source
+    arlk bundle CLAIM FILE.arlk... [-o DIR]
+                                         check, then write CLAIM with its sources, hashes and
+                                         assumptions to DIR, to be replayed elsewhere
+    arlk replay DIR [--expect ID] [--revalidate]
+                                         check a bundle again from its files alone
+                                         (exit 3 integrity, 4 identity, 5 version, 6 missing, 7 budget)
     arlk absorb-hol ARTICLE.art... [-o OUT]
                                          turn OpenTheory articles (HOL), in order, into Arlk source
   """
@@ -31,10 +39,12 @@ let USAGE = """
 effect fn main() -> Unit = {
   let args = process.args()
   let upto = flag(args, "--upto")
-  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o"))
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect"))
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
+    some("bundle") if list.len(files) >= 2 => run_bundle(list.first(files) ?? "", list.drop(files, 1), flag(args, "-o") ?? "bundle")!,
+    some("replay") if not list.is_empty(files) => run_replay(list.first(files) ?? "", flag(args, "--expect"), list.contains(args, "--revalidate"))!,
     some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     _ => {
@@ -211,5 +221,138 @@ effect fn run_absorb_hol(paths: List[String], out: String?) -> Unit = {
       println("wrote ${o}")
     },
     none => println(text),
+  }
+}
+
+// ── Proof bundles (#15) ─────────────────────────────────────────────
+
+// Check files into one environment, printing nothing: the environment, or
+// the exit status and the reason (7 when a budget ran out).
+effect fn check_quiet(paths: List[String]) -> Result[kernel.Env, (Int, String)] = {
+  var kenv = kernel.empty()
+  var failure: (Int, String)? = none
+  for path in paths {
+    if failure == none then match fs.read_text(path) {
+      err(e) => {
+        failure = some((6, "reading ${path}: ${e}"))
+      },
+      ok(src) => match syntax.parse(src) {
+        err(e) => {
+          failure = some((1, "${path}:${e}"))
+        },
+        ok(ds) => for d in ds {
+          if failure == none then match checker.process(kenv, d) {
+            ok(_) => (),
+            err(e) => {
+              let code = if string.contains(e, "out of budget") then 7 else 1
+              failure = some((code, "${path}:${int.to_string(d.line)}: ${e}"))
+            },
+          } else ()
+        },
+      },
+    } else ()
+  }
+  match failure {
+    some(f) => err(f),
+    none => ok(kenv),
+  }
+}
+
+effect fn fail_with(code: Int, why: String) -> Unit = {
+  println("✗ ${why}")
+  process.exit(code)
+}
+
+local fn claim_name(kenv: kernel.Env, claim: String) -> String? =
+  if map.contains(kenv.entries, claim) then some(claim) else match kernel.resolve_const(kenv, claim) {
+    ok(q) => some(q),
+    err(_) => none,
+  }
+
+effect fn run_bundle(claim: String, paths: List[String], out: String) -> Unit = {
+  match check_quiet(paths) {
+    err((code, why)) => fail_with(code, why)!,
+    ok(kenv) => match claim_name(kenv, claim) {
+      none => fail_with(1, "${claim}: no such declaration in ${list.join(paths, " ")}")!,
+      some(q) => {
+        let f = bundle.facts(kenv, q)
+        fs.mkdir_p(out + "/src") |> result.map_err((e) => "creating ${out}: ${e}")!
+        var sources: List[(String, String, String)] = []
+        var i = 0
+        for p in paths {
+          let text = fs.read_text(p) |> result.map_err((e) => "reading ${p}: ${e}")!
+          let base = list.last(string.split(p, "/")) ?? p
+          let name = "src/" + int.to_string(i) + "-" + (if string.ends_with(base, ".arlk") then base else base + ".arlk")
+          fs.write(out + "/" + name, text) |> result.map_err((e) => "writing ${name}: ${e}")!
+          list.push(sources, (hash.sha256_hex(text), name, p))
+          i = i + 1
+        }
+        let m = bundle.Manifest {
+          format: bundle.FORMAT, semantics: bundle.SEMANTICS, claim: q, statement: f.statement, claim_id: f.claim_id,
+          sources: sources, deps: f.deps, assumptions: f.assumptions,
+          recorded: "checked by arlk (${bundle.SEMANTICS}) on ${env.os()}; this line is not trusted on replay",
+        }
+        fs.write(out + "/manifest.txt", bundle.render(m)) |> result.map_err((e) => "writing the manifest: ${e}")!
+        println("✓ bundled ${q} into ${out}")
+        println("  claim-id: ${f.claim_id}")
+        println("  ${int.to_string(list.len(f.deps))} dependencies, ${int.to_string(list.len(sources))} source files")
+      },
+    },
+  }
+}
+
+effect fn run_replay(dir: String, expect: String?, revalidate: Bool) -> Unit = {
+  let text = match fs.read_text(dir + "/manifest.txt") {
+    ok(t) => t,
+    err(e) => {
+      fail_with(6, "no manifest in ${dir}: ${e}")!
+      ""
+    },
+  }
+  let m = match bundle.parse(text) {
+    ok(x) => x,
+    err(e) => {
+      fail_with(5, "${dir}: ${e}")!
+      bundle.parse("arlk-bundle: 1")!
+    },
+  }
+  if m.format != bundle.FORMAT then fail_with(5, "bundle format ${int.to_string(m.format)} is not supported (this checker reads ${int.to_string(bundle.FORMAT)})")! else ()
+  if m.semantics != bundle.SEMANTICS and not revalidate then fail_with(5, "recorded under ${m.semantics}, this checker is ${bundle.SEMANTICS}; pass --revalidate to check it again under this one")! else ()
+  var paths: List[String] = []
+  for (h, p, _) in m.sources {
+    if not bundle.safe_path(p) then fail_with(3, "${p}: a bundle holds only src/*.arlk files")! else ()
+    let full = dir + "/" + p
+    match fs.read_text(full) {
+      err(_) => fail_with(6, "${p} is missing from the bundle")!,
+      ok(t) => if hash.sha256_hex(t) != h then fail_with(3, "${p} does not match its recorded hash")! else (),
+    }
+    list.push(paths, full)
+  }
+  match check_quiet(paths) {
+    err((code, why)) => fail_with(code, why)!,
+    ok(kenv) => {
+      if not map.contains(kenv.entries, m.claim) then fail_with(4, "the bundle's sources do not declare ${m.claim}")! else ()
+      let f = bundle.facts(kenv, m.claim)
+      if f.statement != m.statement then fail_with(4, "${m.claim} now states ${f.statement}, the manifest says ${m.statement}")! else ()
+      for (n, h) in m.deps {
+        match list.find(f.deps, ((n2, _)) => n2 == n) {
+          none => fail_with(4, "the manifest lists a dependency ${n} the claim no longer has")!,
+          some((_, h2)) => if h2 != h then fail_with(4, "dependency ${n} differs from the manifest")! else (),
+        }
+      }
+      if list.len(f.deps) != list.len(m.deps) then fail_with(4, "the claim has dependencies the manifest does not list")! else ()
+      if f.assumptions != m.assumptions then fail_with(4, "the assumption inventory differs from the manifest")! else ()
+      if f.claim_id != m.claim_id then fail_with(4, "claim identity ${f.claim_id} differs from the manifest's ${m.claim_id}")! else ()
+      match expect {
+        some(id) => if id != f.claim_id then fail_with(4, "claim identity ${f.claim_id} is not the expected ${id}")! else (),
+        none => (),
+      }
+      println("✓ replayed ${m.claim}: ${f.statement}")
+      println("  claim-id: ${f.claim_id}")
+      if m.semantics != bundle.SEMANTICS then println("  revalidated: recorded under ${m.semantics}, checked again under ${bundle.SEMANTICS}") else ()
+      for a in f.assumptions {
+        println(a)
+      }
+    },
   }
 }

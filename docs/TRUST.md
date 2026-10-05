@@ -19,6 +19,8 @@ soundness proof, and a passing test suite is not one either.
 | Holes are never accepted: a term containing a metavariable or an unsolved level is rejected | `kernel.almd`: `infer` (`Meta`, `level_has_meta`) |
 | Name resolution and room visibility | `kernel.almd`: `resolve_const` |
 
+A rewrite also pays for the size of the term it builds (up to 10 000 per step), so a rule that keeps
+growing the term (`f(x) = f(f(x))`) exhausts the budget instead of copying ever larger terms.
 Exhaustion makes the checker incomplete (a proof needing more work is rejected), not unsound.
 Regression tests: [spec/kernel_test.almd](../spec/kernel_test.almd), issues #1, #3, #7.
 
@@ -107,3 +109,13 @@ Arlk works around known Almide code-generation bugs (listed in the README); a mi
 kernel could make two different terms compare equal (almide/almide#3405 was one such bug, worked
 around in `conv`). The test suite exercises the checker on good and bad proofs; it does not prove
 the compiler correct.
+
+## 7. Proof bundles
+
+`arlk bundle` and `arlk replay` ([src/bundle.almd](../src/bundle.almd), src/main.almd) add nothing
+to the trusted base: replay checks the bundled sources again with parts 1–3 and recomputes every
+fact it compares. What a bundle's hashes establish is *identity*: the same sources, the same
+claim, the same dependencies and assumptions, the same checker semantics. They do not establish
+*fidelity*: that an absorbed library encodes its source logic faithfully, or that a statement means
+what its author intended (part 5). A bundle whose hashes all match can still be about the wrong
+statement; reading the claim and its assumption inventory is still the reader's job.

@@ -144,6 +144,11 @@ else
   record "OpenTheory base-1.221 (fetched, pinned)" FAIL "see $LOGS/opentheory-fetch.log and opentheory-sha.log"
 fi
 
+# Proof bundles (#15): two results bundled and replayed from the bundle
+# alone; every kind of tampering caught with its own exit status.
+must_pass "views: route found and composed" 120 ./arlk check examples/views.arlk
+must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arlk "$LOGS/bundles"
+
 for f in spec/fixtures/reject/*.arlk; do
   want="$(sed -nE 's|^// expect: (.*)$|\1|p' "$f" | head -1)"
   must_reject "reject $(basename "$f")" 120 "$want" ./arlk check "$f"

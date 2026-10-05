@@ -1,0 +1,159 @@
+// Proof bundles: one checked result, with everything needed to check it
+// again elsewhere (#15).
+//
+//   arlk bundle CLAIM FILE... -o DIR    check, then write DIR/manifest.txt and DIR/src/*
+//   arlk replay DIR [--expect ID]       check DIR again from its files alone
+//
+// A bundle is data: the source files the claim was checked from (copied,
+// with their SHA-256), and a manifest naming the claim, its statement, the
+// hash of every declaration it depends on, its assumption inventory (what
+// `axioms` reports), and an identity hash over all of that. The recorded
+// "checked" is metadata: replay verifies the hashes, then checks every file
+// from scratch with this checker (inductive types are admitted again, views
+// checked again), recomputes the identity and the assumptions, and compares.
+// Nothing in a bundle is run, and nothing is fetched.
+//
+// What a matching identity means: the same claim, resting on the same
+// declarations and the same assumptions, checked by a checker of the same
+// semantics. It does not say that the sources mean what their authors
+// intended (see docs/TRUST.md, part 5).
+
+import hash
+import self.kernel.{Env, show, room_of}
+import self.checker
+
+let FORMAT = 1
+
+// Bumped whenever checking changes what is accepted; a bundle recorded
+// under other semantics is replayed only on request (`--revalidate`).
+let SEMANTICS = "arlk-kernel-1"
+
+type Manifest = {
+  format: Int,
+  semantics: String,
+  claim: String,
+  statement: String,
+  claim_id: String,
+  sources: List[(String, String, String)],
+  deps: List[(String, String)],
+  assumptions: List[String],
+  recorded: String,
+}
+
+// What identifies a claim in an environment: its statement, the hash of
+// each declaration it rests on, and its assumption inventory.
+type Facts = { statement: String, deps: List[(String, String)], assumptions: List[String], claim_id: String }
+
+fn facts(env: Env, q: String) -> Facts = {
+  let statement = show(env, [], map.get(env.types, q) ?? Sort(LZero))
+  let d = checker.deps(env, q)
+  var names: List[String] = [q] + d.lemmas + d.symbols
+  var deps: List[(String, String)] = []
+  for n in list.sort(list.unique(names)) {
+    list.push(deps, (n, decl_hash(env, n)))
+  }
+  for r in d.rules {
+    list.push(deps, ("rule " + r.id, hash.sha256_hex(r.text)))
+  }
+  let assumptions = checker.axioms_report(env, q)
+  let id = hash.sha256_hex(list.join([q, statement] + (deps |> list.map(((n, h)) => n + " " + h)) + assumptions, "\n"))
+  Facts { statement: statement, deps: deps, assumptions: assumptions, claim_id: id }
+}
+
+local fn decl_hash(env: Env, n: String) -> String = {
+  let kind = match map.get(env.entries, n) {
+    some(e) => e.kind,
+    none => "?",
+  }
+  let ty = match map.get(env.types, n) {
+    some(t) => show(env, [], t),
+    none => "",
+  }
+  let body = match map.get(env.bodies, n) {
+    some(b) => show(env, [], b),
+    none => "",
+  }
+  hash.sha256_hex(kind + "\n" + room_of(env, n) + "\n" + ty + "\n" + body)
+}
+
+fn render(m: Manifest) -> String = {
+  var out: List[String] = [
+    "arlk-bundle: " + int.to_string(m.format),
+    "semantics: " + m.semantics,
+    "claim: " + m.claim,
+    "statement: " + m.statement,
+    "claim-id: " + m.claim_id,
+    "recorded: " + m.recorded,
+  ]
+  for (h, path, orig) in m.sources {
+    list.push(out, "source: " + h + " " + path + " " + orig)
+  }
+  for (n, h) in m.deps {
+    list.push(out, "dep: " + h + " " + n)
+  }
+  for a in m.assumptions {
+    list.push(out, "assumes: " + a)
+  }
+  list.join(out, "\n") + "\n"
+}
+
+fn parse(text: String) -> Manifest! = {
+  var m = Manifest { format: 0, semantics: "", claim: "", statement: "", claim_id: "", sources: [], deps: [], assumptions: [], recorded: "" }
+  for line in string.lines(text) {
+    match string.index_of(line, ": ") {
+      none => (),
+      some(i) => {
+        let key = string.take(line, i)
+        let value = string.drop(line, i + 2)
+        if key == "arlk-bundle" then {
+          m.format = match int.parse(value) {
+            ok(n) => n,
+            err(_) => -1,
+          }
+        } else if key == "semantics" then {
+          m.semantics = value
+        } else if key == "claim" then {
+          m.claim = value
+        } else if key == "statement" then {
+          m.statement = value
+        } else if key == "claim-id" then {
+          m.claim_id = value
+        } else if key == "recorded" then {
+          m.recorded = value
+        } else if key == "source" then {
+          let parts = string.split(value, " ")
+          list.push(m.sources, (list.get(parts, 0) ?? "", list.get(parts, 1) ?? "", list.join(list.drop(parts, 2), " ")))
+        } else if key == "dep" then {
+          match string.index_of(value, " ") {
+            some(j) => list.push(m.deps, (string.drop(value, j + 1), string.take(value, j))),
+            none => (),
+          }
+        } else if key == "assumes" then {
+          list.push(m.assumptions, value)
+        } else ()
+      },
+    }
+  }
+  guard m.format > 0 else err("not an Arlk bundle manifest")
+  ok(m)
+}
+
+// A bundled path must stay inside the bundle and be Arlk source: no
+// absolute paths, no `..`, nothing but `src/*.arlk`.
+fn safe_path(p: String) -> Bool =
+  string.starts_with(p, "src/") and string.ends_with(p, ".arlk") and not string.contains(p, "..") and not string.contains(p, "\\")
+
+test "a manifest reads back as written" {
+  let m = Manifest { format: 1, semantics: SEMANTICS, claim: "c.k", statement: "(p: Sort(0)) -> p -> p", claim_id: "abc", sources: [("h1", "src/0-a.arlk", "lib/a.arlk")], deps: [("c.k", "h2")], assumptions: ["axioms c.k", "  rooms:   c"], recorded: "almide x" }
+  match parse(render(m)) {
+    ok(back) => assert_eq(render(back), render(m)),
+    err(_) => assert(false),
+  }
+}
+
+test "bundled paths stay inside the bundle" {
+  assert(safe_path("src/0-core.arlk"))
+  assert(not safe_path("../etc/passwd.arlk"))
+  assert(not safe_path("/tmp/x.arlk"))
+  assert(not safe_path("src/run.sh"))
+}

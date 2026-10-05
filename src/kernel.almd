@@ -149,6 +149,52 @@ local fn spend(mut b: Budget) -> Bool =
     true
   }
 
+// Pay for building a term: a rewrite costs the size of what it builds (up
+// to GROWTH_CAP), so a rule that keeps growing the term, `f(x) = f(f(x))`,
+// runs out of budget quickly instead of copying ever larger terms.
+let GROWTH_CAP = 10_000
+
+local fn spend_size(mut b: Budget, t: Term) -> Bool = {
+  let n = size_upto(t, GROWTH_CAP)
+  if b.exhausted or b.left < n then {
+    b.exhausted = true
+    false
+  } else {
+    b.left = b.left - n
+    true
+  }
+}
+
+// The number of nodes of t, counting no further than cap.
+local fn size_upto(t: Term, cap: Int) -> Int = {
+  var n = 0
+  var stack: List[Term] = [t]
+  while n < cap and not list.is_empty(stack) {
+    match list.pop(stack) {
+      some(x) => {
+        n = n + 1
+        match x {
+          App(f, a) => {
+            list.push(stack, f)
+            list.push(stack, a)
+          },
+          Lam(_, a, c) => {
+            list.push(stack, a)
+            list.push(stack, c)
+          },
+          Pi(_, a, c) => {
+            list.push(stack, a)
+            list.push(stack, c)
+          },
+          _ => (),
+        }
+      },
+      none => (),
+    }
+  }
+  n
+}
+
 // Enter one level of nesting; false (and exhausted) past the bound.
 local fn enter(mut b: Budget) -> Bool =
   if not spend(b) then false
@@ -274,8 +320,10 @@ local fn try_rule(env: Env, ctx: Ctx, r: Rw, ls: List[Level], args: List[Term], 
       // The rule's universe parameters take the levels of the head it matched.
       let st2 = if list.is_empty(r.lparams) then st
         else { ...st, pending: st.pending |> list.map(((br, t)) => (inst_levels(br, r.lparams, ls), t)) }
-      if brackets_hold(env, ctx, st2, vals, b) then some(apply(instantiate(inst_levels(r.rhs, r.lparams, ls), vals, 0), list.drop(args, r.arity)))
-      else none
+      if brackets_hold(env, ctx, st2, vals, b) then {
+        let out = apply(instantiate(inst_levels(r.rhs, r.lparams, ls), vals, 0), list.drop(args, r.arity))
+        if spend_size(b, out) then some(out) else none
+      } else none
     },
     none => none,
   }

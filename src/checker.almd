@@ -1199,6 +1199,9 @@ local fn rule_mentions(r: Rule) -> List[String] =
     + (r.lhs_args |> list.flat_map((p) => pat_consts(p)))
     + consts(r.rhs)
 
+// What `axioms q` prints, for proof bundles.
+fn axioms_report(env: Env, q: String) -> List[String] = report_axioms(env, q)
+
 local fn report_axioms(env: Env, q: String) -> List[String] = {
   let d = deps(env, q)
   let rooms = list.unique((d.symbols |> list.map((s) => room_of(env, s))) + (d.rules |> list.map((r) => r.room)))
