@@ -1,0 +1,11 @@
+arlk-package: 1
+name: views-abc
+version: 1.0.0
+semantics: arlk-kernel-1
+root: ..
+source: 7b6c1944cd68f6bf0bd3f960daed1fef3e51aa51b8029debc29002962007d074 examples/views.arlk
+export-room: c
+export-claim: c.agree 59beedf7ecba408cb2a646b26ed45bad502dbec2a050ee1d7d084c9b23d79435
+export-view: c.ac 2efe6eee0c53af70bb05209fb230e264be2ffc3a139e4a1f384c94f5e065fcf8
+export-view: c.bc fd626e2d361d5b2f99aae169cf3bc92aa4e2253498d82e387b16b0a2d85d27c0
+assumes: c.agree (none) 384b4d02a3b28d4135e0e9c120a795dd32e53da94d9d593ed6cd3facf58b566f

@@ -19,7 +19,9 @@
 // intended (see docs/TRUST.md, part 5).
 
 import hash
-import self.kernel.{Env, show, room_of}
+import self.kernel.{Env, room_of}
+import self.pretty
+import self.term.{Term}
 import self.checker
 
 let FORMAT = 1
@@ -38,14 +40,26 @@ type Manifest = {
   deps: List[(String, String)],
   assumptions: List[String],
   recorded: String,
+  // Provenance of a project's result (#20): the packages it was checked
+  // with (name, version, manifest SHA-256; the manifests are in pkg/) and
+  // the project manifest's SHA-256. Empty for a plain bundle.
+  packages: List[(String, String, String)],
+  project: String,
+  provenance: String,
 }
 
 // What identifies a claim in an environment: its statement, the hash of
 // each declaration it rests on, and its assumption inventory.
 type Facts = { statement: String, deps: List[(String, String)], assumptions: List[String], claim_id: String }
 
+// Terms as text for identities: every name fully qualified, so the text
+// does not depend on which room the environment happens to be in (a
+// package's claim has one identity whether it is checked alone or under
+// a project, #20).
+local fn exact(t: Term) -> String = pretty.show("", [], t)
+
 fn facts(env: Env, q: String) -> Facts = {
-  let statement = show(env, [], map.get(env.types, q) ?? Sort(LZero))
+  let statement = exact(map.get(env.types, q) ?? Sort(LZero))
   let d = checker.deps(env, q)
   var names: List[String] = [q] + d.lemmas + d.symbols
   var deps: List[(String, String)] = []
@@ -68,15 +82,20 @@ local fn decl_hash(env: Env, n: String) -> String = {
     none => "?",
   }
   let ty = match map.get(env.types, n) {
-    some(t) => show(env, [], t),
+    some(t) => exact(t),
     none => "",
   }
   let body = match map.get(env.bodies, n) {
-    some(b) => show(env, [], b),
+    some(b) => exact(b),
     none => "",
   }
   hash.sha256_hex(kind + "\n" + room_of(env, n) + "\n" + ty + "\n" + body)
 }
+
+// What identifies a project's result: the claim's identity, the packages
+// (by manifest hash) and the project manifest it was checked with.
+fn provenance_id(m: Manifest) -> String =
+  hash.sha256_hex(list.join([m.claim_id] + (m.packages |> list.map(((n, v, h)) => n + " " + v + " " + h)) + [m.project], "\n"))
 
 fn render(m: Manifest) -> String = {
   var out: List[String] = [
@@ -96,11 +115,18 @@ fn render(m: Manifest) -> String = {
   for a in m.assumptions {
     list.push(out, "assumes: " + a)
   }
+  for (n, v, h) in m.packages {
+    list.push(out, "package: ${n} ${v} ${h}")
+  }
+  if m.project != "" then {
+    list.push(out, "project: " + m.project)
+    list.push(out, "provenance-id: " + provenance_id(m))
+  } else ()
   list.join(out, "\n") + "\n"
 }
 
 fn parse(text: String) -> Manifest! = {
-  var m = Manifest { format: 0, semantics: "", claim: "", statement: "", claim_id: "", sources: [], deps: [], assumptions: [], recorded: "" }
+  var m = Manifest { format: 0, semantics: "", claim: "", statement: "", claim_id: "", sources: [], deps: [], assumptions: [], recorded: "", packages: [], project: "", provenance: "" }
   for line in string.lines(text) {
     match string.index_of(line, ": ") {
       none => (),
@@ -132,6 +158,13 @@ fn parse(text: String) -> Manifest! = {
           }
         } else if key == "assumes" then {
           list.push(m.assumptions, value)
+        } else if key == "package" then {
+          let ws = string.split(value, " ")
+          list.push(m.packages, (list.get(ws, 0) ?? "", list.get(ws, 1) ?? "", list.get(ws, 2) ?? ""))
+        } else if key == "project" then {
+          m.project = value
+        } else if key == "provenance-id" then {
+          m.provenance = value
         } else ()
       },
     }
@@ -146,7 +179,7 @@ fn safe_path(p: String) -> Bool =
   string.starts_with(p, "src/") and string.ends_with(p, ".arlk") and not string.contains(p, "..") and not string.contains(p, "\\")
 
 test "a manifest reads back as written" {
-  let m = Manifest { format: 1, semantics: SEMANTICS, claim: "c.k", statement: "(p: Sort(0)) -> p -> p", claim_id: "abc", sources: [("h1", "src/0-a.arlk", "lib/a.arlk")], deps: [("c.k", "h2")], assumptions: ["axioms c.k", "  rooms:   c"], recorded: "almide x" }
+  let m = Manifest { format: 1, semantics: SEMANTICS, claim: "c.k", statement: "(p: Sort(0)) -> p -> p", claim_id: "abc", sources: [("h1", "src/0-a.arlk", "lib/a.arlk")], deps: [("c.k", "h2")], assumptions: ["axioms c.k", "  rooms:   c"], recorded: "almide x", packages: [("std", "1.0.0", "h3")], project: "client h4", provenance: "" }
   match parse(render(m)) {
     ok(back) => assert_eq(render(back), render(m)),
     err(_) => assert(false),

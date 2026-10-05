@@ -528,6 +528,30 @@ loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](do
 arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 ```
 
+## Packages: checked libraries and views, reused
+
+A project names the packages it requires in a data-only manifest, each pinned by hash. A package
+pins its sources and the identities of what it exports: claims, checked views, assumption
+footprints. `arlk project DIR` checks everything again from scratch, in dependency order,
+recomputes every pinned identity, shows the routes and assumptions behind each claim, and refuses
+a claim that rests on assumptions the project does not allow. The result can travel as a bundle
+bound to its packages. See [docs/PACKAGES.md](docs/PACKAGES.md).
+
+```
+$ arlk project examples/projects/client-a
+✓ package std 1.0.0 (7b4d…): 5 sources, exports verified
+✓ package views-abc 1.0.0 (ed3e…): 1 sources, exports verified
+✓ project client-a: 1 source files checked
+view c.ac: a in c
+  …
+  via: b.ab, c.bc
+  rests on: (nothing)
+axioms client_a.keep_comm
+  symbols: (none)
+  …
+  allowed: rests only on inductive types and definitions
+```
+
 ## Almide programs, verified
 
 Arlk is written in Almide, and it can reason about Almide programs. `arlk absorb-almide` reads a

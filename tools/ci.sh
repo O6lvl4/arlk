@@ -164,6 +164,10 @@ must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arl
 # The native standard library and its clients, with negative controls (#18).
 must_pass "native standard library and clients" 600 tools/std-check.sh ./arlk "$LOGS/std"
 
+# Packages (#20): two projects on shared packages, every failure status,
+# the assumption policy, bundles bound to packages, tampering.
+must_pass "packages and projects" 900 tools/package-check.sh ./arlk "$LOGS/packages"
+
 # Benchmark gates (#17): pinned inputs, fixtures check, semantic mutations
 # rejected; one quick measurement pass whose outcomes (not timings) must
 # match (budget exhaustion where expected, never a crash).

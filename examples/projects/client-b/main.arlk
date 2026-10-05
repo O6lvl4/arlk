@@ -1,0 +1,11 @@
+// Another project on the same two packages: two appended elements add two
+// to a list's length (std's list laws), passed through the claim c.agree
+// that views-abc proved by reading a's k in c.
+
+room client_b uses c, eq, nat, almide, list
+
+theorem snoc_twice[A: Type](xs: List(A), x: A, y: A) -> Eq(Nat, length(append(append(xs, List.cons(x, List.nil)), List.cons(y, List.nil))), Nat.succ(Nat.succ(length(xs)))) =
+  trans(length_snoc(append(xs, List.cons(x, List.nil)), y), cong_succ(length_snoc(xs, x)))
+
+theorem agree_snoc[A: Type](xs: List(A), x: A, y: A, t: Eq(Nat, Nat.zero, Nat.zero)) -> Eq(Nat, length(append(append(xs, List.cons(x, List.nil)), List.cons(y, List.nil))), Nat.succ(Nat.succ(length(xs)))) =
+  c.agree(Eq(Nat, length(append(append(xs, List.cons(x, List.nil)), List.cons(y, List.nil))), Nat.succ(Nat.succ(length(xs)))), Eq(Nat, Nat.zero, Nat.zero), snoc_twice(xs, x, y), t)

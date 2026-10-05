@@ -1,0 +1,8 @@
+// A new theorem from two packages: a law of std's naturals, kept through
+// the combinator k, which was proved in room a and reached room c through
+// the composed view c.ac (a -> b -> c) of the views-abc package.
+
+room client_a uses c, eq, nat
+
+theorem keep_comm(m: Nat, n: Nat, h: Eq(Nat, Nat.zero, Nat.zero)) -> Eq(Nat, add(m, n), add(n, m)) =
+  c.ac.a.k(Eq(Nat, add(m, n), add(n, m)), Eq(Nat, Nat.zero, Nat.zero), add_comm(m, n), h)

@@ -17,6 +17,7 @@ import self.metamath
 import self.hol
 import self.bundle
 import self.almide_src
+import self.package
 
 let USAGE = """
   usage:
@@ -39,12 +40,18 @@ let USAGE = """
                                          checks that MODEL is exactly that translation
     arlk absorb-hol ARTICLE.art... [-o OUT]
                                          turn OpenTheory articles (HOL), in order, into Arlk source
+    arlk package pin PKG.arlkpkg         fill in a package's source hashes and export identities
+    arlk package verify PKG.arlkpkg      resolve, check and compare a package with its pins
+    arlk project DIR [--bundle OUT]      check a project (DIR/arlk-project.txt) against the
+                                         packages it requires; --bundle writes a replayable bundle
+                                         (exit 3 integrity, 4 identity, 5 version, 6 missing,
+                                          7 budget, 8 cycle, 9 conflict, 10 not allowed)
   """
 
 effect fn main() -> Unit = {
   let args = process.args()
   let upto = flag(args, "--upto")
-  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect") and some(a) != flag(args, "--verify"))
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect") and some(a) != flag(args, "--bundle") and some(a) != flag(args, "--verify"))
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
@@ -53,6 +60,8 @@ effect fn main() -> Unit = {
     some("absorb-almide") if not list.is_empty(files) => run_absorb_almide(list.first(files) ?? "", flag(args, "-o"), flag(args, "--verify"))!,
     some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
+    some("package") if list.len(files) == 2 => run_package(list.first(files) ?? "", list.get(files, 1) ?? "")!,
+    some("project") if list.len(files) == 1 => run_project(list.first(files) ?? "", flag(args, "--bundle"))!,
     _ => {
       println(USAGE)
       process.exit(2)
@@ -290,7 +299,9 @@ local fn claim_name(kenv: kernel.Env, claim: String) -> String? =
     err(_) => none,
   }
 
-effect fn run_bundle(claim: String, paths: List[String], out: String) -> Unit = {
+effect fn run_bundle(claim: String, paths: List[String], out: String) -> Unit = bundle_with(claim, paths, out, [], "")!
+
+effect fn bundle_with(claim: String, paths: List[String], out: String, packages: List[(String, String, String)], project: String) -> Unit = {
   match check_quiet(paths) {
     err((code, why)) => fail_with(code, why)!,
     ok(kenv) => match claim_name(kenv, claim) {
@@ -312,6 +323,7 @@ effect fn run_bundle(claim: String, paths: List[String], out: String) -> Unit = 
           format: bundle.FORMAT, semantics: bundle.SEMANTICS, claim: q, statement: f.statement, claim_id: f.claim_id,
           sources: sources, deps: f.deps, assumptions: f.assumptions,
           recorded: "checked by arlk (${bundle.SEMANTICS}) on ${env.os()}; this line is not trusted on replay",
+          packages: packages, project: project, provenance: "",
         }
         fs.write(out + "/manifest.txt", bundle.render(m)) |> result.map_err((e) => "writing the manifest: ${e}")!
         println("✓ bundled ${q} into ${out}")
@@ -364,12 +376,42 @@ effect fn run_replay(dir: String, expect: String?, revalidate: Bool) -> Unit = {
       if list.len(f.deps) != list.len(m.deps) then fail_with(4, "the claim has dependencies the manifest does not list")! else ()
       if f.assumptions != m.assumptions then fail_with(4, "the assumption inventory differs from the manifest")! else ()
       if f.claim_id != m.claim_id then fail_with(4, "claim identity ${f.claim_id} differs from the manifest's ${m.claim_id}")! else ()
+      let prov = if m.project == "" then "" else bundle.provenance_id(m)
+      if m.provenance != prov then fail_with(4, "the provenance identity ${m.provenance} differs from the recomputed ${prov}")! else ()
       match expect {
-        some(id) => if id != f.claim_id then fail_with(4, "claim identity ${f.claim_id} is not the expected ${id}")! else (),
+        some(id) => if id != f.claim_id and (prov == "" or id != prov) then fail_with(4, "claim identity ${f.claim_id}${if prov == "" then "" else " (provenance ${prov})"} is not the expected ${id}")! else (),
         none => (),
+      }
+      // Provenance (#20): each package manifest, by hash; its sources among
+      // the bundle's; its exports verified again in the replayed environment.
+      for (n, v, h) in m.packages {
+        let file = dir + "/pkg/" + n + ".arlkpkg"
+        let t = match fs.read_text(file) {
+          ok(x) => x,
+          err(_) => {
+            fail_with(6, "the bundle lists the package ${n} but has no pkg/${n}.arlkpkg")!
+            ""
+          },
+        }
+        if hash.sha256_hex(t) != h then fail_with(3, "pkg/${n}.arlkpkg does not match its recorded hash")! else ()
+        match package.parse_package(t, file) {
+          err(e) => fail_with(5, "pkg/${n}.arlkpkg: ${e}")!,
+          ok(p) => {
+            if p.name != n or p.version != v then fail_with(4, "pkg/${n}.arlkpkg is ${p.name} ${p.version}, the manifest says ${n} ${v}")! else ()
+            for (sh, rel) in p.sources {
+              if not list.any(m.sources, ((bh, _, _)) => bh == sh) then fail_with(3, "${n}'s source ${rel} is not among the bundle's sources")! else ()
+            }
+            match package.verify_exports(kenv, p) {
+              err(e) => fail_with(e.code, e.why)!,
+              ok(_) => (),
+            }
+            println("  package: ${n} ${v} ${h} (exports verified)")
+          },
+        }
       }
       println("✓ replayed ${m.claim}: ${f.statement}")
       println("  claim-id: ${f.claim_id}")
+      if prov != "" then println("  provenance-id: ${prov} (project ${m.project})") else ()
       if m.semantics != bundle.SEMANTICS then println("  revalidated: recorded under ${m.semantics}, checked again under ${bundle.SEMANTICS}") else ()
       for a in f.assumptions {
         println(a)
@@ -404,6 +446,138 @@ effect fn run_absorb_almide(path: String, out: String?, verify: String?) -> Unit
         },
         none => println(text),
       },
+    },
+  }
+}
+
+// ── Packages (#20) ──────────────────────────────────────────────────
+
+effect fn fail_package(f: package.Failure) -> Unit = fail_with(f.code, f.why)!
+
+effect fn run_package(action: String, file: String) -> Unit = {
+  if action == "pin" then match package.pin(file) {
+    err(f) => fail_package(f)!,
+    ok(text) => {
+      fs.write(file, text) |> result.map_err((e) => "writing ${file}: ${e}")!
+      println("✓ pinned ${file}")
+      println("  manifest SHA-256 (what a requirer pins): ${hash.sha256_hex(text)}")
+    },
+  } else if action == "verify" then {
+    let text = fs.read_text(file) |> result.map_err((e) => "reading ${file}: ${e}")!
+    let (name, version) = match package.parse_package(text, file) {
+      ok(p) => (p.name, p.version),
+      err(e) => {
+        fail_with(5, "${file}: ${e}")!
+        ("", "")
+      },
+    }
+    let req = package.Require { name: name, version: version, sha: hash.sha256_hex(text), path: file }
+    var kenv = kernel.empty()
+    match package.load(kenv, [req], ".", "verify") {
+      err(f) => fail_package(f)!,
+      ok((pkgs, files)) => {
+        println("✓ ${name}: ${int.to_string(list.len(pkgs))} package(s), ${int.to_string(list.len(files))} source files checked, every pin matches")
+        println("  manifest SHA-256: ${hash.sha256_hex(text)}")
+      },
+    }
+  } else fail_with(2, "arlk package pin|verify PKG.arlkpkg")!
+}
+
+effect fn run_project(dir: String, bundle_out: String?) -> Unit = {
+  let file = package.join(dir, "arlk-project.txt")
+  let text = match fs.read_text(file) {
+    ok(t) => t,
+    err(e) => {
+      fail_with(6, "no project manifest at ${file}: ${e}")!
+      ""
+    },
+  }
+  let proj = match package.parse_project(text, dir) {
+    ok(p) => p,
+    err(e) => {
+      fail_with(5, "${file}: ${e}")!
+      package.Project { name: "", requires: [], allow: [], sources: [], claims: [], dir: dir }
+    },
+  }
+  var kenv = kernel.empty()
+  let (pkgs, pkg_files) = match package.load(kenv, proj.requires, dir, proj.name) {
+    ok(x) => x,
+    err(f) => {
+      fail_package(f)!
+      ([], [])
+    },
+  }
+  for p in pkgs {
+    println("✓ package ${p.name} ${p.version} (${p.sha}): ${int.to_string(list.len(p.sources))} sources, exports verified")
+  }
+  // The project's own files: inside its directory, using only rooms that
+  // the packages it requires directly export (or its own).
+  var own: List[String] = []
+  for s in proj.sources {
+    if not package.inside(s) then fail_with(3, "${s} is not inside the project directory ${dir}")! else ()
+    list.push(own, package.join(dir, s))
+  }
+  var own_rooms: List[String] = []
+  for f in own {
+    match package.rooms_of(f) {
+      ok(rs) => {
+        own_rooms = own_rooms + rs
+      },
+      err(e) => fail_package(e)!,
+    }
+  }
+  let direct = pkgs |> list.filter((p) => list.any(proj.requires, (r) => r.name == p.name))
+  let exported = direct |> list.flat_map((p) => p.rooms)
+  for f in own {
+    match package.uses_of(f) {
+      err(e) => fail_package(e)!,
+      ok(rooms) => for (room, uses) in rooms {
+        for u in uses {
+          if list.contains(exported, u) or list.contains(own_rooms, u) then ()
+          else fail_with(9, "${f}: the room ${room} uses ${u}, which no package the project requires exports")!
+        }
+      },
+    }
+  }
+  match package.check_into(kenv, own) {
+    err(f) => fail_package(f)!,
+    ok(_) => (),
+  }
+  println("✓ project ${proj.name}: ${int.to_string(list.len(own))} source files checked")
+  for v in direct |> list.flat_map((p) => p.views |> list.map(((n, _)) => n)) {
+    match checker.view_text(kenv, v) {
+      some(t) => println(t),
+      none => (),
+    }
+  }
+  for c in proj.claims {
+    match claim_name(kenv, c) {
+      none => fail_with(1, "the project claims ${c}, which its sources do not declare")!,
+      some(q) => {
+        for line in checker.axioms_report(kenv, q) {
+          println(line)
+        }
+        let rooms = checker.assumption_rooms(kenv, q)
+        let refused = rooms |> list.filter((r) => not list.contains(proj.allow, r))
+        if not list.is_empty(refused) then fail_with(10, "${q} rests on symbols or rules of ${list.join(refused, ", ")}, which the project does not allow (allow-room: ${if list.is_empty(proj.allow) then "(none)" else list.join(proj.allow, ", ")})")! else ()
+        println("  allowed: rests only on ${if list.is_empty(rooms) then "inductive types and definitions" else list.join(rooms, ", ")}")
+      },
+    }
+  }
+  match bundle_out {
+    none => (),
+    some(out) => {
+      let claim = list.first(proj.claims) ?? ""
+      if claim == "" then fail_with(1, "--bundle needs a claim: in the project manifest")! else ()
+      let provenance = pkgs |> list.map((p) => (p.name, p.version, p.sha))
+      bundle_with(claim, pkg_files + own, out, provenance, "${proj.name} ${hash.sha256_hex(text)}")!
+      // The package manifests travel with the bundle, for replay to verify.
+      fs.mkdir_p(out + "/pkg") |> result.map_err((e) => "creating ${out}/pkg: ${e}")!
+      for p in pkgs {
+        let t = fs.read_text(p.file) |> result.map_err((e) => "reading ${p.file}: ${e}")!
+        fs.write(out + "/pkg/" + p.name + ".arlkpkg", t) |> result.map_err((e) => "writing: ${e}")!
+      }
+      println("  provenance: ${list.join(provenance |> list.map(((n, v, h)) => n + " " + v + " " + h), "; ")}")
     },
   }
 }

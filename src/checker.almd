@@ -9,6 +9,7 @@ import self.inductive
 import self.elab
 import self.patterns
 import self.search
+import self.pretty
 
 // Named surface terms → de Bruijn terms. `scope` is innermost first; `lv`
 // holds the universe parameters in scope. A bracket is transparent here;
@@ -1248,4 +1249,34 @@ fn check_all(env: Env, ds: List[Located]) -> Outcome = {
     } else ()
   }
   Outcome { env: cur, output: out, error: error }
+}
+
+// ── What packages export (#20) ──────────────────────────────────────
+
+// The rooms of the symbols and rules declared by hand that q rests on: what
+// an allowed-assumption policy is stated in. Generated ones (from `type`
+// declarations, admitted by the inductive checks) are not assumptions.
+fn assumption_rooms(env: Env, q: String) -> List[String] = {
+  let d = deps(env, q)
+  let syms = d.symbols |> list.filter((c) => not generated(env, c)) |> list.map((s) => room_of(env, s))
+  let rls = d.rules |> list.filter((r) => not generated(env, r.head)) |> list.map((r) => r.room)
+  list.sort(list.unique(syms + rls))
+}
+
+// A checked view as text: its name, source and target, the image of every
+// mapped symbol, what it carried as assumptions, what it was composed of,
+// and what it rests on. Its hash is the view's identity in a package.
+fn view_text(env: Env, q: String) -> String? = match map.get(env.views, q) {
+  none => none,
+  some(v) => {
+    var out: List[String] = ["view ${v.name}: ${v.source} in ${v.target}"]
+    for k in list.sort(map.keys(v.images)) {
+      let img = map.get(v.images, k) ?? Sort(LZero)
+      list.push(out, "  ${k} = ${pretty.show("", [], img)}")
+    }
+    list.push(out, "  carried: ${list.join(v.carried, ", ")}")
+    list.push(out, "  via: ${list.join(v.via, ", ")}")
+    list.push(out, "  rests on: ${rests_on(env, [v])}")
+    some(list.join(out, "\n"))
+  },
 }

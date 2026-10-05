@@ -1,0 +1,21 @@
+arlk-package: 1
+name: std
+version: 1.0.0
+semantics: arlk-kernel-1
+root: ../lib
+source: 2bb1995192548177d547071fa676f25d8f087bb5525e9a67a130e196fbef05ad std/eq.arlk
+source: ed144b666d30fafc36d44e8cbc9608e59342bae79b7c709794241ff67fad7145 std/logic.arlk
+source: 90384779f974877600f1a82bdbe3d98dff04bdce66ae24f8a7af03e5f46b003b std/nat.arlk
+source: ceb304f4fefae3d22c42698e788d850769991a6fa09fc958a5cffde4cbbfaae4 almide.arlk
+source: 8e7d59c65055d79a0bb2642fd9f0532168bb4b3c312ce5f72c4c79525643ff1d std/list.arlk
+export-room: eq
+export-room: logic
+export-room: nat
+export-room: almide
+export-room: list
+export-claim: eq.trans 7dfe11ef7c7030266fc007f9daa31d477b5a13f8ae01806acca04a061213c81d
+export-claim: nat.add_comm a84e3088b1c19366c75cf3f73cf15cc175beb40539d82bf67f10e5329fa79b14
+export-claim: list.length_snoc b833becc209caaec386dcc1d31ef9b4f372090b90b960f3a83fe5ab0d0983c49
+assumes: eq.trans (none) 2c1bffc1d56f4ec2c46006b40d544707c9c7c0d0314c622cf4e501fa668e32cd
+assumes: nat.add_comm (none) ff20a6e2c6c7cbfb3d7f93772724cfa96b90a256a2d3e99f56fd9d2af2188efe
+assumes: list.length_snoc (none) 2e46cdf2280525887d4a61e52b494783d10970b4a65c5a2c89776d9abb0b698f

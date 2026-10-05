@@ -121,3 +121,53 @@ changed source, not a measure of human effort.
 | bend | PROGRAM | 123 | 134 | 53 | 64 |
 | bend | PROOF | 170 | 323 | 68 | 221 |
 | bend | all | 325 | 489 | 121 | 285 |
+
+## Measured
+
+One run of `bench/run.py --hol-bool …` (5 batches × 3 runs, seed 20261005) at 70de056, on an Apple
+M4 Pro laptop (macOS 26.3). The page cache was warm. One unrelated single-threaded job was running
+on another core, so the timings are advisory. The build (`almide build`, incremental) took 0.42 s
+and is not counted. RSS is the child's peak.
+
+| lane | job | outcome | median s | min s | max s | median RSS KiB | runs |
+|---|---|---|---:|---:|---:|---:|---:|
+| arlk-check | empty | pass | 0.0023 | 0.0020 | 0.0068 | 2192 | 15 |
+| arlk-check | reverse-baseline | pass | 0.0124 | 0.0108 | 0.0200 | 4016 | 15 |
+| arlk-check | reverse-accumulator | pass | 0.0165 | 0.0137 | 0.2373 | 4320 | 15 |
+| arlk-check | sort | pass | 0.0602 | 0.0556 | 0.0860 | 6160 | 15 |
+| arlk-check | std-library | pass | 0.0591 | 0.0524 | 0.0857 | 5456 | 15 |
+| arlk-check | std-reverse | pass | 0.0792 | 0.0686 | 0.1092 | 5584 | 15 |
+| arlk-check | std-sort | pass | 0.1235 | 0.1126 | 0.1797 | 6720 | 15 |
+| arlk-scale | decls-100 | pass | 0.0323 | 0.0292 | 0.0395 | 4944 | 15 |
+| arlk-scale | decls-200 | pass | 0.0573 | 0.0508 | 0.0708 | 6064 | 15 |
+| arlk-scale | decls-400 | pass | 0.1018 | 0.0954 | 0.1131 | 8160 | 15 |
+| arlk-scale | decls-800 | pass | 0.1966 | 0.1847 | 0.2645 | 12448 | 15 |
+| arlk-scale | term-50 | pass | 0.0254 | 0.0224 | 0.0352 | 11536 | 15 |
+| arlk-scale | term-100 | pass | 0.0593 | 0.0542 | 0.0843 | 32432 | 15 |
+| arlk-scale | term-200 | pass | 0.1866 | 0.1790 | 0.2530 | 114320 | 15 |
+| arlk-scale | term-400 | pass | 0.6462 | 0.6154 | 0.7968 | 439392 | 15 |
+| arlk-scale | shared-100 | pass | 0.0269 | 0.0247 | 0.0308 | 5040 | 15 |
+| arlk-scale | shared-200 | pass | 0.0422 | 0.0389 | 0.0762 | 6208 | 15 |
+| arlk-scale | shared-400 | pass | 0.0758 | 0.0706 | 0.0900 | 8352 | 15 |
+| arlk-scale | shared-800 | pass | 0.1391 | 0.1298 | 0.1618 | 12720 | 15 |
+| arlk-scale | numeral-100 | pass | 0.0255 | 0.0222 | 0.0427 | 6384 | 15 |
+| arlk-scale | numeral-400 | pass | 0.0743 | 0.0700 | 0.0932 | 14160 | 15 |
+| arlk-scale | numeral-1600 | budget | 0.0922 | 0.0815 | 0.1088 | 23696 | 15 |
+| arlk-scale | numeral-6400 | budget | 0.1777 | 0.1682 | 0.3800 | 55824 | 15 |
+| arlk-reuse | lean-to-rocq-transport | pass | 31.8907 | 29.7599 | 65.6144 | 156672 | 15 |
+| arlk-reuse | two-view-composition | pass | 0.0036 | 0.0033 | 0.0092 | 3360 | 15 |
+| arlk-reuse | hol-to-native-view | pass | 2.9629 | 2.6906 | 6.6243 | 151728 | 15 |
+
+Observations, not claims:
+
+- **Startup.** An empty room takes 2 ms. The #17 fixtures take 12, 17 and 60 ms on this machine.
+  The issue measured 15, 19 and 79 ms on its Linux host at cc7ba40; the two are not comparable.
+- **Declarations.** `decls`/`shared` grow linearly: 800 theorems in 0.20 s. Before 70de056 the
+  elaborator copied the whole environment for every declaration, and 800 took 1.19 s.
+- **Proof-term depth.** `term-N` grows quadratically in memory: 439 MB at 400 nested steps. This is
+  recorded and not yet fixed.
+- **Numerals.** `numeral-1600` and `numeral-6400` exceed the unification depth and end as budget,
+  every run, in under 0.4 s. Before 70de056, 6400 overflowed the native stack.
+- **Cross-logic reuse.** It is dominated by checking the absorbed libraries: Lean `Nat.Basic` plus
+  Rocq `Init.Peano` take about 30 s, the OpenTheory bool theory about 3 s. The composed view
+  alone takes 4 ms.

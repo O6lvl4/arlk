@@ -1,0 +1,497 @@
+// Packages: a checked library and its checked views, reused by another
+// project from a local, data-only manifest (#20).
+//
+//   arlk package pin PKG.arlkpkg       fill in the hashes and export identities
+//   arlk package verify PKG.arlkpkg    resolve, check, and compare with the pins
+//   arlk project DIR [--bundle OUT]    check a project against its packages
+//
+// A package manifest names the package's sources (each with its SHA-256),
+// the packages it requires (each pinned by the SHA-256 of its manifest),
+// and what it exports: rooms, claims (with their bundle claim identity),
+// views (with the hash of the checked view), and the assumption footprint
+// of each claim. A project manifest names the packages it requires, its own
+// sources, the claims it makes, and the rooms whose symbols and rules it
+// allows its claims to rest on.
+//
+// Nothing in a manifest is run, and nothing recorded in one is trusted:
+// every source of every package is hashed and checked from scratch, in
+// dependency order, into one environment (inductive types admitted again,
+// views checked again), and every export identity is recomputed and
+// compared. Nothing is fetched.
+//
+// Exit statuses: 1 a check failed, 3 integrity (a hash differs, or a path
+// leaves its root), 4 identity (an export or assumption list differs from
+// its pin), 5 version (format, semantics or required version), 6 missing,
+// 7 out of budget, 8 a dependency cycle, 9 a conflict (two packages with
+// one name, a room declared twice, a room used but not exported), 10 a
+// claim rests on assumptions the project does not allow.
+
+import fs
+import hash
+import self.syntax
+import self.kernel
+import self.kernel.{Env}
+import self.checker
+import self.bundle
+
+let FORMAT = 1
+
+type Require = { name: String, version: String, sha: String, path: String }
+
+type Package = {
+  name: String,
+  version: String,
+  semantics: String,
+  root: String,
+  requires: List[Require],
+  sources: List[(String, String)],
+  rooms: List[String],
+  claims: List[(String, String)],
+  views: List[(String, String)],
+  assumes: List[(String, String, String)],
+  // Where it was read from, and the hash of its bytes.
+  file: String,
+  sha: String,
+}
+
+type Project = {
+  name: String,
+  requires: List[Require],
+  allow: List[String],
+  sources: List[String],
+  claims: List[String],
+  dir: String,
+}
+
+// A failure with its exit status.
+type Failure = { code: Int, why: String }
+
+// ── Paths ───────────────────────────────────────────────────────────
+
+fn dir_of(path: String) -> String = match string.last_index_of(path, "/") {
+  some(i) => if i == 0 then "/" else string.take(path, i),
+  none => ".",
+}
+
+fn join(dir: String, rel: String) -> String =
+  if string.starts_with(rel, "/") then rel else if dir == "." then rel else dir + "/" + rel
+
+// A path inside a root: relative, no `..`, no backslash, not empty.
+fn inside(rel: String) -> Bool =
+  rel != "" and not string.starts_with(rel, "/") and not string.contains(rel, "\\") and
+  not list.contains(string.split(rel, "/"), "..")
+
+// ── Manifests ───────────────────────────────────────────────────────
+
+local fn key_values(text: String) -> List[(String, String)]! = {
+  var out: List[(String, String)] = []
+  var n = 0
+  for line in string.lines(text) {
+    n = n + 1
+    match key_value(string.trim(line), n)! {
+      some(kv) => list.push(out, kv),
+      none => (),
+    }
+  }
+  ok(out)
+}
+
+local fn key_value(l: String, n: Int) -> Option[(String, String)]! =
+  if l == "" or string.starts_with(l, "#") then ok(none)
+  else match string.index_of(l, ": ") {
+    some(i) => ok(some((string.take(l, i), string.drop(l, i + 2)))),
+    none => {
+      guard string.ends_with(l, ":") else err("line ${int.to_string(n)}: expected `key: value`")
+      ok(some((string.drop_end(l, 1), "")))
+    },
+  }
+
+// The value's words, exactly n of them.
+local fn n_words(v: String, n: Int, usage: String) -> List[String]! = {
+  let ws = words(v)
+  guard list.len(ws) == n else err("${usage}, got `${v}`")
+  ok(ws)
+}
+
+local fn unknown_key(k: String) -> Unit! = err("unknown key `${k}` (a manifest is data: only the documented keys are read)")
+
+local fn words(s: String) -> List[String] = string.split(s, " ") |> list.filter((w) => w != "")
+
+local fn require_of(value: String) -> Require! = {
+  let ws = words(value)
+  guard list.len(ws) == 4 else err("requires: expected NAME VERSION SHA256 PATH, got `${value}`")
+  ok(Require { name: list.get(ws, 0) ?? "", version: list.get(ws, 1) ?? "", sha: list.get(ws, 2) ?? "", path: list.get(ws, 3) ?? "" })
+}
+
+fn parse_package(text: String, file: String) -> Package! = {
+  var p = Package { name: "", version: "", semantics: "", root: ".", requires: [], sources: [], rooms: [], claims: [], views: [], assumes: [], file: file, sha: hash.sha256_hex(text) }
+  var format = 0
+  for (k, v) in key_values(text)! {
+    if k == "arlk-package" then {
+      format = int.parse(v) ?? -1
+    } else if k == "name" then {
+      p.name = v
+    } else if k == "version" then {
+      p.version = v
+    } else if k == "semantics" then {
+      p.semantics = v
+    } else if k == "root" then {
+      p.root = v
+    } else if k == "requires" then {
+      list.push(p.requires, require_of(v)!)
+    } else if k == "source" then {
+      let ws = n_words(v, 2, "source: expected SHA256 PATH")!
+      list.push(p.sources, (list.get(ws, 0) ?? "", list.get(ws, 1) ?? ""))
+    } else if k == "export-room" then {
+      list.push(p.rooms, v)
+    } else if k == "export-claim" then {
+      let ws = n_words(v, 2, "export-claim: expected NAME CLAIM-ID")!
+      list.push(p.claims, (list.get(ws, 0) ?? "", list.get(ws, 1) ?? ""))
+    } else if k == "export-view" then {
+      let ws = n_words(v, 2, "export-view: expected NAME VIEW-ID")!
+      list.push(p.views, (list.get(ws, 0) ?? "", list.get(ws, 1) ?? ""))
+    } else if k == "assumes" then {
+      let ws = n_words(v, 3, "assumes: expected CLAIM ROOMS INVENTORY-SHA256")!
+      list.push(p.assumes, (list.get(ws, 0) ?? "", list.get(ws, 1) ?? "", list.get(ws, 2) ?? ""))
+    } else {
+      unknown_key(k)!
+    }
+  }
+  guard format == FORMAT else err("not an Arlk package manifest of format ${int.to_string(FORMAT)}")
+  guard p.name != "" and p.version != "" else err("a package needs a name and a version")
+  ok(p)
+}
+
+fn render_package(p: Package) -> String = {
+  var out: List[String] = ["arlk-package: ${int.to_string(FORMAT)}", "name: ${p.name}", "version: ${p.version}", "semantics: ${p.semantics}", "root: ${p.root}"]
+  for r in p.requires {
+    list.push(out, "requires: ${r.name} ${r.version} ${r.sha} ${r.path}")
+  }
+  for (h, s) in p.sources {
+    list.push(out, "source: ${h} ${s}")
+  }
+  for r in p.rooms {
+    list.push(out, "export-room: ${r}")
+  }
+  for (c, id) in p.claims {
+    list.push(out, "export-claim: ${c} ${id}")
+  }
+  for (v, id) in p.views {
+    list.push(out, "export-view: ${v} ${id}")
+  }
+  for (c, rooms, h) in p.assumes {
+    list.push(out, "assumes: ${c} ${rooms} ${h}")
+  }
+  list.join(out, "\n") + "\n"
+}
+
+fn parse_project(text: String, dir: String) -> Project! = {
+  var p = Project { name: "", requires: [], allow: [], sources: [], claims: [], dir: dir }
+  var format = 0
+  for (k, v) in key_values(text)! {
+    if k == "arlk-project" then {
+      format = int.parse(v) ?? -1
+    } else if k == "name" then {
+      p.name = v
+    } else if k == "requires" then {
+      list.push(p.requires, require_of(v)!)
+    } else if k == "allow-room" then {
+      list.push(p.allow, v)
+    } else if k == "source" then {
+      list.push(p.sources, v)
+    } else if k == "claim" then {
+      list.push(p.claims, v)
+    } else {
+      unknown_key(k)!
+    }
+  }
+  guard format == FORMAT else err("not an Arlk project manifest of format ${int.to_string(FORMAT)}")
+  ok(p)
+}
+
+// ── Resolution ──────────────────────────────────────────────────────
+
+type Resolution = { loaded: List[Package], visiting: List[String], failure: Failure? }
+
+local fn fail(mut r: Resolution, code: Int, why: String) -> Unit = {
+  if r.failure == none then {
+    r.failure = some(Failure { code: code, why: why })
+  } else ()
+}
+
+// Load `req` (relative to `from`) and, first, everything it requires:
+// `loaded` ends in an order where every package comes after the packages
+// it requires. A package reached twice (a diamond) is loaded once; two
+// different packages with one name are a conflict.
+effect fn visit(mut r: Resolution, req: Require, from: String, chain: List[String]) -> Unit = {
+  if r.failure != none then ()
+  else if list.contains(r.visiting, req.name) then fail(r, 8, "dependency cycle: ${list.join(chain + [req.name], " -> ")}")
+  else {
+    let file = join(from, req.path)
+    match fs.read_text(file) {
+      err(_) => fail(r, 6, "${list.join(chain, " -> ")} requires ${req.name} ${req.version}, but there is no manifest at ${file}"),
+      ok(text) => {
+        let sha = hash.sha256_hex(text)
+        if sha != req.sha then fail(r, 3, "the manifest of ${req.name} at ${file} has SHA-256 ${sha}, but ${if list.is_empty(chain) then "the project" else list.last(chain) ?? ""} pins ${req.sha}")
+        else match parse_package(text, file) {
+          err(e) => fail(r, 5, "${file}: ${e}"),
+          ok(p) =>
+            if p.name != req.name then fail(r, 9, "${file} is the package ${p.name}, required as ${req.name}")
+            else if p.version != req.version then fail(r, 5, "${req.name}: version ${req.version} is required, ${file} is version ${p.version}")
+            else if p.semantics != bundle.SEMANTICS then fail(r, 5, "${req.name} was pinned under ${p.semantics}; this checker is ${bundle.SEMANTICS}")
+            else match list.find(r.loaded, (q) => q.name == p.name) {
+              some(q) => if q.sha != p.sha then fail(r, 9, "two different packages are named ${p.name}: version ${q.version} (${q.file}, ${q.sha}) and version ${p.version} (${file}, ${p.sha}); one must be chosen") else (),
+              none => {
+                list.push(r.visiting, p.name)
+                for sub in p.requires {
+                  visit(r, sub, dir_of(file), chain + [p.name])!
+                }
+                r.visiting = list.filter(r.visiting, (n) => n != p.name)
+                if r.failure == none and not list.any(r.loaded, (q) => q.name == p.name) then list.push(r.loaded, p) else ()
+              },
+            },
+        }
+      },
+    }
+  }
+}
+
+effect fn resolve(requires: List[Require], from: String, top: String) -> Result[List[Package], Failure] = {
+  var r = Resolution { loaded: [], visiting: [], failure: none }
+  for req in requires {
+    let _ = visit(r, req, from, [top])
+  }
+  match r.failure {
+    some(f) => err(f),
+    none => ok(r.loaded),
+  }
+}
+
+// The files of a package, in its order, hashes verified.
+effect fn package_files(p: Package) -> Result[List[String], Failure] = {
+  let root = join(dir_of(p.file), p.root)
+  var files: List[String] = []
+  for (h, rel) in p.sources {
+    list.push(files, source_file(p.name, root, h, rel)!)
+  }
+  ok(files)
+}
+
+effect fn source_file(name: String, root: String, h: String, rel: String) -> Result[String, Failure] = {
+  guard inside(rel) else err(Failure { code: 3, why: "${name}: the source ${rel} is not inside the package root ${root}" })
+  let full = join(root, rel)
+  let text = fs.read_text(full) |> result.map_err((_) => Failure { code: 6, why: "${name}: the source ${full} is missing" })!
+  guard h == "" or hash.sha256_hex(text) == h else err(Failure { code: 3, why: "${name}: ${rel} does not match its pinned SHA-256" })
+  ok(full)
+}
+
+// The rooms a file declares.
+effect fn rooms_of(file: String) -> Result[List[String], Failure] = match fs.read_text(file) {
+  err(e) => err(Failure { code: 6, why: "reading ${file}: ${e}" }),
+  ok(text) => match syntax.parse(text) {
+    err(e) => err(Failure { code: 1, why: "${file}:${e}" }),
+    ok(ds) => {
+      var out: List[String] = []
+      for d in ds {
+        match d.decl {
+          DRoom(name, _) => if list.contains(out, name) then () else list.push(out, name),
+          _ => (),
+        }
+      }
+      ok(out)
+    },
+  },
+}
+
+// The rooms a file's rooms use.
+effect fn uses_of(file: String) -> Result[List[(String, List[String])], Failure] = match fs.read_text(file) {
+  err(e) => err(Failure { code: 6, why: "reading ${file}: ${e}" }),
+  ok(text) => match syntax.parse(text) {
+    err(e) => err(Failure { code: 1, why: "${file}:${e}" }),
+    ok(ds) => {
+      var out: List[(String, List[String])] = []
+      for d in ds {
+        match d.decl {
+          DRoom(name, uses) => list.push(out, (name, uses)),
+          _ => (),
+        }
+      }
+      ok(out)
+    },
+  },
+}
+
+// No room is declared by two packages: a later package cannot reopen or
+// shadow an earlier one's room.
+effect fn room_owners(pkgs: List[Package], files: List[List[String]]) -> Result[List[(String, String)], Failure] = {
+  var owners: List[(String, String)] = []
+  for (p, fs_) in list.zip(pkgs, files) {
+    var mine: List[String] = []
+    for f in fs_ {
+      for room in rooms_of(f)! {
+        if list.contains(mine, room) then () else list.push(mine, room)
+      }
+    }
+    for room in mine {
+      owner_free(owners, room, p.name)!
+      list.push(owners, (room, p.name))
+    }
+    for room in p.rooms {
+      exported_declared(mine, room, p.name)!
+    }
+  }
+  ok(owners)
+}
+
+local fn owner_free(owners: List[(String, String)], room: String, name: String) -> Result[Unit, Failure] = match list.find(owners, ((rm, _)) => rm == room) {
+  some((_, other)) => err(Failure { code: 9, why: "the room ${room} is declared by both ${other} and ${name}" }),
+  none => ok(()),
+}
+
+local fn exported_declared(mine: List[String], room: String, name: String) -> Result[Unit, Failure] = {
+  guard list.contains(mine, room) else err(Failure { code: 9, why: "${name} exports the room ${room}, which its sources do not declare" })
+  ok(())
+}
+
+// ── Checking ────────────────────────────────────────────────────────
+
+effect fn check_into(mut env: Env, files: List[String]) -> Result[Unit, Failure] = {
+  for path in files {
+    let src = fs.read_text(path) |> result.map_err((e) => Failure { code: 6, why: "reading ${path}: ${e}" })!
+    let ds = syntax.parse(src) |> result.map_err((e) => Failure { code: 1, why: "${path}:${e}" })!
+    for d in ds {
+      checker.process(env, d) |> result.map_err((e) => Failure { code: if string.contains(e, "out of budget") then 7 else 1, why: "${path}:${int.to_string(d.line)}: ${e}" })!
+    }
+  }
+  ok(())
+}
+
+fn inventory_sha(env: Env, q: String) -> String = hash.sha256_hex(list.join(checker.axioms_report(env, q), "\n"))
+
+fn rooms_text(rooms: List[String]) -> String = if list.is_empty(rooms) then "(none)" else list.join(rooms, ",")
+
+// The exports of p, recomputed in env and compared with their pins.
+fn verify_exports(env: Env, p: Package) -> Result[Unit, Failure] = {
+  for (c, id) in p.claims {
+    verify_claim(env, p, c, id)!
+  }
+  for (v, id) in p.views {
+    verify_view(env, p, v, id)!
+  }
+  for (c, rooms, h) in p.assumes {
+    verify_assumes(env, p, c, rooms, h)!
+  }
+  ok(())
+}
+
+local fn identity_error(why: String) -> Failure = Failure { code: 4, why: why }
+
+local fn verify_claim(env: Env, p: Package, c: String, id: String) -> Result[Unit, Failure] = {
+  guard map.contains(env.entries, c) else err(identity_error("${p.name} exports the claim ${c}, which its sources do not declare"))
+  let f = bundle.facts(env, c)
+  guard f.claim_id == id else err(identity_error("${p.name}: the claim ${c} has identity ${f.claim_id}, the manifest pins ${id}"))
+  guard list.any(p.assumes, ((a, _, _)) => a == c) else err(identity_error("${p.name}: no assumption footprint is declared for the exported claim ${c}"))
+  ok(())
+}
+
+local fn verify_view(env: Env, p: Package, v: String, id: String) -> Result[Unit, Failure] = {
+  let text = checker.view_text(env, v) ?? ""
+  guard text != "" else err(identity_error("${p.name} exports the view ${v}, which its sources do not declare"))
+  guard hash.sha256_hex(text) == id else err(identity_error("${p.name}: the view ${v} has identity ${hash.sha256_hex(text)}, the manifest pins ${id}"))
+  ok(())
+}
+
+local fn verify_assumes(env: Env, p: Package, c: String, rooms: String, h: String) -> Result[Unit, Failure] = {
+  guard map.contains(env.entries, c) else err(identity_error("${p.name} declares assumptions of ${c}, which its sources do not declare"))
+  let now = rooms_text(checker.assumption_rooms(env, c))
+  guard now == rooms else err(identity_error("${p.name}: ${c} rests on assumptions of ${now}, the manifest declares ${rooms}"))
+  guard inventory_sha(env, c) == h else err(identity_error("${p.name}: the assumption inventory of ${c} differs from the manifest"))
+  ok(())
+}
+
+// Every package, resolved, hashed, checked into env in order, its exports
+// verified. Returns the packages and their files.
+effect fn load(mut env: Env, requires: List[Require], from: String, top: String) -> Result[(List[Package], List[String]), Failure] = {
+  let pkgs = resolve(requires, from, top)!
+  var per: List[List[String]] = []
+  for p in pkgs {
+    list.push(per, package_files(p)!)
+  }
+  room_owners(pkgs, per)!
+  var all: List[String] = []
+  for (p, files) in list.zip(pkgs, per) {
+    check_into(env, files)!
+    verify_exports(env, p)!
+    all = all + files
+  }
+  ok((pkgs, all))
+}
+
+// ── Pinning ─────────────────────────────────────────────────────────
+
+// Fill in a package's source hashes and export identities from its files,
+// after checking it with the packages it requires (whose pins are verified
+// as usual). Names, versions, requirements and export names are kept.
+effect fn pin(file: String) -> Result[String, Failure] = {
+  let text = fs.read_text(file) |> result.map_err((e) => Failure { code: 6, why: "reading ${file}: ${e}" })!
+  let p0 = parse_package(text, file) |> result.map_err((e) => Failure { code: 5, why: "${file}: ${e}" })!
+  var env = kernel.empty()
+  load(env, p0.requires, dir_of(file), p0.name)!
+  let root = join(dir_of(file), p0.root)
+  var sources: List[(String, String)] = []
+  var files: List[String] = []
+  for (_, rel) in p0.sources {
+    let full = source_file(p0.name, root, "", rel)!
+    let t = fs.read_text(full) |> result.map_err((e) => Failure { code: 6, why: "reading ${full}: ${e}" })!
+    list.push(sources, (hash.sha256_hex(t), rel))
+    list.push(files, full)
+  }
+  check_into(env, files)!
+  var claims: List[(String, String)] = []
+  var assumes: List[(String, String, String)] = []
+  for (c, _) in p0.claims {
+    declared(env, c)!
+    list.push(claims, (c, bundle.facts(env, c).claim_id))
+    list.push(assumes, (c, rooms_text(checker.assumption_rooms(env, c)), inventory_sha(env, c)))
+  }
+  var views: List[(String, String)] = []
+  for (v, _) in p0.views {
+    let t = checker.view_text(env, v) ?? ""
+    declared_view(t, v)!
+    list.push(views, (v, hash.sha256_hex(t)))
+  }
+  let p = { ...p0, semantics: bundle.SEMANTICS, sources: sources, claims: claims, views: views, assumes: assumes }
+  ok(render_package(p))
+}
+
+local fn declared(env: Env, c: String) -> Result[Unit, Failure] = {
+  guard map.contains(env.entries, c) else err(identity_error("the exported claim ${c} is not declared"))
+  ok(())
+}
+
+local fn declared_view(text: String, v: String) -> Result[Unit, Failure] = {
+  guard text != "" else err(identity_error("the exported view ${v} is not declared"))
+  ok(())
+}
+
+test "a package manifest reads back as written" {
+  let text = "arlk-package: 1\nname: std\nversion: 1.0.0\nsemantics: arlk-kernel-1\nroot: ../lib\nrequires: base 2.0.0 abc ../base.arlkpkg\nsource: h1 std/eq.arlk\nexport-room: eq\nexport-claim: eq.trans id1\nexport-view: c.ac id2\nassumes: eq.trans (none) h3\n"
+  match parse_package(text, "p.arlkpkg") {
+    ok(p) => assert_eq(render_package(p), text),
+    err(_) => assert(false),
+  }
+}
+
+test "a manifest is data: unknown keys are refused" {
+  match parse_package("arlk-package: 1\nname: x\nversion: 1\nrun: rm -rf /\n", "p") {
+    ok(_) => assert(false),
+    err(e) => assert(string.contains(e, "unknown key")),
+  }
+}
+
+test "package paths stay inside the root" {
+  assert(inside("std/eq.arlk"))
+  assert(not inside("../etc/x.arlk"))
+  assert(not inside("std/../../x.arlk"))
+  assert(not inside("/abs/x.arlk"))
+}

@@ -127,3 +127,14 @@ A result about an Almide program ([docs/ALMIDE_SUBSET.md](ALMIDE_SUBSET.md)) res
 Almide does and maps each construct to its meaning in [lib/almide.arlk](../lib/almide.arlk). The
 model records the program's SHA-256 and bytes, and `absorb-almide --verify` re-derives it. Such a
 result is about the program's meaning in the subset's semantics, not about compiled code.
+
+## 9. Packages
+
+`arlk package` and `arlk project` ([src/package.almd](../src/package.almd),
+[docs/PACKAGES.md](PACKAGES.md)) add nothing to the trusted base either. A manifest is data. Every
+source it names is hashed and checked again with parts 1–3, and every identity it pins (claims,
+views, assumption footprints) is recomputed and compared. A populated environment is never loaded
+from anywhere. Identities print every name fully qualified, so a claim's identity does not depend
+on the room the environment is in when it is computed. What a matching package establishes is the
+identity of part 7, nothing more. The allowed-room policy of a project is a filter on the assumption
+inventory, which is computed by the same dependency walk as `axioms`.
