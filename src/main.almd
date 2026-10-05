@@ -12,8 +12,10 @@ import self.absorb
 
 let USAGE = """
   usage:
-    arlk check FILE.arlk... [--timing]   check files in order, into one environment
-                                         (--timing: list the slowest declarations)
+    arlk check FILE.arlk... [--timing] [--keep-going]
+                                         check files in order, into one environment
+                                         (--timing: list the slowest declarations;
+                                          --keep-going: report every failure, not just the first)
     arlk absorb EXPORT.json [-o OUT]     turn a Lean export (tools/lean-export) into Arlk source
   """
 
@@ -21,7 +23,7 @@ effect fn main() -> Unit = {
   let args = process.args()
   let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-"))
   match list.get(args, 1) {
-    some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"))!,
+    some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", output_flag(args))!,
     _ => {
       println(USAGE)
@@ -37,9 +39,12 @@ local fn output_flag(args: List[String]) -> String? = match list.index_of(args, 
 
 // All files are checked into one environment, in order, so a later file
 // can use the rooms of an earlier one (lib/core.arlk first).
-effect fn run_check(paths: List[String], timing: Bool) -> Unit = {
+// With keep_going, a declaration that fails is reported and left out, and
+// checking continues (later declarations that need it fail too).
+effect fn run_check(paths: List[String], timing: Bool, keep_going: Bool) -> Unit = {
   var kenv = kernel.empty()
   var failure: String? = none
+  var failures = 0
   var times: List[(Int, Int)] = []
   for path in paths {
     if failure == none then {
@@ -62,7 +67,13 @@ effect fn run_check(paths: List[String], timing: Bool) -> Unit = {
                   }
                 },
                 err(e) => {
-                  failure = some("${path}:${int.to_string(d.line)}: ${e}")
+                  let at = "${path}:${int.to_string(d.line)}: ${e}"
+                  if keep_going then {
+                    failures = failures + 1
+                    println("✗ ${at}")
+                  } else {
+                    failure = some(at)
+                  }
                 },
               }
             }
@@ -77,7 +88,11 @@ effect fn run_check(paths: List[String], timing: Bool) -> Unit = {
       println("✗ ${e}")
       process.exit(1)
     },
-    none => println("ok: ${list.join(paths, " ")} (${int.to_string(list.len(kenv.order))} declarations)"),
+    none =>
+      if failures > 0 then {
+        println("${int.to_string(failures)} failed, ${int.to_string(list.len(kenv.order))} declarations checked: ${list.join(paths, " ")}")
+        process.exit(1)
+      } else println("ok: ${list.join(paths, " ")} (${int.to_string(list.len(kenv.order))} declarations)"),
   }
 }
 

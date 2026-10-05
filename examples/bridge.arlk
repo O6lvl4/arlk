@@ -24,7 +24,7 @@ def lean_add : core.El core.l1 LeanNat -> core.El core.l1 LeanNat -> core.El cor
 -- Rocq's `a = b` on its numbers. Rocq's eq takes its type in universe 2,
 -- so nat is lifted there: cumulativity, made explicit.
 def rocq_eq : core.El core.l1 RocqNat -> core.El core.l1 RocqNat -> core.Univ core.l0 :=
-  fun (a b : core.El core.l1 RocqNat) => Init.Logic.eq (core.lift core.l1 core.l2 RocqNat) a b.
+  fun (a b : core.El core.l1 RocqNat) => Init.Logic.eq@2 (core.lift core.l1 core.l2 RocqNat) a b.
 
 -- ── From Lean's numbers to Rocq's ──────────────────────────────────
 
@@ -43,7 +43,7 @@ def to_rocq : core.El core.l1 LeanNat -> core.El core.l1 RocqNat :=
 
 -- Lean's definitions reduce n + 0 to n, so Rocq's reflexivity is enough.
 theorem add_zero_in_rocq : (n : core.El core.l1 LeanNat) -> core.El core.l0 (rocq_eq (to_rocq (lean_add n Nat.zero)) (to_rocq n)) :=
-  fun (n : core.El core.l1 LeanNat) => Init.Logic.eq.eq_refl (core.lift core.l1 core.l2 RocqNat) (to_rocq n).
+  fun (n : core.El core.l1 LeanNat) => Init.Logic.eq.eq_refl@2 (core.lift core.l1 core.l2 RocqNat) (to_rocq n).
 
 -- ── A Lean theorem, transported into Rocq's logic ──────────────────
 
@@ -54,7 +54,7 @@ theorem add_comm_in_rocq :
   fun (n m : core.El core.l1 LeanNat) =>
     Eq.rec@0@1 Nat (lean_add n m)
       (fun (b : core.El core.l1 Nat) (h : core.El core.l0 (Eq@1 Nat (lean_add n m) b)) => rocq_eq (to_rocq (lean_add n m)) (to_rocq b))
-      (Init.Logic.eq.eq_refl (core.lift core.l1 core.l2 RocqNat) (to_rocq (lean_add n m)))
+      (Init.Logic.eq.eq_refl@2 (core.lift core.l1 core.l2 RocqNat) (to_rocq (lean_add n m)))
       (lean_add m n)
       (Nat.add_comm n m).
 
