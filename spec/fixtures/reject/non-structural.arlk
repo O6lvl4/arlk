@@ -1,0 +1,7 @@
+// expect: structural recursion
+room data
+type Nat = | zero | succ(n: Nat)
+def loop(n: Nat) -> Nat = match n {
+  zero => Nat.zero,
+  succ(k) => loop(Nat.succ(k)),
+}

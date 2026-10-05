@@ -1,0 +1,11 @@
+// expect: out of budget
+// Issue #1: a looping rule, met while comparing types.
+room loop
+symbol A: Type
+symbol z: A
+symbol g(x: A) -> A
+symbol f(x: A) -> A
+rule f(x) = g(f(x))  where x: A
+symbol P(x: A) -> Type
+symbol p: P(f(z))
+theorem stuck: P(f(g(z))) = p

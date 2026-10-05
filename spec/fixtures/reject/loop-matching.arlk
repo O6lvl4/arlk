@@ -1,0 +1,10 @@
+// expect: out of budget
+// Issue #7: a cycle through rule matching.
+room nested
+symbol A: Type
+symbol z: A
+symbol f(x: A) -> A
+symbol g(x: A) -> A
+rule f(g(x)) = x  where x: A
+rule g(x) = f(g(x))  where x: A
+eval f(g(z))

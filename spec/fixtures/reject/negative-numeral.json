@@ -1,0 +1,7 @@
+{
+  "theory": "lean",
+  "targets": ["bad"],
+  "decls": [
+    {"kind": "def", "name": "bad", "type": {"c": "Nat"}, "level": 1, "value": {"n": -1}}
+  ]
+}

@@ -331,6 +331,14 @@ ok: ... (928 declarations)
 
 ## Usage
 
+CI (`.github/workflows/ci.yml`) runs [tools/ci.sh](tools/ci.sh) on a pinned toolchain (Almide
+v0.64.0 by checksum, Rust 1.96.1): build, both test suites, the native examples, the committed
+absorbed libraries without any prover, the exact known baseline of Rocq `Corelib.Init` (four
+declarations fail, see above), and the inputs in [spec/fixtures/reject](spec/fixtures/reject),
+each of which must be rejected for its stated reason under a timeout. `tools/ci.sh` runs the same
+stages locally. A green run says these checks passed on that commit; it is not a soundness proof
+(see [docs/TRUST.md](docs/TRUST.md)).
+
 ```
 almide build src/main.almd -o arlk
 ./arlk check examples/logic.arlk

@@ -1,0 +1,48 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# One pinned Linux job: the checker, its tests, the native examples, the
+# committed absorbed libraries (no Lean, Rocq or Metamath tool is run), the
+# known Rocq Init baseline, and inputs that must be rejected for a stated
+# reason. See tools/ci.sh, which runs the same stages locally.
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # Pinned toolchain. Arlk works around known Almide code-generation bugs
+      # (listed in the README) as found in this release.
+      ALMIDE_VERSION: v0.64.0
+      ALMIDE_SHA256: bb43c9f033277bdd98621f44b1c381c334c799fb6d46163feaad71ff7f4ae1fd
+      RUST_VERSION: 1.96.1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+          rustc --version
+
+      - name: Install Almide ${{ env.ALMIDE_VERSION }} (checksum pinned)
+        run: |
+          curl -fsSL -o almide.tar.gz "https://github.com/almide/almide/releases/download/${ALMIDE_VERSION}/almide-linux-x86_64.tar.gz"
+          echo "${ALMIDE_SHA256}  almide.tar.gz" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar xzf almide.tar.gz -C "$HOME/.local/bin" --strip-components=1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/almide" --version
+
+      - name: Check
+        run: tools/ci.sh
+
+      - name: Keep the logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs-${{ github.sha }}
+          path: ci-logs/

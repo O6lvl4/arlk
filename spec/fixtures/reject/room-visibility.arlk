@@ -1,0 +1,6 @@
+// expect: does not use
+// Issue #2: a dotted name in room a must not reach room a.b without `uses a`.
+room a
+symbol b.T: Type
+room a.b
+symbol x: T

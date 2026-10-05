@@ -1,0 +1,9 @@
+// expect: out of budget
+// Issue #1: a looping rule, met while normalising.
+room loop
+symbol A: Type
+symbol z: A
+symbol g(x: A) -> A
+symbol f(x: A) -> A
+rule f(x) = g(f(x))  where x: A
+eval f(z)

@@ -1,0 +1,9 @@
+// expect: mismatch
+// Or may not be eliminated into Type: that would reveal which side holds.
+room data
+type Nat = | zero | succ(n: Nat)
+type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+  | inl(h: a)
+  | inr(h: b)
+def side(a: Sort(0), b: Sort(0), h: Or(a, b)) -> Nat =
+  Or.rec((x: Or(a, b)) => Nat, (l: a) => Nat.zero, (r: b) => Nat.succ(Nat.zero), h)

@@ -1,0 +1,6 @@
+// expect: type mismatch
+room data
+type Nat = | zero | succ(n: Nat)
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) =
+  | refl: Eq(A, a, a)
+theorem wrong: Eq(Nat, Nat.zero, Nat.succ(Nat.zero)) = Eq.refl

@@ -1,0 +1,4 @@
+// expect: negative position
+room data
+type Nat = | zero | succ(n: Nat)
+type Bad = | mk(f: Bad -> Nat)
