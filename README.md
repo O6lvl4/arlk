@@ -188,10 +188,25 @@ Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay s
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
 template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.
 
-Nothing on the way is trusted. The exporters and `arlk absorb` only produce text. The tests in
-`spec/absorb_test.almd` and `spec/metamath_test.almd` show that a false statement is rejected, that deleting one rule breaks a
-Lean proof (it really computes through Lean's definitions of `+` and `0`), and that lifting Rocq's
-`nat` *down* a universe is rejected.
+**What a successful check means.** Arlk checks the emitted proof terms without running Lean, Rocq
+or a Metamath verifier, and the exporters and `arlk absorb` are not part of that check: they only
+produce text. But they produce *theory* as well as proofs: symbols for inductive types and
+constructors, rewrite rules for recursors, projections and matches, Metamath's axioms, and the
+`Apart`/`fresh` facts about Metamath syntax. A check is relative to those emitted assumptions, which
+`axioms` lists. Two things are separate obligations, not established by the check:
+
+- that the emitted symbols and rules faithfully encode the source logic (for example, that a
+  recursor rule is the one Lean's kernel has), and
+- that an emitted statement means what the source statement means.
+
+Today these rest on reading the exporters and the emitted files, which are plain text for that
+reason. The tests in `spec/absorb_test.almd` and `spec/metamath_test.almd` show that the check
+itself bites: a false statement is rejected, deleting one rule breaks a Lean proof (it really
+computes through Lean's definitions of `+` and `0`), lifting Rocq's `nat` *down* a universe is
+rejected, and a Metamath theorem with a changed statement or a missing hypothesis is rejected.
+Stronger certification is on the roadmap: checked schemas for inductive types and their recursors
+(so an emitted recursor rule is derived, not assumed), and checked interpretations of one room into
+another.
 
 ## The bridge
 
@@ -253,8 +268,12 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 - **Rules are assumptions.** A rule is type-checked against its declared variable types, but Arlk
   does not yet check confluence, termination, or full subject reduction. A bad rule set can make
   a room inconsistent. That is why rules appear in `axioms`.
-- **Non-terminating rules make the checker incomplete, not unsound.** Reduction has a fuel bound.
-  When it runs out, conversion fails, and a proof that would need more steps is rejected.
+- **Non-terminating rules make the checker incomplete, not unsound, and never stuck.** Every
+  declaration gets one work budget, shared by all reduction, conversion and normalisation it
+  triggers, and nesting is bounded too. Running out rejects the declaration with an explicit
+  "out of budget" error; an unfinished reduction is never taken as a normal form.
+- **Imported theories are assumptions too.** What an absorbed library's check establishes, and what
+  it does not, is spelled out under [Results](#results).
 - **Symbols are assumptions.** The checker cannot tell a type former (`Nat`) from a logical
   axiom (`excluded_middle`). Both show up in `axioms`.
 - **λΠ only.** There are no universes or polymorphism in the core. Richer logics, Lean's
@@ -297,3 +316,6 @@ almide test src/       # unit tests of term, syntax, pretty, absorb
 | [almide#3397](https://github.com/almide/almide/issues/3397) native `list.slice` clones the whole list per call | copy ranges with `list.get` in the lexer |
 | [almide#3400](https://github.com/almide/almide/issues/3400) native codegen drops the element of a one-element list pattern over a variant | nested `match` on the element |
 | [almide#3401](https://github.com/almide/almide/issues/3401) same-named types in two modules resolve to the other module's type | `metamath.almd` names its record `Proving`, not `Ctx` |
+| [almide#3402](https://github.com/almide/almide/issues/3402) recursive call with swapped params passes `&E` for `E` | bind the swapped arguments with `let` first (`metamath.apart`) |
+| [almide#3404](https://github.com/almide/almide/issues/3404) functional `map.set` on a record field copies the whole map | the kernel commits each declaration in place (`mut env`, `map.insert`) |
+| [almide#3405](https://github.com/almide/almide/issues/3405) two arguments calling a `mut`-param fn share one hoisted value (miscompile) | one `let` per argument in `conv` |

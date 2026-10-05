@@ -7,7 +7,9 @@
 //     symbol `wi(ph: wff, ps: wff) -> wff`,
 //   - a logical axiom becomes a symbol whose arguments are its hypotheses,
 //   - a theorem becomes a function whose body is its proof, read back from
-//     Metamath's stack machine (normal and compressed proofs).
+//     Metamath's stack machine (normal and compressed proofs),
+//   - a distinct-variable condition `$d x ph` becomes a parameter of type
+//     `Apart_setvar_wff(x, ph)`, which every use has to prove (see below).
 //
 // Math strings are parsed with the database's own syntax axioms. Nothing
 // here is trusted: the kernel re-checks every proof.
@@ -18,7 +20,14 @@ type Hyp = { name: String, essential: Bool, tc: String, toks: List[String] }
 // variable slot, and the slots in argument order.
 type Syn = { name: String, toks: List[String], slots: Map[String, String], order: List[String] }
 
-type Assertion = { name: String, nhyps: Int }
+// What a proof needs to know to use an assertion: its mandatory hypotheses
+// (`params`: the binder of a floating one, "" for an essential one), its
+// typecode, the distinct pairs it demands (positions in `params`), and for
+// a syntax theorem, what it abbreviates.
+type Assertion = { name: String, tc: String, params: List[String], dv: List[(Int, Int)], body: MExpr? }
+
+// A syntax axiom, as distinct-variable obligations need it.
+type Ctor = { name: String, tc: String, slots: List[(String, String)] }
 
 // The provable typecode, and the syntax typecode its statements are parsed as.
 // `${` opens a scope; spelled in two parts because `${` in a string
@@ -154,7 +163,88 @@ fn parse_math(g: Map[String, List[Syn]], vars: Map[String, String], tc: String, 
   }
 }
 
+// ── Distinct variables ──────────────────────────────────────────────
+//
+// `Apart_T_U(a, b)` says that the expressions a and b share no variable.
+// Metamath checks `$d x ph` at every use by looking at the substituted
+// expressions; here the use has to prove `Apart_setvar_wff(σx, σph)`, and
+// the proof is built from facts that are true of syntax:
+//   - `apart_T_k`: a is apart from k(e1, ..., en) if it is apart from each ei,
+//     one per typecode T and syntax constructor k,
+//   - `apart_sym_T_U`: apartness is symmetric,
+//   - the theorem's own `$d` parameters for pairs of its variables,
+//   - `fresh_D`: a dummy variable can be chosen apart from any given
+//     expressions (`ApartAll_D(d, l)` for a list `l: Vars`), because there
+//     are always more variables.
+// Nothing gives `Apart(x, x)`, so a use that would identify two variables
+// that must stay distinct has no proof, and the kernel rejects it.
+
+local fn dv_typecode(t: String, known: List[String]) -> List[String] = {
+  var out: List[String] = ["symbol vcons_${t}(e: ${t}, rest: Vars) -> Vars"]
+  for u in known + [t] {
+    list.push(out, "symbol Apart_${t}_${u}(a: ${t}, b: ${u}) -> Type")
+    if u != t then list.push(out, "symbol Apart_${u}_${t}(a: ${u}, b: ${t}) -> Type") else ()
+  }
+  for u in known + [t] {
+    list.push(out, "symbol apart_sym_${t}_${u}(a: ${t}, b: ${u}, h: Apart_${u}_${t}(b, a)) -> Apart_${t}_${u}(a, b)")
+    if u != t then list.push(out, "symbol apart_sym_${u}_${t}(a: ${u}, b: ${t}, h: Apart_${t}_${u}(b, a)) -> Apart_${u}_${t}(a, b)") else ()
+  }
+  list.push(out, "symbol ApartAll_${t}(d: ${t}, l: Vars) -> Type")
+  list.push(out, "symbol fresh_${t}(l: Vars, C: ${STATEMENT}, k: (d: ${t}, h: ApartAll_${t}(d, l)) -> Prf(C)) -> Prf(C)")
+  for u in known + [t] {
+    for (d, e) in (if u == t then [(t, t)] else [(t, u), (u, t)]) {
+      list.push(out, "symbol apart_head_${d}_${e}(d: ${d}, e: ${e}, l: Vars, h: ApartAll_${d}(d, vcons_${e}(e, l))) -> Apart_${d}_${e}(d, e)")
+      list.push(out, "symbol apart_tail_${d}_${e}(d: ${d}, e: ${e}, l: Vars, h: ApartAll_${d}(d, vcons_${e}(e, l))) -> ApartAll_${d}(d, l)")
+    }
+  }
+  out
+}
+
+local fn dv_ctor(t: String, k: Ctor) -> String = {
+  let names = k.slots |> list.map(((x, _)) => x)
+  let a = prime_until_free("a", names)
+  let ss = k.slots |> list.map(((x, u)) => "${x}: ${u}")
+  var hs: List[String] = []
+  for (x, u) in k.slots {
+    let h = prime_until_free("h" + int.to_string(list.len(hs) + 1), names)
+    list.push(hs, "${h}: Apart_${t}_${u}(${a}, ${x})")
+  }
+  let params = list.join(["${a}: ${t}"] + ss + hs, ", ")
+  "symbol apart_${t}_${k.name}(${params}) -> Apart_${t}_${k.tc}(${a}, ${call(k.name, names)})"
+}
+
+local fn prime_until_free(x: String, taken: List[String]) -> String =
+  if list.contains(taken, x) then prime_until_free(x + "'", taken) else x
+
 // ── Proofs ──────────────────────────────────────────────────────────
+
+// A proof stack entry. Syntax stays structured, because distinct-variable
+// obligations are proved by walking it; a proof is just its text.
+type MExpr =
+  | MVar(String, String)
+  | MNode(String, String, List[MExpr])
+  | MProof(String)
+
+local fn render(e: MExpr) -> String = match e {
+  MVar(x, _) => x,
+  MNode(k, _, args) => call(k, args |> list.map((a) => render(a))),
+  MProof(p) => p,
+}
+
+local fn tc_of(e: MExpr) -> String = match e {
+  MVar(_, t) => t,
+  MNode(_, t, _) => t,
+  MProof(_) => PROVABLE,
+}
+
+local fn subst(e: MExpr, params: List[String], args: List[MExpr]) -> MExpr = match e {
+  MVar(x, t) => match list.index_of(params, x) {
+    some(i) => list.get(args, i) ?? e,
+    none => e,
+  },
+  MNode(k, t, xs) => MNode(k, t, xs |> list.map((x) => subst(x, params, args))),
+  MProof(_) => e,
+}
 
 // (Not `Ctx`: kernel.almd has one, almide/almide#3401.)
 // What a proof step refers to: a hypothesis in scope (by its binder), or
@@ -164,39 +254,83 @@ type Proving = {
   hyps: Map[String, Hyp],
   asserts: Map[String, Assertion],
   mandatory: List[String],
-  // Dummy variables: any value of the right typecode will do, because
-  // there are no distinct-variable conditions to respect. A mandatory
-  // variable if there is one, else the typecode's `some_` witness.
-  standins: Map[String, String],
+  // The binder each dummy variable (by hypothesis label) stands for.
+  dummies: Map[String, String],
+  // Proofs of Apart(u, v) for pairs of variables, keyed "u v".
+  facts: Map[String, String],
 }
 
-local fn step(c: Proving, stack: List[String], label: String) -> List[String]! =
+// A proof that a and b are apart, from the facts about variables.
+local fn apart(c: Proving, a: MExpr, b: MExpr) -> String! = match b {
+  MNode(k, _, args) => {
+    var subs: List[String] = []
+    for x in args {
+      list.push(subs, apart(c, a, x)!)
+    }
+    ok(call("apart_${binder_name(tc_of(a))}_${k}", [render(a)] + (args |> list.map((x) => render(x))) + subs))
+  },
+  MVar(v, u) => match a {
+    MNode(_, t, _) => {
+      // Swapped through fresh names: almide/almide#3402.
+      let left = b
+      let right = a
+      ok(call("apart_sym_${binder_name(t)}_${binder_name(u)}", [render(a), v, apart(c, left, right)!]))
+    },
+    MVar(w, t) => match map.get(c.facts, w + " " + v) {
+      some(p) => ok(p),
+      none => match map.get(c.facts, v + " " + w) {
+        some(p) => ok(call("apart_sym_${binder_name(t)}_${binder_name(u)}", [w, v, p])),
+        none => err("${c.label}: needs ${w} and ${v} to be distinct, which is not assumed"),
+      },
+    },
+    MProof(_) => err("${c.label}: a proof where an expression was expected"),
+  },
+  MProof(_) => err("${c.label}: a proof where an expression was expected"),
+}
+
+local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
   match map.get(c.hyps, label) {
     some(h) =>
-      if list.contains(c.mandatory, label) then ok(stack + [h.name])
-      else match map.get(c.standins, h.tc) {
-        some(s) => ok(stack + [s]),
-        none => err("${c.label}: dummy variable ${label} has no stand-in of typecode ${h.tc}"),
+      if list.contains(c.mandatory, label) then ok(stack + [if h.essential then MProof(h.name) else MVar(h.name, h.tc)])
+      else match map.get(c.dummies, label) {
+        some(s) => ok(stack + [MVar(s, h.tc)]),
+        none => err("${c.label}: hypothesis ${label} is not available here"),
       },
     none => match map.get(c.asserts, label) {
       some(a) => {
+        let k = list.len(a.params)
         let n = list.len(stack)
-        guard n >= a.nhyps else err("${c.label}: proof stack underflow at ${label}")
-        ok(list.take(stack, n - a.nhyps) + [call(a.name, list.drop(stack, n - a.nhyps))])
+        guard n >= k else err("${c.label}: proof stack underflow at ${label}")
+        let args = list.drop(stack, n - k)
+        let rest = list.take(stack, n - k)
+        if a.tc != PROVABLE then match a.body {
+          some(b) => ok(rest + [subst(b, a.params, args)]),
+          none => ok(rest + [MNode(a.name, a.tc, args)]),
+        } else {
+          var obligations: List[String] = []
+          for (i, j) in a.dv {
+            list.push(obligations, apart(c, list.get(args, i) ?? MProof(""), list.get(args, j) ?? MProof(""))!)
+          }
+          ok(rest + [MProof(call(a.name, (args |> list.map((x) => render(x))) + obligations))])
+        }
       },
       none => err("${c.label}: unknown label ${label} in a proof"),
     },
   }
 
-fn proof_term(c: Proving, proof: List[String]) -> String! = {
-  var stack: List[String] = []
+// The labels a proof mentions.
+local fn proof_labels(proof: List[String]) -> List[String] =
+  if at(proof, 0) == "(" then copy(proof, 1, find(proof, 1, ")")) else proof
+
+fn proof_term(c: Proving, proof: List[String]) -> MExpr! = {
+  var stack: List[MExpr] = []
   if at(proof, 0) == "(" then {
     let close = find(proof, 1, ")")
     let labels = copy(proof, 1, close)
     let code = list.join(copy(proof, close + 1, list.len(proof)), "")
     let m = list.len(c.mandatory)
     let l = list.len(labels)
-    var saved: List[String] = []
+    var saved: List[MExpr] = []
     var acc = 0
     for ch in string.chars(code) {
       let cp = string.codepoint(ch) ?? 0
@@ -210,12 +344,12 @@ fn proof_term(c: Proving, proof: List[String]) -> String! = {
         } else {
           let s = list.get(saved, num - m - l - 1)
           guard s != none else err("${c.label}: bad back-reference in a compressed proof")
-          stack = stack + [s ?? ""]
+          stack = stack + [s ?? MProof("")]
         }
       } else if cp >= 85 and cp <= 89 then {
         acc = acc * 5 + (cp - 84)
       } else if ch == "Z" then {
-        list.push(saved, list.last(stack) ?? "")
+        list.push(saved, list.last(stack) ?? MProof(""))
       } else {
         guard false else err("${c.label}: incomplete proof (`${ch}`)")
       }
@@ -239,55 +373,94 @@ local fn type_of(g: Map[String, List[Syn]], vars: Map[String, String], tc: Strin
   else if list.len(toks) == 1 and map.get(vars, at(toks, 0)) != none then ok(binder_name(tc))
   else err("a hypothesis of typecode ${tc} is not supported")
 
-// A typecode becomes a type the first time a variable or a syntax axiom has it.
-local fn declare_typecode(mut typecodes: Map[String, Bool], mut out: List[String], tc: String) -> Unit =
-  if map.contains(typecodes, tc) then () else {
-    map.insert(typecodes, tc, true)
-    list.push(out, "symbol ${binder_name(tc)}: Type")
-    // Metamath assumes every typecode has variables; a dummy variable
-    // with nothing else to stand in for it uses this one.
-    list.push(out, "symbol some_${binder_name(tc)}: ${binder_name(tc)}")
-    if tc == STATEMENT then list.push(out, "symbol Prf(p: ${STATEMENT}) -> Type") else ()
-  }
+local fn pair_key(a: String, b: String) -> String = a + " " + b
+
+local fn empty_hyp() -> Hyp = Hyp { name: "", essential: false, tc: "", toks: [] }
 
 fn absorb_mm(src: String, upto: String) -> String! = {
   let ts = tokens(prefix(src, upto)!)
   let n = list.len(ts)
   var hyps: Map[String, Hyp] = [:]
   var active: List[String] = []
-  var scopes: List[Int] = []
+  var dvs: List[(String, String)] = []
+  var scopes: List[(Int, Int)] = []
   var asserts: Map[String, Assertion] = [:]
   var grammar: Map[String, List[Syn]] = [:]
+  var ctors: List[Ctor] = []
   var taken: Map[String, Bool] = [:]
-  var typecodes: Map[String, Bool] = [:]
+  var typecodes: List[String] = []
+  var dv_on = false
   var out: List[String] = []
   var count = 0
   var i = 0
   while i < n {
     let t = at(ts, i)
     if t == SCOPE_OPEN then {
-      list.push(scopes, list.len(active))
+      list.push(scopes, (list.len(active), list.len(dvs)))
       i = i + 1
     } else if t == "$}" then {
-      let k = list.last(scopes) ?? 0
-      active = list.take(active, k)
+      let (ka, kd) = list.last(scopes) ?? (0, 0)
+      active = list.take(active, ka)
+      dvs = list.take(dvs, kd)
       scopes = list.take(scopes, list.len(scopes) - 1)
       i = i + 1
     } else if t == "$c" or t == "$v" then {
       i = find(ts, i, "$.") + 1
+    } else if t == "$d" then {
+      let stop = find(ts, i + 1, "$.")
+      let vs = copy(ts, i + 1, stop)
+      for (a, x) in list.enumerate(vs) {
+        for y in list.drop(vs, a + 1) {
+          list.push(dvs, (x, y))
+        }
+      }
+      if dv_on then () else {
+        dv_on = true
+        list.push(out, "symbol Vars: Type")
+        list.push(out, "symbol vnil: Vars")
+        var known: List[String] = []
+        for code in typecodes {
+          for line in dv_typecode(binder_name(code), known) {
+            list.push(out, line)
+          }
+          list.push(known, binder_name(code))
+        }
+        for k in ctors {
+          for code in typecodes {
+            list.push(out, dv_ctor(binder_name(code), k))
+          }
+        }
+      }
+      i = stop + 1
     } else {
-      guard t != "$d" else err("distinct-variable conditions ($d) are not supported yet")
       let label = t
       let kw = at(ts, i + 1)
       let stop = find(ts, i + 2, "$.")
       let body = copy(ts, i + 2, stop)
       let tc = at(body, 0)
       i = stop + 1
+      // A typecode becomes a type the first time a variable or a syntax axiom has it.
+      if (kw == "$f" or (kw == "$a" and tc != PROVABLE)) and not list.contains(typecodes, tc) then {
+        let code = binder_name(tc)
+        list.push(out, "symbol ${code}: Type")
+        // Metamath assumes every typecode has variables; a dummy variable
+        // with nothing else to stand in for it uses this one.
+        list.push(out, "symbol some_${code}: ${code}")
+        if tc == STATEMENT then list.push(out, "symbol Prf(p: ${STATEMENT}) -> Type") else ()
+        if dv_on then {
+          for line in dv_typecode(code, typecodes |> list.map((x) => binder_name(x))) {
+            list.push(out, line)
+          }
+          for k in ctors {
+            list.push(out, dv_ctor(code, k))
+          }
+        } else ()
+        list.push(typecodes, tc)
+      } else ()
       if kw == "$f" then {
         let v = at(body, 1)
         map.insert(hyps, label, Hyp { name: binder_name(v), essential: false, tc: tc, toks: [v] })
         list.push(active, label)
-        declare_typecode(typecodes, out, tc)
       } else if kw == "$e" then {
         map.insert(hyps, label, Hyp { name: binder_name(label), essential: true, tc: tc, toks: list.drop(body, 1) })
         list.push(active, label)
@@ -298,12 +471,10 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         var vars: Map[String, String] = [:]
         var floating: Map[String, String] = [:]
         for h in active {
-          match map.get(hyps, h) {
-            some(hy) => if hy.essential then () else {
-              map.insert(vars, at(hy.toks, 0), hy.tc)
-              map.insert(floating, at(hy.toks, 0), h)
-            },
-            none => (),
+          let hy = map.get(hyps, h) ?? empty_hyp()
+          if hy.essential then () else {
+            map.insert(vars, at(hy.toks, 0), hy.tc)
+            map.insert(floating, at(hy.toks, 0), h)
           }
         }
         var mentioned: Map[String, Bool] = [:]
@@ -311,25 +482,47 @@ fn absorb_mm(src: String, upto: String) -> String! = {
           map.insert(mentioned, x, true)
         }
         for h in active {
-          match map.get(hyps, h) {
-            some(hy) => if hy.essential then {
-              for x in hy.toks {
-                map.insert(mentioned, x, true)
-              }
-            } else (),
-            none => (),
-          }
+          let hy = map.get(hyps, h) ?? empty_hyp()
+          if hy.essential then {
+            for x in hy.toks {
+              map.insert(mentioned, x, true)
+            }
+          } else ()
         }
-        let mandatory = active |> list.filter((h) => match map.get(hyps, h) {
-          some(hy) => hy.essential or map.contains(mentioned, at(hy.toks, 0)),
-          none => false,
+        let mandatory = active |> list.filter((h) => {
+          let hy = map.get(hyps, h) ?? empty_hyp()
+          hy.essential or map.contains(mentioned, at(hy.toks, 0))
         })
-        // Parameters, each typed by the ones before it.
+        let mvars = mandatory |> list.map((h) => {
+          let hy = map.get(hyps, h) ?? empty_hyp()
+          if hy.essential then "" else at(hy.toks, 0)
+        })
+        // Parameters, each typed by the ones before it, then one per
+        // distinct pair of mandatory variables.
         var params: List[String] = []
         for h in mandatory {
-          let hy = map.get(hyps, h) ?? Hyp { name: "", essential: false, tc: "", toks: [] }
+          let hy = map.get(hyps, h) ?? empty_hyp()
           let ty = if hy.essential then type_of(grammar, vars, hy.tc, hy.toks)! else binder_name(hy.tc)
           list.push(params, "${hy.name}: ${ty}")
+        }
+        var dv: List[(Int, Int)] = []
+        var facts: Map[String, String] = [:]
+        for (x, y) in dvs {
+          match (list.index_of(mvars, x), list.index_of(mvars, y)) {
+            (some(a), some(b)) => {
+              let (p, q) = if a < b then (a, b) else (b, a)
+              if p != q and not list.contains(dv, (p, q)) then {
+                list.push(dv, (p, q))
+                let bp = binder_name(at(mvars, p))
+                let bq = binder_name(at(mvars, q))
+                let tp = binder_name(map.get(vars, at(mvars, p)) ?? "")
+                let tq = binder_name(map.get(vars, at(mvars, q)) ?? "")
+                list.push(params, "dv_${bp}_${bq}: Apart_${tp}_${tq}(${bp}, ${bq})")
+                map.insert(facts, pair_key(bp, bq), "dv_${bp}_${bq}")
+              } else ()
+            },
+            _ => (),
+          }
         }
         var name = label_name(label)
         while map.contains(taken, name) {
@@ -338,40 +531,109 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         map.insert(taken, name, true)
         let result = if tc == PROVABLE then type_of(grammar, vars, tc, stmt)! else binder_name(tc)
         let sig = if list.is_empty(params) then "${name}: ${result}" else "${name}(${list.join(params, ", ")}) -> ${result}"
+        let pnames = mandatory |> list.map((h) => {
+          let hy = map.get(hyps, h) ?? empty_hyp()
+          if hy.essential then "" else hy.name
+        })
+        var abbreviates: MExpr? = none
         if kw == "$a" then {
-          if tc != PROVABLE then declare_typecode(typecodes, out, tc) else ()
           list.push(out, "symbol " + sig)
           if tc != PROVABLE then {
-            // A syntax axiom: also a grammar rule.
+            // A syntax axiom: a grammar rule, and a constructor.
             var slots: Map[String, String] = [:]
             var order: List[String] = []
+            var cslots: List[(String, String)] = []
             for h in mandatory {
-              let hy = map.get(hyps, h) ?? Hyp { name: "", essential: false, tc: "", toks: [] }
+              let hy = map.get(hyps, h) ?? empty_hyp()
               map.insert(slots, at(hy.toks, 0), hy.tc)
               list.push(order, at(hy.toks, 0))
+              list.push(cslots, (hy.name, binder_name(hy.tc)))
             }
             let rule = Syn { name: name, toks: stmt, slots: slots, order: order }
             map.insert(grammar, tc, (map.get(grammar, tc) ?? []) + [rule])
+            let k = Ctor { name: name, tc: binder_name(tc), slots: cslots }
+            list.push(ctors, k)
+            if dv_on then {
+              for code in typecodes {
+                list.push(out, dv_ctor(binder_name(code), k))
+              }
+            } else ()
           } else ()
         } else {
-          // Dummy variables stand in for the first mandatory variable of their typecode.
-          var standins: Map[String, String] = [:]
-          for (code, _) in map.entries(typecodes) {
-            map.insert(standins, code, "some_" + binder_name(code))
+          let proof_toks = copy(body, eq + 1, list.len(body))
+          // Dummy variables: the floating hypotheses the proof uses that
+          // the statement does not have.
+          var used: Map[String, Bool] = [:]
+          for l in proof_labels(proof_toks) {
+            map.insert(used, l, true)
           }
-          for h in list.reverse(mandatory) {
-            match map.get(hyps, h) {
-              some(hy) => if hy.essential then () else map.insert(standins, hy.tc, hy.name),
-              none => (),
+          let dummy_hyps = active |> list.filter((h) => map.contains(used, h) and not list.contains(mandatory, h)
+            and not (map.get(hyps, h) ?? empty_hyp()).essential)
+          let dummy_vars = dummy_hyps |> list.map((h) => at((map.get(hyps, h) ?? empty_hyp()).toks, 0))
+          let constrained = (x: String) => list.any(dvs, ((a, b)) =>
+            (a == x and (list.contains(mvars, b) or list.contains(dummy_vars, b)))
+              or (b == x and (list.contains(mvars, a) or list.contains(dummy_vars, a))))
+          var dummies: Map[String, String] = [:]
+          // A dummy with no distinctness to respect stands in for a mandatory
+          // variable of its typecode (or the typecode's witness).
+          for h in dummy_hyps {
+            let hy = map.get(hyps, h) ?? empty_hyp()
+            if constrained(at(hy.toks, 0)) then map.insert(dummies, h, hy.name) else {
+              let same = mandatory |> list.filter((m) => {
+                let mh = map.get(hyps, m) ?? empty_hyp()
+                not mh.essential and mh.tc == hy.tc
+              })
+              match list.first(same) {
+                some(m) => map.insert(dummies, h, (map.get(hyps, m) ?? empty_hyp()).name),
+                none => map.insert(dummies, h, "some_" + binder_name(hy.tc)),
+              }
             }
           }
-          let ctx = Proving { label: label, hyps: hyps, asserts: asserts, mandatory: mandatory, standins: standins }
-          let proof = proof_term(ctx, copy(body, eq + 1, list.len(body)))!
-          let kind = if tc == PROVABLE then "theorem" else "def"
-          list.push(out, "${kind} ${sig} =\n  ${proof}")
-          count = count + 1
+          // The others are chosen fresh, apart from the variables they must
+          // avoid; the facts about them come from that choice.
+          var opens: List[String] = []
+          var fresh_before: List[String] = []
+          for h in dummy_hyps {
+            let hy = map.get(hyps, h) ?? empty_hyp()
+            let d = at(hy.toks, 0)
+            if constrained(d) then {
+              let avoid = (mvars + fresh_before) |> list.filter((w) => w != "" and (list.contains(dvs, (d, w)) or list.contains(dvs, (w, d))))
+              let bd = hy.name
+              let td = binder_name(hy.tc)
+              let elems = avoid |> list.map((w) => (binder_name(w), binder_name(map.get(vars, w) ?? "")))
+              var lists: List[String] = []
+              var acc_list = "vnil"
+              for (bw, tw) in list.reverse(elems) {
+                acc_list = "vcons_${tw}(${bw}, ${acc_list})"
+                list.push(lists, acc_list)
+              }
+              // lists, innermost first; tails[k] is the list after the first k elements.
+              let tails = list.reverse(lists) + ["vnil"]
+              var cur = "h_" + bd
+              var k = 0
+              for (bw, tw) in elems {
+                k = k + 1
+                let rest = at(tails, k)
+                map.insert(facts, pair_key(bd, bw), "apart_head_${td}_${tw}(${bd}, ${bw}, ${rest}, ${cur})")
+                cur = "apart_tail_${td}_${tw}(${bd}, ${bw}, ${rest}, ${cur})"
+              }
+              list.push(opens, "fresh_${td}(${at(tails, 0)}, ${string.drop(string.drop_end(result, 1), 4)}, (${bd}: ${td}, h_${bd}: ApartAll_${td}(${bd}, ${at(tails, 0)})) =>")
+              list.push(fresh_before, d)
+            } else ()
+          }
+          let ctx = Proving { label: label, hyps: hyps, asserts: asserts, mandatory: mandatory, dummies: dummies, facts: facts }
+          let proof = proof_term(ctx, proof_toks)!
+          if tc == PROVABLE then {
+            let closes = list.join(list.repeat(")", list.len(opens)), "")
+            let opened = list.join(opens |> list.map((o) => o + "\n    "), "")
+            list.push(out, "theorem ${sig} =\n  ${opened}${render(proof)}${closes}")
+            count = count + 1
+          } else {
+            list.push(out, "def ${sig} =\n  ${render(proof)}")
+            abbreviates = some(proof)
+          }
         }
-        map.insert(asserts, label, Assertion { name: name, nhyps: list.len(mandatory) })
+        map.insert(asserts, label, Assertion { name: name, tc: tc, params: pnames, dv: dv, body: abbreviates })
         if label == upto then {
           i = n
         } else ()
@@ -383,7 +645,8 @@ fn absorb_mm(src: String, upto: String) -> String! = {
   let header = """
     // Absorbed from Metamath by `arlk absorb-mm`: set.mm up to ${upto}
     // (${int.to_string(count)} theorems). Check it with `arlk check <this file>`;
-    // no Metamath verifier is needed or trusted.
+    // no Metamath verifier is needed. The check is relative to the axioms and
+    // syntax facts below (see `axioms`).
     """
   let last = label_name(upto)
   ok(list.join([header, "room setmm", ""] + out + ["", "axioms ${last}"], "\n") + "\n")

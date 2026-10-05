@@ -291,3 +291,58 @@ test "the Almide-style surface: calls, lambdas and arrows" {
     theorem self_imp: Prf(imp(a, a)) = (h: Prf(a)) => h
     """))
 }
+
+// Issue #1: a looping rule must end in an explicit out-of-budget error,
+// both when comparing types and when normalising.
+let LOOP = """
+  room loop
+  symbol A: Type
+  symbol z: A
+  symbol g(x: A) -> A
+  symbol f(x: A) -> A
+  rule f(x) = g(f(x))  where x: A
+  symbol P(x: A) -> Type
+  symbol p: P(f(z))
+  """
+
+test "a looping rule runs out of budget instead of running forever" {
+  assert(rejects_with(LOOP + "theorem stuck: P(f(g(z))) = p", "out of budget"))
+  assert(rejects_with(LOOP + "eval f(z)", "out of budget"))
+}
+
+test "terminating rules and reflexive conversion still work next to a loop" {
+  assert(accepts(LOOP + "theorem same: P(f(z)) = p"))
+}
+
+// Issue #2: a dotted declaration in room `a` must not leak into room `a.b`.
+test "a dotted name cannot reach a room that is not used" {
+  assert(rejects_with("room a\nsymbol b.T: Type\nroom a.b\nsymbol x: T", "does not use"))
+  assert(accepts("room a\nsymbol b.T: Type\nroom a.b uses a\nsymbol x: T"))
+  assert(accepts("room n uses logic\nsymbol Nat: Type\nsymbol Nat.add(m: Nat, k: Nat) -> Nat\nsymbol two: Nat\ndef four: Nat = Nat.add(two, two)"))
+}
+
+// Issue #3: a rule's {bracket} is compared in the context of the term
+// being reduced, so proof irrelevance applies to bound variables.
+let BRACKET = """
+  room r
+  symbol Prop: Type
+  symbol Prf(q: Prop) -> Type
+  symbol p: Prop
+  IRRELEVANT
+  symbol N: Type
+  symbol z: N
+  symbol f(h1: Prf(p), h2: Prf(p)) -> N
+  rule f(h, {h}) = z  where h: Prf(p)
+  symbol Pred(n: N) -> Type
+  symbol pz: Pred(z)
+  """
+
+fn bracket(irrelevant: Bool, rest: String) -> String =
+  string.replace(BRACKET, "IRRELEVANT", if irrelevant then "irrelevant Prf(q)  where q: Prop" else "") + rest
+
+test "brackets see the binders of the term they match" {
+  assert(accepts(bracket(true, "theorem t(h1: Prf(p), h2: Prf(p)) -> Pred(f(h1, h2)) = pz")))
+  assert(accepts(bracket(true, "theorem t(h1: Prf(p)) -> Pred(f(h1, h1)) = pz")))
+  assert(accepts(bracket(true, "symbol c1: Prf(p)\nsymbol c2: Prf(p)\ntheorem t: Pred(f(c1, c2)) = pz")))
+  assert(rejects_with(bracket(false, "theorem t(h1: Prf(p), h2: Prf(p)) -> Pred(f(h1, h2)) = pz"), "type mismatch"))
+}

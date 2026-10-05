@@ -3,9 +3,11 @@
 //
 // The output is ordinary Arlk text: every absorbed declaration, in a room
 // of its own (`Init` for Lean, `Corelib` for Rocq), on top of the shared
-// foundation in lib/core.arlk. Checking it needs only `arlk check`: neither
-// prover is involved and nothing in this translator is trusted, because
-// the kernel re-checks every line.
+// foundation in lib/core.arlk. Checking it needs only `arlk check`, and
+// neither prover is involved. The kernel re-checks every proof, but the
+// symbols and rules emitted here are assumptions of that check: their
+// faithfulness to the source logic is this translator's responsibility
+// (see "What a successful check means" in the README).
 
 import json
 
@@ -82,6 +84,7 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
   "s" => ok("core.sort(${level(o, int_of(get(v, "s")!)!)})"),
   "n" => {
     let n = int_of(get(v, "n")!)!
+    guard n >= 0 else err("the numeral ${int.to_string(n)} is negative; natural-number literals must be at least 0")
     guard n <= 4096 else err("the numeral ${int.to_string(n)} is too large to spell in unary")
     ok(numeral(n))
   },
@@ -127,7 +130,17 @@ local fn app_spine(v: Value, args: List[Value]) -> (Value, List[Value])! =
     app_spine(list.get(fa, 0) ?? value.null(), [list.get(fa, 1) ?? value.null()] + args)
   } else ok((v, args))
 
-local fn numeral(n: Int) -> String = if n == 0 then "Nat.zero" else "Nat.succ(" + numeral(n - 1) + ")"
+// A loop, not recursion: the accepted maximum would otherwise be a
+// recursion depth. Callers have checked 0 <= n.
+local fn numeral(n: Int) -> String = {
+  var s = "Nat.zero"
+  var k = 0
+  while k < n {
+    s = "Nat.succ(" + s + ")"
+    k = k + 1
+  }
+  s
+}
 
 // A Lean type `T` living in universe `l` is the Arlk type `El(l, T)`.
 local fn el(names: List[String], o: Out, ty: Value, lvl: Int) -> String! = {
@@ -213,7 +226,8 @@ fn absorb(src: String) -> String! = {
   let header = """
     // Absorbed from ${prover} by `arlk absorb`: ${what}.
     // Check it with `arlk check lib/core.arlk <this file>`;
-    // ${prover} is not needed and not trusted.
+    // ${prover} is not needed to check it. The check is relative to the symbols
+    // and rules below (see `axioms`), which encode ${prover}'s theory.
     """
   let footer = match targets {
     [t] => ["", "axioms ${t}"],
@@ -241,4 +255,13 @@ test "levels and numerals" {
   assert_eq(level(Out { lib: "Init", reserved: set.new() }, 2), "core.l2")
   assert_eq(level(Out { lib: "Init", reserved: set.new() }, 11), "core.ls(core.ls(core.l9))")
   assert_eq(numeral(2), "Nat.succ(Nat.succ(Nat.zero))")
+}
+
+test "numerals: negative ones are rejected, the bounds hold" {
+  let doc = (n: String) => "{\"theory\": \"lean\", \"targets\": [\"bad\"], \"decls\": [{\"kind\": \"def\", \"name\": \"bad\", \"type\": {\"c\": \"Nat\"}, \"level\": 1, \"value\": {\"n\": " + n + "}}]}"
+  assert(match absorb(doc("-1")) { err(e) => string.contains(e, "negative"), ok(_) => false })
+  assert(match absorb(doc("4097")) { err(e) => string.contains(e, "too large"), ok(_) => false })
+  assert(match absorb(doc("0")) { ok(t) => string.contains(t, "= \n  Nat.zero") or string.contains(t, "Nat.zero"), err(_) => false })
+  assert(match absorb(doc("1")) { ok(t) => string.contains(t, "Nat.succ(Nat.zero)"), err(_) => false })
+  assert(match absorb(doc("4096")) { ok(_) => true, err(_) => false })
 }

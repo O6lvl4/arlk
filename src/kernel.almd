@@ -67,8 +67,6 @@ type Env = {
 // A typing context: innermost binder first.
 type Ctx = List[(String, Term)]
 
-let FUEL = 1_000_000
-
 fn empty() -> Env = Env {
   entries: [:],
   types: [:],
@@ -86,123 +84,205 @@ local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
 
 local fn show(env: Env, ctx: Ctx, t: Term) -> String = pretty.show(env.room, names_of(ctx), t)
 
+// ── Work budget ─────────────────────────────────────────────────────
+//
+// Rules may loop, so every reduction step and every conversion or
+// normalisation call is paid for from one budget per declaration, and
+// nesting is bounded too: a conversion that keeps unfolding into itself
+// (`f(x) = g(f(x))`) runs out of depth instead of the stack. Running out
+// is recorded, never mistaken for a normal form: the declaration is then
+// rejected with "out of budget", not accepted and not reported as a
+// type mismatch. So a looping rule set makes the kernel incomplete, never
+// unsound and never stuck.
+type Budget = { left: Int, depth: Int, exhausted: Bool }
+
+let STEPS = 50_000_000
+let MAX_DEPTH = 512
+
+fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false }
+
+// Pay for one step; false once the budget is gone.
+local fn spend(mut b: Budget) -> Bool =
+  if b.exhausted or b.left <= 0 then {
+    b.exhausted = true
+    false
+  } else {
+    b.left = b.left - 1
+    true
+  }
+
+// Enter one level of nesting; false (and exhausted) past the bound.
+local fn enter(mut b: Budget) -> Bool =
+  if not spend(b) then false
+  else if b.depth >= MAX_DEPTH then {
+    b.exhausted = true
+    false
+  } else {
+    b.depth = b.depth + 1
+    true
+  }
+
+local fn leave(mut b: Budget) -> Unit = {
+  b.depth = b.depth - 1
+}
+
+local fn exhausted_error() -> String =
+  "out of budget: reduction did not finish (a rule set that does not terminate, or a term too deep to compare)"
+
 // ── Reduction ───────────────────────────────────────────────────────
 
-// Weak-head normal form: β, δ (defs) and the rewrite rules.
-// Out of fuel, the term is returned as it stands: conversion then fails,
-// so a looping rule set makes the kernel incomplete, never unsound.
-fn whnf(env: Env, t: Term) -> Term = whnf_fuel(env, t, FUEL)
+// Weak-head normal form: β, δ (defs) and the rewrite rules. `ctx` types the
+// free variables of t: matching a rule's {bracket} compares terms in it.
+fn whnf(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term = reduce(env, ctx, t, true, b)
 
-local fn whnf_fuel(env: Env, t: Term, fuel: Int) -> Term =
-  if fuel <= 0 then t
-  else {
-    let (h, args) = spine(t)
-    match h {
-      Lam(_, _, body) => match list.first(args) {
-        some(a) => whnf_fuel(env, apply(subst(body, a), list.drop(args, 1)), fuel - 1),
-        none => t,
-      },
-      Const(c) => match unfold(env, c) {
-        some(body) => whnf_fuel(env, apply(body, args), fuel - 1),
-        none => match rewrite(env, c, args) {
-          some(t2) => whnf_fuel(env, t2, fuel - 1),
-          none => t,
+// β and rules only: definitions stay folded, so conversion can compare
+// `f a` with `f b` without unfolding f.
+local fn whnf_core(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term = reduce(env, ctx, t, false, b)
+
+local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term = {
+  var cur = t
+  var going = true
+  while going {
+    if not spend(b) then {
+      going = false
+    } else {
+      let (h, args) = spine(cur)
+      match h {
+        Lam(_, _, body) => match list.first(args) {
+          some(a) => {
+            cur = apply(subst(body, a), list.drop(args, 1))
+          },
+          none => {
+            going = false
+          },
         },
-      },
-      _ => t,
+        Const(c) => match (if delta then unfold(env, c) else none) {
+          some(body) => {
+            cur = apply(body, args)
+          },
+          none => match rewrite(env, ctx, c, args, b) {
+            some(t2) => {
+              cur = t2
+            },
+            none => {
+              going = false
+            },
+          },
+        },
+        _ => {
+          going = false
+        },
+      }
     }
   }
+  cur
+}
 
 local fn unfold(env: Env, c: String) -> Term? =
   if map.contains(env.defs, c) then map.get(env.bodies, c) else none
 
-local fn rewrite(env: Env, c: String, args: List[Term]) -> Term? =
-  first_rewrite(env, map.get(env.rws, c) ?? [], args)
-
-local fn first_rewrite(env: Env, rules: List[Rw], args: List[Term]) -> Term? = match rules {
-  [] => none,
-  [r, ..rest] => match try_rule(env, r, args) {
-    some(t) => some(t),
-    none => first_rewrite(env, rest, args),
-  },
+local fn rewrite(env: Env, ctx: Ctx, c: String, args: List[Term], mut b: Budget) -> Term? = {
+  var found: Term? = none
+  for r in map.get(env.rws, c) ?? [] {
+    if found == none and not b.exhausted then {
+      found = try_rule(env, ctx, r, args, b)
+    } else ()
+  }
+  found
 }
 
 // What matching has learned so far: the bound variables, and the bracket
 // checks to run once all of them are known.
 type MState = { sub: Map[Int, Term], pending: List[(Term, Term)] }
 
-local fn try_rule(env: Env, r: Rw, args: List[Term]) -> Term? =
+local fn try_rule(env: Env, ctx: Ctx, r: Rw, args: List[Term], mut b: Budget) -> Term? =
   if list.len(args) < r.arity then none
-  else {
-    let pairs = list.zip(r.lhs_args, list.take(args, r.arity))
-    match match_all(env, pairs, MState { sub: [:], pending: [] }) {
-      some(st) => {
-        let vals = list.map(0..<r.nvars, (k) => map.get(st.sub, k) ?? Var(k))
-        let brackets_hold = list.all(st.pending, ((b, t)) => conv(env, [], instantiate(b, vals, 0), t))
-        if brackets_hold then some(apply(instantiate(r.rhs, vals, 0), list.drop(args, r.arity)))
-        else none
-      },
-      none => none,
-    }
+  else match match_all(env, ctx, list.zip(r.lhs_args, list.take(args, r.arity)), b) {
+    some(st) => {
+      let vals = list.map(0..<r.nvars, (k) => map.get(st.sub, k) ?? Var(k))
+      if brackets_hold(env, ctx, st, vals, b) then some(apply(instantiate(r.rhs, vals, 0), list.drop(args, r.arity)))
+      else none
+    },
+    none => none,
   }
 
-local fn match_all(env: Env, pairs: List[(Pat, Term)], st: MState) -> MState? = match pairs {
-  [] => some(st),
-  [(p, t), ..rest] => match match_pat(env, p, t, st) {
-    some(st2) => match_all(env, rest, st2),
-    none => none,
-  },
+// Each {bracket} must be convertible to the argument it stands for, in the
+// context the arguments live in.
+local fn brackets_hold(env: Env, ctx: Ctx, st: MState, vals: List[Term], mut b: Budget) -> Bool = {
+  var all = true
+  for (br, t) in st.pending {
+    if all then {
+      all = conv(env, ctx, instantiate(br, vals, 0), t, b)
+    } else ()
+  }
+  all
 }
 
-local fn match_pat(env: Env, p: Pat, t: Term, st: MState) -> MState? = match p {
+local fn match_all(env: Env, ctx: Ctx, pairs: List[(Pat, Term)], mut b: Budget) -> MState? = {
+  var st: MState? = some(MState { sub: [:], pending: [] })
+  for (p, t) in pairs {
+    match st {
+      some(s) => {
+        st = match_pat(env, ctx, p, t, s, b)
+      },
+      none => (),
+    }
+  }
+  st
+}
+
+local fn match_pat(env: Env, ctx: Ctx, p: Pat, t: Term, st: MState, mut b: Budget) -> MState? = match p {
   PVar(k) => some({ ...st, sub: map.set(st.sub, k, t) }),
-  PBracket(b) => some({ ...st, pending: st.pending + [(b, t)] }),
+  PBracket(br) => some({ ...st, pending: st.pending + [(br, t)] }),
   PSym(c, ps) => {
-    let (th, targs) = spine(whnf(env, t))
+    let (th, targs) = spine(whnf(env, ctx, t, b))
     match th {
       Const(d) =>
-        if c == d and list.len(ps) == list.len(targs) then match_all(env, list.zip(ps, targs), st)
-        else none,
+        if c == d and list.len(ps) == list.len(targs) then {
+          var cur: MState? = some(st)
+          for (q, u) in list.zip(ps, targs) {
+            match cur {
+              some(s) => {
+                cur = match_pat(env, ctx, q, u, s, b)
+              },
+              none => (),
+            }
+          }
+          cur
+        } else none,
       _ => none,
     }
   },
 }
 
-// Full normal form, for #eval.
-fn nf(env: Env, t: Term) -> Term = {
-  let w = whnf(env, t)
-  match w {
-    Lam(x, ty, b) => Lam(x, nf(env, ty), nf(env, b)),
-    Pi(x, ty, b) => Pi(x, nf(env, ty), nf(env, b)),
-    _ => {
-      let (h, args) = spine(w)
-      apply(h, args |> list.map((a) => nf(env, a)))
-    },
+// Full normal form, for `eval`.
+fn nf(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term =
+  if not enter(b) then t
+  else {
+    let w = whnf(env, ctx, t, b)
+    let r = match w {
+      Lam(x, ty, body) => {
+        let ty2 = nf(env, ctx, ty, b)
+        Lam(x, ty2, nf(env, [(x, ty)] + ctx, body, b))
+      },
+      Pi(x, ty, body) => {
+        let ty2 = nf(env, ctx, ty, b)
+        Pi(x, ty2, nf(env, [(x, ty)] + ctx, body, b))
+      },
+      _ => {
+        let (h, args) = spine(w)
+        var out: List[Term] = []
+        for a in args {
+          list.push(out, nf(env, ctx, a, b))
+        }
+        apply(h, out)
+      },
+    }
+    leave(b)
+    r
   }
-}
 
 // ── Conversion ──────────────────────────────────────────────────────
-
-// β and rules only: definitions stay folded, so conversion can compare
-// `f a` with `f b` without unfolding f.
-local fn whnf_core(env: Env, t: Term) -> Term = whnf_core_fuel(env, t, FUEL)
-
-local fn whnf_core_fuel(env: Env, t: Term, fuel: Int) -> Term =
-  if fuel <= 0 then t
-  else {
-    let (h, args) = spine(t)
-    match h {
-      Lam(_, _, body) => match list.first(args) {
-        some(a) => whnf_core_fuel(env, apply(subst(body, a), list.drop(args, 1)), fuel - 1),
-        none => t,
-      },
-      Const(c) => match rewrite(env, c, args) {
-        some(t2) => whnf_core_fuel(env, t2, fuel - 1),
-        none => t,
-      },
-      _ => t,
-    }
-  }
 
 // The height of the definition at the head of t, if t's head unfolds.
 local fn def_height(env: Env, t: Term) -> Int? = {
@@ -224,44 +304,66 @@ local fn unfold_head(env: Env, t: Term) -> Term = {
   }
 }
 
-// `ctx` types the free variables of a and b. It is only consulted for
-// proof irrelevance; with an empty context that check simply fails.
-fn conv(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool =
+// `ctx` types the free variables of a and b: proof irrelevance and rule
+// brackets consult it.
+fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
   if a == b then true
-  else conv_whnf(env, ctx, whnf_core(env, a), whnf_core(env, b)) or irrelevant_eq(env, ctx, a, b)
+  else if not enter(bu) then false
+  else {
+    // One `let` per reduced side: almide/almide#3405 merges two such
+    // arguments into one.
+    let wa = whnf_core(env, ctx, a, bu)
+    let wb = whnf_core(env, ctx, b, bu)
+    let r = conv_whnf(env, ctx, wa, wb, bu) or irrelevant_eq(env, ctx, a, b, bu)
+    leave(bu)
+    r
+  }
 
-local fn conv_whnf(env: Env, ctx: Ctx, wa: Term, wb: Term) -> Bool =
+local fn conv_whnf(env: Env, ctx: Ctx, wa: Term, wb: Term, mut bu: Budget) -> Bool =
   if wa == wb then true
+  else if bu.exhausted then false
   else {
     // Nested matches rather than `match (wa, wb)`: almide/almide#3390.
     match wa {
       Sort(i) => match wb {
         Sort(j) => i == j,
-        _ => conv_delta(env, ctx, wa, wb),
+        _ => conv_delta(env, ctx, wa, wb, bu),
       },
       Pi(x, t1, b1) => match wb {
-        Pi(_, t2, b2) => conv(env, ctx, t1, t2) and conv(env, [(x, t1)] + ctx, b1, b2),
-        _ => conv_delta(env, ctx, wa, wb),
+        Pi(_, t2, b2) => conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu),
+        _ => conv_delta(env, ctx, wa, wb, bu),
       },
       // η: (fun x => f x) ≡ f
       Lam(x, t1, b1) => match wb {
-        Lam(_, t2, b2) => conv(env, ctx, t1, t2) and conv(env, [(x, t1)] + ctx, b1, b2),
-        _ => conv(env, [(x, t1)] + ctx, b1, App(shift(wb, 1, 0), Var(0))),
+        Lam(_, t2, b2) => conv(env, ctx, t1, t2, bu) and conv(env, [(x, t1)] + ctx, b1, b2, bu),
+        _ => conv(env, [(x, t1)] + ctx, b1, App(shift(wb, 1, 0), Var(0)), bu),
       },
       _ => match wb {
-        Lam(x, t2, b2) => conv(env, [(x, t2)] + ctx, App(shift(wa, 1, 0), Var(0)), b2),
-        _ => same_head_args(env, ctx, wa, wb) or conv_delta(env, ctx, wa, wb),
+        Lam(x, t2, b2) => conv(env, [(x, t2)] + ctx, App(shift(wa, 1, 0), Var(0)), b2, bu),
+        _ => same_head_args(env, ctx, wa, wb, bu) or conv_delta(env, ctx, wa, wb, bu),
       },
     }
   }
 
+local fn all_conv(env: Env, ctx: Ctx, xs: List[Term], ys: List[Term], mut bu: Budget) -> Bool =
+  if list.len(xs) != list.len(ys) then false
+  else {
+    var all = true
+    for (x, y) in list.zip(xs, ys) {
+      if all then {
+        all = conv(env, ctx, x, y, bu)
+      } else ()
+    }
+    all
+  }
+
 // Same head constant and convertible arguments: equal without unfolding.
-local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
+local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool = {
   let (ha, xs) = spine(a)
   let (hb, ys) = spine(b)
   match ha {
     Const(c) => match hb {
-      Const(d) => c == d and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, ctx, x, y)),
+      Const(d) => c == d and all_conv(env, ctx, xs, ys, bu),
       _ => false,
     },
     _ => false,
@@ -269,21 +371,27 @@ local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
 }
 
 // Unfold one step on the side whose head was defined later, then retry.
-local fn conv_delta(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = match def_height(env, a) {
-  some(ha) => match def_height(env, b) {
-    some(hb) =>
-      if ha > hb then conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), b)
-      else if hb > ha then conv_whnf(env, ctx, a, whnf_core(env, unfold_head(env, b)))
-      else conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), whnf_core(env, unfold_head(env, b))),
-    none => conv_whnf(env, ctx, whnf_core(env, unfold_head(env, a)), b),
-  },
-  none => match def_height(env, b) {
-    some(_) => conv_whnf(env, ctx, a, whnf_core(env, unfold_head(env, b))),
-    none => conv_spines(env, ctx, a, b),
-  },
-}
+local fn conv_delta(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
+  if not spend(bu) then false
+  else match def_height(env, a) {
+    some(ha) => match def_height(env, b) {
+      some(hb) =>
+        if ha > hb then conv_whnf(env, ctx, whnf_core(env, ctx, unfold_head(env, a), bu), b, bu)
+        else if hb > ha then conv_whnf(env, ctx, a, whnf_core(env, ctx, unfold_head(env, b), bu), bu)
+        else {
+          let wa = whnf_core(env, ctx, unfold_head(env, a), bu)
+          let wb = whnf_core(env, ctx, unfold_head(env, b), bu)
+          conv_whnf(env, ctx, wa, wb, bu)
+        },
+      none => conv_whnf(env, ctx, whnf_core(env, ctx, unfold_head(env, a), bu), b, bu),
+    },
+    none => match def_height(env, b) {
+      some(_) => conv_whnf(env, ctx, a, whnf_core(env, ctx, unfold_head(env, b), bu), bu),
+      none => conv_spines(env, ctx, a, b, bu),
+    },
+  }
 
-local fn conv_spines(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
+local fn conv_spines(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool = {
   let (ha, xs) = spine(a)
   let (hb, ys) = spine(b)
   let heads = match (ha, hb) {
@@ -291,19 +399,19 @@ local fn conv_spines(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool = {
     (Const(c), Const(d)) => c == d,
     _ => false,
   }
-  heads and list.len(xs) == list.len(ys) and list.all(list.zip(xs, ys), ((x, y)) => conv(env, ctx, x, y))
+  heads and all_conv(env, ctx, xs, ys, bu)
 }
 
 // ── Proof irrelevance ───────────────────────────────────────────────
 
 // Two terms are equal when both inhabit the same type and that type was
 // declared `irrelevant` (in Lean's room: every proposition).
-local fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool =
-  if list.is_empty(env.irrelevants) then false
-  else match infer(env, ctx, a) {
+local fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
+  if list.is_empty(env.irrelevants) or bu.exhausted then false
+  else match infer(env, ctx, a, bu) {
     ok(ta) =>
-      if is_irrelevant_type(env, ta) then match infer(env, ctx, b) {
-        ok(tb) => conv(env, ctx, ta, tb),
+      if is_irrelevant_type(env, ctx, ta, bu) then match infer(env, ctx, b, bu) {
+        ok(tb) => conv(env, ctx, ta, tb, bu),
         err(_) => false,
       }
       else false,
@@ -314,36 +422,46 @@ local fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term) -> Bool =
 // into an Arlk function type, which no longer has the declared shape. A
 // function type into an irrelevant type is itself irrelevant (its values
 // are equal pointwise, and conversion has η).
-local fn is_irrelevant_type(env: Env, t: Term) -> Bool =
-  irrelevant_shape(env, t) or irrelevant_shape(env, whnf_core(env, t)) or {
-    let w = whnf(env, t)
-    match w {
-      Pi(_, _, b) => is_irrelevant_type(env, b),
-      _ => irrelevant_shape(env, w),
+local fn is_irrelevant_type(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Bool =
+  if not enter(bu) then false
+  else {
+    let r = irrelevant_shape(env, ctx, t, bu) or irrelevant_shape(env, ctx, whnf_core(env, ctx, t, bu), bu) or {
+      let w = whnf(env, ctx, t, bu)
+      match w {
+        Pi(x, dom, body) => is_irrelevant_type(env, [(x, dom)] + ctx, body, bu),
+        _ => irrelevant_shape(env, ctx, w, bu),
+      }
     }
+    leave(bu)
+    r
   }
 
-local fn irrelevant_shape(env: Env, t: Term) -> Bool = {
+local fn irrelevant_shape(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Bool = {
   let (h, args) = spine(t)
   match h {
-    Const(c) => list.any(env.irrelevants, (ir) => ir.head == c and irrelevant_matches(env, ir, args)),
+    Const(c) => {
+      var found = false
+      for ir in env.irrelevants {
+        if not found and ir.head == c then {
+          found = irrelevant_matches(env, ctx, ir, args, bu)
+        } else ()
+      }
+      found
+    },
     _ => false,
   }
 }
 
-local fn irrelevant_matches(env: Env, ir: Rule, args: List[Term]) -> Bool =
+local fn irrelevant_matches(env: Env, ctx: Ctx, ir: Rule, args: List[Term], mut bu: Budget) -> Bool =
   if list.len(args) != ir.arity then false
-  else match match_all(env, list.zip(ir.lhs_args, args), MState { sub: [:], pending: [] }) {
-    some(st) => {
-      let vals = list.map(0..<ir.nvars, (k) => map.get(st.sub, k) ?? Var(k))
-      list.all(st.pending, ((b, t)) => conv(env, [], instantiate(b, vals, 0), t))
-    },
+  else match match_all(env, ctx, list.zip(ir.lhs_args, args), bu) {
+    some(st) => brackets_hold(env, ctx, st, list.map(0..<ir.nvars, (k) => map.get(st.sub, k) ?? Var(k)), bu),
     none => false,
   }
 
 // ── Typing ──────────────────────────────────────────────────────────
 
-fn infer(env: Env, ctx: Ctx, t: Term) -> Term! = match t {
+fn infer(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term! = match t {
   Sort(0) => ok(Sort(1)),
   Sort(_) => err("Kind has no type"),
   Var(i) => match list.get(ctx, i) {
@@ -355,35 +473,38 @@ fn infer(env: Env, ctx: Ctx, t: Term) -> Term! = match t {
     none => err("unknown constant ${c}"),
   },
   App(f, a) => {
-    let tf = infer(env, ctx, f)!
-    match whnf(env, tf) {
+    let tf = infer(env, ctx, f, bu)!
+    match whnf(env, ctx, tf, bu) {
       Pi(_, dom, cod) => {
-        check(env, ctx, a, dom)!
+        check(env, ctx, a, dom, bu)!
         ok(subst(cod, a))
       },
       other => {
+        guard not bu.exhausted else err(exhausted_error())
         let msg = "${show(env, ctx, f)} is applied to an argument, but its type is ${show(env, ctx, other)}"
         err(msg)
       },
     }
   },
-  Lam(x, ty, b) => {
-    expect_sort(env, ctx, ty, false)!
-    let tb = infer(env, [(x, ty)] + ctx, b)!
+  Lam(x, ty, body) => {
+    expect_sort(env, ctx, ty, false, bu)!
+    let tb = infer(env, [(x, ty)] + ctx, body, bu)!
     guard tb != Sort(1) else err("a function cannot return Kind")
     ok(Pi(x, ty, tb))
   },
-  Pi(x, ty, b) => {
-    expect_sort(env, ctx, ty, false)!
-    let s = expect_sort(env, [(x, ty)] + ctx, b, true)!
+  Pi(x, ty, body) => {
+    expect_sort(env, ctx, ty, false, bu)!
+    let s = expect_sort(env, [(x, ty)] + ctx, body, true, bu)!
     ok(s)
   },
 }
 
 // The type of `t` must be a sort. Domains must live in Type (λΠ has no
 // polymorphism); codomains may be Type or Kind.
-local fn expect_sort(env: Env, ctx: Ctx, t: Term, allow_kind: Bool) -> Term! = {
-  let s = whnf(env, infer(env, ctx, t)!)
+local fn expect_sort(env: Env, ctx: Ctx, t: Term, allow_kind: Bool, mut bu: Budget) -> Term! = {
+  let ty = infer(env, ctx, t, bu)!
+  let s = whnf(env, ctx, ty, bu)
+  guard not bu.exhausted else err(exhausted_error())
   match s {
     Sort(0) => ok(s),
     Sort(_) => if allow_kind then ok(s) else err("${show(env, ctx, t)} is a kind, but a type was expected here"),
@@ -391,11 +512,11 @@ local fn expect_sort(env: Env, ctx: Ctx, t: Term, allow_kind: Bool) -> Term! = {
   }
 }
 
-fn check(env: Env, ctx: Ctx, t: Term, expected: Term) -> Unit! = {
-  let actual = infer(env, ctx, t)!
-  let expected_s = show(env, ctx, expected)
-  let actual_s = show(env, ctx, actual)
-  guard conv(env, ctx, actual, expected) else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${expected_s}\n    found:    ${actual_s}")
+fn check(env: Env, ctx: Ctx, t: Term, expected: Term, mut bu: Budget) -> Unit! = {
+  let actual = infer(env, ctx, t, bu)!
+  let same = conv(env, ctx, actual, expected, bu)
+  guard not bu.exhausted else err(exhausted_error())
+  guard same else err("type mismatch for ${show(env, ctx, t)}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(env, ctx, actual)}")
   ok(())
 }
 
@@ -415,7 +536,9 @@ local fn visible(env: Env) -> List[String] = [env.room] + (map.get(env.rooms, en
 // a visible room.
 fn resolve_const(env: Env, x: String) -> String! = {
   let own = env.room + "." + x
-  if map.contains(env.entries, own) then ok(own)
+  // The own-room shortcut only counts if the entry really is this room's:
+  // `room a` + `b.T` and `room a.b` + `T` spell the same key (issue #2).
+  if map.contains(env.entries, own) and room_of(env, own) == env.room then ok(own)
   else {
     let rooms = visible(env)
     let qualified = if map.contains(env.entries, x) then [x] else []
@@ -466,25 +589,53 @@ local fn no_brackets(rs: List[Raw]) -> Unit! = {
 
 // ── Declarations ────────────────────────────────────────────────────
 
-local fn declare(env: Env, name: String, kind: String, ty: Term, body: Term?) -> Env! = {
+// What a checked declaration adds to the environment. Checking is pure;
+// `commit` then updates the environment in place, because a functional
+// `map.set` copies the whole map on every declaration (almide/almide#3404).
+type Change =
+  | Declare(String, Entry, Term, Term?)
+  | EnterRoom(String, List[String])
+  | AddRule(Rule)
+  | AddIrrelevant(Rule)
+  | NoChange
+
+local fn declare(env: Env, name: String, kind: String, ty: Term, body: Term?) -> Change! = {
   let q = env.room + "." + name
   guard not map.contains(env.entries, q) else err("${q} is already declared")
-  let height = list.len(env.order)
-  let entry = Entry { room: env.room, kind: kind, height: height }
-  let bodies = match body {
-    some(b) => map.set(env.bodies, q, b),
-    none => env.bodies,
-  }
-  let defs = if kind == "def" then map.set(env.defs, q, height) else env.defs
-  ok({ ...env, entries: map.set(env.entries, q, entry), types: map.set(env.types, q, ty), bodies: bodies, defs: defs, order: env.order + [q] })
+  ok(Declare(q, Entry { room: env.room, kind: kind, height: list.len(env.order) }, ty, body))
 }
 
-local fn enter_room(env: Env, name: String, uses: List[String]) -> Env! = {
+local fn enter_room(env: Env, name: String, uses: List[String]) -> Change! = {
   guard not map.contains(env.rooms, name) else err("room ${name} already exists; rooms are sealed once left")
   let missing = uses |> list.filter((u) => not map.contains(env.rooms, u))
   guard list.is_empty(missing) else err("unknown room ${list.join(missing, ", ")}")
   let seen = uses + (uses |> list.flat_map((u) => map.get(env.rooms, u) ?? []))
-  ok({ ...env, rooms: map.set(env.rooms, name, list.unique(seen)), room: name })
+  ok(EnterRoom(name, list.unique(seen)))
+}
+
+local fn commit(mut env: Env, c: Change) -> Unit = match c {
+  Declare(q, entry, ty, body) => {
+    map.insert(env.entries, q, entry)
+    map.insert(env.types, q, ty)
+    match body {
+      some(b) => map.insert(env.bodies, q, b),
+      none => (),
+    }
+    if entry.kind == "def" then map.insert(env.defs, q, entry.height) else ()
+    list.push(env.order, q)
+  },
+  EnterRoom(name, seen) => {
+    map.insert(env.rooms, name, seen)
+    env.room = name
+  },
+  AddRule(r) => {
+    let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs }
+    let existing = map.get(env.rws, r.head) ?? []
+    map.insert(env.rws, r.head, existing + [rw])
+    list.push(env.rules, r)
+  },
+  AddIrrelevant(r) => list.push(env.irrelevants, r),
+  NoChange => (),
 }
 
 // `match` rather than `?.kind`: almide/almide#3391 (wasm).
@@ -554,14 +705,14 @@ local fn free_vars(t: Term, depth: Int) -> List[Int] = match t {
 // the head symbol (of this room), and the argument patterns.
 type Lhs = { ctx: Ctx, scope: List[String], head: String, pats: List[Pat], term: Term }
 
-local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw) -> Lhs! = {
+local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, mut bu: Budget) -> Lhs! = {
   // Build the rule context left to right; Var(0) is the last variable.
   var ctx: Ctx = []
   var scope: List[String] = []
   for (x, ty_raw) in vars {
     no_brackets([ty_raw])!
     let ty = resolve(env, scope, ty_raw)!
-    expect_sort(env, ctx, ty, true)!
+    expect_sort(env, ctx, ty, true, bu)!
     ctx = [(x, ty)] + ctx
     scope = [x] + scope
   }
@@ -587,17 +738,18 @@ local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw) -> Lhs! = {
   ok(Lhs { ctx: ctx, scope: scope, head: head, pats: pats, term: lhs })
 }
 
-local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> (Env, String)! = {
+local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> Change! = {
   no_brackets([rhs_raw])!
-  let l = rule_lhs(env, vars, lhs_raw)!
+  var bu = budget()
+  let l = rule_lhs(env, vars, lhs_raw, bu)!
   let ctx = l.ctx
   let rhs = resolve(env, l.scope, rhs_raw)!
-  let tl = infer(env, ctx, l.term)!
-  let tr = infer(env, ctx, rhs)!
+  let tl = infer(env, ctx, l.term, bu)!
+  let tr = infer(env, ctx, rhs, bu)!
   let text = "${show(env, ctx, l.term)} = ${show(env, ctx, rhs)}"
-  let tl_s = show(env, ctx, tl)
-  let tr_s = show(env, ctx, tr)
-  guard conv(env, ctx, tl, tr) else err("rule does not preserve types: ${text}\n    left:  ${tl_s}\n    right: ${tr_s}")
+  let same = conv(env, ctx, tl, tr, bu)
+  guard not bu.exhausted else err(exhausted_error())
+  guard same else err("rule does not preserve types: ${text}\n    left:  ${show(env, ctx, tl)}\n    right: ${show(env, ctx, tr)}")
   let r = Rule {
     id: "${env.room}:${int.to_string(line)}",
     head: l.head,
@@ -609,15 +761,14 @@ local fn add_rule(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Ra
     rhs: rhs,
     text: text,
   }
-  let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs }
-  let existing = map.get(env.rws, l.head) ?? []
-  ok(({ ...env, rws: map.set(env.rws, l.head, existing + [rw]), rules: env.rules + [r] }, text))
+  ok(AddRule(r))
 }
 
 // `irrelevant [x : A] T.`: every two values of an instance of T are equal.
-local fn add_irrelevant(env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Env! = {
-  let l = rule_lhs(env, vars, ty_raw)!
-  expect_sort(env, l.ctx, l.term, false)!
+local fn add_irrelevant(env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Change! = {
+  var bu = budget()
+  let l = rule_lhs(env, vars, ty_raw, bu)!
+  expect_sort(env, l.ctx, l.term, false, bu)!
   let r = Rule {
     id: "${env.room}:${int.to_string(line)}",
     head: l.head,
@@ -629,16 +780,24 @@ local fn add_irrelevant(env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: 
     rhs: l.term,
     text: "irrelevant ${show(env, l.ctx, l.term)}",
   }
-  ok({ ...env, irrelevants: env.irrelevants + [r] })
+  ok(AddIrrelevant(r))
 }
 
-// Process one declaration; returns the new environment and lines to print.
-fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
+// Process one declaration: check it, add it to `env` if it is good, and
+// return the lines to print. A declaration that fails leaves `env` as it was.
+fn process(mut env: Env, d: Located) -> List[String]! = {
+  let (change, lines) = examine(env, d)!
+  commit(env, change)
+  ok(lines)
+}
+
+local fn examine(env: Env, d: Located) -> (Change, List[String])! = match d.decl {
   DRoom(name, uses) => ok((enter_room(env, name, uses)!, [])),
   DSymbol(name, ty_raw) => {
     no_brackets([ty_raw])!
     let ty = resolve(env, [], ty_raw)!
-    expect_sort(env, [], ty, true)!
+    var bu = budget()
+    expect_sort(env, [], ty, true, bu)!
     ok((declare(env, name, "symbol", ty, none)!, []))
   },
   DDef(name, ty_raw, body_raw) => {
@@ -647,38 +806,40 @@ fn process(env: Env, d: Located) -> (Env, List[String])! = match d.decl {
   },
   DTheorem(name, ty_raw, body_raw) => {
     let (ty, body) = typed_body(env, ty_raw, body_raw)!
-    let env2 = declare(env, name, "theorem", ty, some(body))!
-    ok((env2, ["✓ theorem ${env.room}.${name}: ${show(env, [], ty)}"]))
+    let c = declare(env, name, "theorem", ty, some(body))!
+    ok((c, ["✓ theorem ${env.room}.${name}: ${show(env, [], ty)}"]))
   },
-  DRule(vars, lhs, rhs) => {
-    let (env2, _) = add_rule(env, vars, lhs, rhs, d.line)!
-    ok((env2, []))
-  },
+  DRule(vars, lhs, rhs) => ok((add_rule(env, vars, lhs, rhs, d.line)!, [])),
   DIrrelevant(vars, ty) => ok((add_irrelevant(env, vars, ty, d.line)!, [])),
   DCheck(e_raw) => {
     no_brackets([e_raw])!
     let e = resolve(env, [], e_raw)!
-    let ty = infer(env, [], e)!
-    ok((env, ["${show(env, [], e)}: ${show(env, [], ty)}"]))
+    var bu = budget()
+    let ty = infer(env, [], e, bu)!
+    ok((NoChange, ["${show(env, [], e)}: ${show(env, [], ty)}"]))
   },
   DEval(e_raw) => {
     no_brackets([e_raw])!
     let e = resolve(env, [], e_raw)!
-    infer(env, [], e)!
-    ok((env, ["${show(env, [], e)} = ${show(env, [], nf(env, e))}"]))
+    var bu = budget()
+    infer(env, [], e, bu)!
+    let v = nf(env, [], e, bu)
+    guard not bu.exhausted else err(exhausted_error())
+    ok((NoChange, ["${show(env, [], e)} = ${show(env, [], v)}"]))
   },
   DAxioms(name) => {
     let q = resolve_const(env, name)!
-    ok((env, report_axioms(env, q)))
+    ok((NoChange, report_axioms(env, q)))
   },
 }
 
 local fn typed_body(env: Env, ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
   no_brackets([ty_raw, body_raw])!
   let ty = resolve(env, [], ty_raw)!
-  expect_sort(env, [], ty, true)!
+  var bu = budget()
+  expect_sort(env, [], ty, true, bu)!
   let body = resolve(env, [], body_raw)!
-  check(env, [], body, ty)!
+  check(env, [], body, ty, bu)!
   ok((ty, body))
 }
 
@@ -766,8 +927,7 @@ fn check_all(env: Env, ds: List[Located]) -> Outcome = {
   var error: String? = none
   for d in ds {
     if error == none then match process(cur, d) {
-      ok((env2, lines)) => {
-        cur = env2
+      ok(lines) => {
         for l in lines {
           list.push(out, l)
         }

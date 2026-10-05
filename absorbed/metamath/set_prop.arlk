@@ -1,6 +1,7 @@
 // Absorbed from Metamath by `arlk absorb-mm`: set.mm up to stoic4b
 // (1776 theorems). Check it with `arlk check <this file>`;
-// no Metamath verifier is needed or trusted.
+// no Metamath verifier is needed. The check is relative to the axioms and
+// syntax facts below (see `axioms`).
 room setmm
 
 symbol wff: Type

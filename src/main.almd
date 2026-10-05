@@ -66,8 +66,7 @@ effect fn run_check(paths: List[String], timing: Bool, keep_going: Bool) -> Unit
               let result = kernel.process(kenv, d)
               times = times + [(env.millis() - started, d.line)]
               match result {
-                ok((env2, lines)) => {
-                  kenv = env2
+                ok(lines) => {
                   for line in lines {
                     println(line)
                   }
