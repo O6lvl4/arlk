@@ -242,8 +242,17 @@ Metamath tool is involved.
 | Logical axiom with hypotheses (`ax-mp`) | `symbol ax_mp(ph: wff, ps: wff, min: Prf(ph), maj: Prf(wi(ph, ps))) -> Prf(ps)` |
 | Theorem and its proof (normal or compressed) | `theorem a1i(ph: wff, ps: wff, a1i_1: Prf(ph)) -> Prf(wi(ps, ph)) = ax_mp(...)` |
 | Math strings | parsed with the database's own syntax axioms |
-| Dummy variables | replaced by a variable of the same typecode (sound without `$d`) |
-| `$d` distinct-variable conditions | not yet: needed from predicate calculus on |
+| `$d x ph` distinct-variable conditions | a parameter `dv_ph_x: Apart_wff_setvar(ph, x)` that every use must prove; the proof is built from the user's own `$d` facts and facts about syntax (`apart_*` per constructor, symmetry), so a use that identifies variables has no proof |
+| Dummy variables | with `$d` conditions: chosen fresh (`fresh_setvar(...)`, apart from what they must avoid); without: replaced by a variable of the same typecode |
+| Includes `$[ file $]` | inlined (once each), as Metamath specifies |
+
+Status of `$d`: regression-tested on small fixtures whose verdicts were cross-checked with the
+reference verifier mmverify.py ([spec/fixtures/metamath](spec/fixtures/metamath)): obligations in
+normal and compressed proofs, setvars named with punctuation, fresh dummies, and rejection of a
+missing `$d`, of a use collapsing two distinct variables and of an unconstrained dummy. The large
+run below covers set.mm up to the construction of the positive fractions; it is development
+evidence, not part of the test suite. The `Apart_*`, `apart_*` and `fresh_*` declarations are
+assumptions about Metamath's syntax that `axioms` lists, like the database's own axioms.
 
 Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay symbols here, so
 `axioms` lists exactly the ones a theorem depends on.
@@ -257,6 +266,7 @@ Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay s
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~55 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
+| Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
 template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.

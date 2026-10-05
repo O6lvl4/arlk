@@ -100,7 +100,9 @@ fn tokens(src: String) -> List[String] = {
 }
 
 // The database up to the end of the statement labelled `upto`.
-local fn prefix(src: String, upto: String) -> String! = {
+// The database up to the end of the statement labelled `upto` (all of it
+// when upto is "").
+local fn prefix(src: String, upto: String) -> String! = if upto == "" then ok(src) else {
   let start = match string.index_of(src, " " + upto + " $p ") {
     some(i) => i,
     none => match string.index_of(src, " " + upto + " $a ") {
@@ -422,6 +424,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
   var dv_on = false
   var out: List[String] = []
   var count = 0
+  var last_theorem = ""
   var i = 0
   while i < n {
     let t = at(ts, i)
@@ -660,6 +663,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
             let opened = list.join(opens |> list.map((o) => o + "\n    "), "")
             list.push(out, "theorem ${sig} =\n  ${opened}${render(proof)}${closes}")
             count = count + 1
+            last_theorem = name
           } else {
             list.push(out, "def ${sig} =\n  ${render(proof)}")
             abbreviates = some(proof)
@@ -674,14 +678,16 @@ fn absorb_mm(src: String, upto: String) -> String! = {
       }
     }
   }
+  let scope = if upto == "" then "the whole database" else "the database up to ${upto}"
   let header = """
-    // Absorbed from Metamath by `arlk absorb-mm`: set.mm up to ${upto}
+    // Absorbed from Metamath by `arlk absorb-mm`: ${scope}
     // (${int.to_string(count)} theorems). Check it with `arlk check <this file>`;
     // no Metamath verifier is needed. The check is relative to the axioms and
     // syntax facts below (see `axioms`).
     """
-  let last = label_name(upto)
-  ok(list.join([header, "room setmm", ""] + out + ["", "axioms ${last}"], "\n") + "\n")
+  let last = if upto == "" then last_theorem else label_name(upto)
+  let footer = if last == "" then [] else ["", "axioms ${last}"]
+  ok(list.join([header, "room setmm", ""] + out + footer, "\n") + "\n")
 }
 
 test "labels and binders" {

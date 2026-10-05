@@ -45,3 +45,48 @@ test "using a hypothesis the theorem does not have is rejected" {
   assert(dropped != header)
   assert(check(string.replace(src, header, dropped)) != none)
 }
+
+// ── Distinct variables (issue #8) ───────────────────────────────────
+// Fixtures in spec/fixtures/metamath; their verdicts were cross-checked with
+// mmverify.py (see the README there).
+
+let FIXTURES = "spec/fixtures/metamath/"
+
+// A fixture with its `$[ base.mm $]` include spelled out.
+effect fn fixture(name: String) -> String = {
+  let base = fs.read_text(FIXTURES + "base.mm") ?? ""
+  let own = fs.read_text(FIXTURES + name) ?? ""
+  base + "\n" + string.replace(own, "$" + "[ base.mm $" + "]", "")
+}
+
+test "a $d pair becomes an obligation the theorem carries; a dummy is chosen fresh" {
+  let out = metamath.absorb_mm(fixture("good.mm")!, "")
+  assert(out != err(""))
+  let text = out ?? ""
+  assert(string.contains(text, "theorem th1(ps: wff, x: setvar, dv_ps_x: Apart_wff_setvar(ps, x))"))
+  assert(string.contains(text, "dv_op_dota_op_dotb: Apart_setvar_setvar(op_dota, op_dotb)"))
+  assert(string.contains(text, "fresh_setvar("))
+  assert_eq(check(text), none)
+}
+
+test "uses that break a $d condition are rejected (as mmverify.py does)" {
+  for f in ["missing.mm", "collapse.mm", "dummy.mm"] {
+    match metamath.absorb_mm(fixture(f)!, "") {
+      ok(_) => assert(false),
+      err(e) => assert(string.contains(e, "distinct")),
+    }
+  }
+}
+
+test "a tampered obligation does not become an assumption" {
+  let text = metamath.absorb_mm(fixture("good.mm")!, "") ?? ""
+  // Drop th1's $d parameter: its proof has nothing to discharge ax-5's obligation with.
+  let header = "theorem th1(ps: wff, x: setvar, dv_ps_x: Apart_wff_setvar(ps, x))"
+  assert(string.contains(text, header))
+  assert(check(string.replace(text, header, "theorem th1(ps: wff, x: setvar)")) != none)
+  // Claim th2 for one variable twice: the obligation cannot be met.
+  let th2 = "theorem th2(op_dota: setvar, op_dotb: setvar, dv_op_dota_op_dotb: Apart_setvar_setvar(op_dota, op_dotb)) -> Prf(wi(weq(op_dota, op_dotb), weq(op_dota, op_dotb))) ="
+  assert(string.contains(text, th2))
+  let collapsed = "theorem th2(op_dota: setvar) -> Prf(wi(weq(op_dota, op_dota), weq(op_dota, op_dota))) =\n  ax_dv(op_dota, op_dota, some_proof)\ntheorem unused(op_dotb: setvar, dv_op_dota_op_dotb: Prf(wi(weq(op_dotb, op_dotb), weq(op_dotb, op_dotb)))) -> Prf(wi(weq(op_dotb, op_dotb), weq(op_dotb, op_dotb))) ="
+  assert(check(string.replace(text, th2, collapsed)) != none)
+}

@@ -2,7 +2,7 @@
 //
 //   arlk check FILE.arlk                 check every declaration
 //   arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export into Arlk source
-//   arlk absorb-mm DB.mm --upto LABEL    turn a Metamath database into Arlk source
+//   arlk absorb-mm DB.mm [--upto LABEL]  turn a Metamath database into Arlk source
 
 import env
 import fs
@@ -20,8 +20,8 @@ let USAGE = """
                                          (--timing: list the slowest declarations;
                                           --keep-going: report every failure, not just the first)
     arlk absorb EXPORT.json [-o OUT]     turn a Lean or Rocq export (tools/) into Arlk source
-    arlk absorb-mm DB.mm --upto LABEL [-o OUT]
-                                         turn a Metamath database, up to LABEL, into Arlk source
+    arlk absorb-mm DB.mm [--upto LABEL] [-o OUT]
+                                         turn a Metamath database (up to LABEL) into Arlk source
   """
 
 effect fn main() -> Unit = {
@@ -31,7 +31,7 @@ effect fn main() -> Unit = {
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
     some("absorb") if not list.is_empty(files) => run_absorb(list.first(files) ?? "", flag(args, "-o"))!,
-    some("absorb-mm") if not list.is_empty(files) and upto != none => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
+    some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
     _ => {
       println(USAGE)
       process.exit(2)
@@ -128,8 +128,46 @@ effect fn run_absorb(path: String, out: String?) -> Unit = {
   }
 }
 
+// `$[ file $]` includes another file (relative to the including one),
+// each file once, as Metamath specifies.
+effect fn with_includes(path: String, mut seen: List[String]) -> String = {
+  if list.contains(seen, path) then "" else {
+    list.push(seen, path)
+    let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+    let dir = match string.last_index_of(path, "/") {
+      some(i) => string.take(path, i + 1),
+      none => "",
+    }
+    var out: List[String] = []
+    var rest = src
+    var going = true
+    // `$[` inside a comment `$( ... $)` is text, not an include.
+    while going {
+      let inc = string.index_of(rest, "$[") ?? -1
+      let com = string.index_of(rest, "$(") ?? -1
+      if inc < 0 then {
+        list.push(out, rest)
+        going = false
+      } else if com >= 0 and com < inc then {
+        let end = string.index_of(string.drop(rest, com), "$)") ?? (string.len(rest) - com)
+        list.push(out, string.take(rest, com + end + 2))
+        rest = string.drop(rest, com + end + 2)
+      } else {
+        list.push(out, string.take(rest, inc))
+        let after = string.drop(rest, inc + 2)
+        let close = string.index_of(after, "$]") ?? string.len(after)
+        let name = string.trim(string.take(after, close))
+        list.push(out, with_includes(dir + name, seen)!)
+        rest = string.drop(after, close + 2)
+      }
+    }
+    list.join(out, "")
+  }
+}
+
 effect fn run_absorb_mm(path: String, upto: String, out: String?) -> Unit = {
-  let src = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  var seen: List[String] = []
+  let src = with_includes(path, seen)!
   match metamath.absorb_mm(src, upto) {
     err(e) => {
       println("✗ ${path}: ${e}")
