@@ -18,7 +18,9 @@ type Hyp = { name: String, essential: Bool, tc: String, toks: List[String] }
 
 // A syntax axiom used as a grammar rule: its template, the typecode of each
 // variable slot, and the slots in argument order.
-type Syn = { name: String, toks: List[String], slots: Map[String, String], order: List[String] }
+// `idx`: the rule's place in the database, so that rules found through
+// the index below are tried in the database's order.
+type Syn = { name: String, toks: List[String], slots: Map[String, String], order: List[String], idx: Int }
 
 // What a proof needs to know to use an assertion: its mandatory hypotheses
 // (`params`: the binder of a floating one, "" for an essential one), its
@@ -159,7 +161,7 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
         some(nm) => nm,
         none => t,
       }, pos + 1)) else ()
-      for rule in map.get(g, tc) ?? [] {
+      for rule in candidates(g, tc, t) {
         for (binds, end) in match_rule(g, toks, vars, names, rule, 0, pos, [:], memo) {
           let args = rule.order |> list.map((v) => map.get(binds, v) ?? "?")
           list.push(found, (call(rule.name, args), end))
@@ -168,6 +170,47 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
       map.insert(memo, key, found)
       found
     },
+  }
+}
+
+// The rules for tc that can start at token t: those starting with t and
+// those starting with a variable, in the database's order.
+local fn candidates(g: Map[String, List[Syn]], tc: String, t: String) -> List[Syn] = {
+  let a = map.get(g, tc + "\u{1}" + t) ?? []
+  let b = map.get(g, tc + "\u{1}") ?? []
+  if list.is_empty(a) then b
+  else if list.is_empty(b) then a
+  else {
+    var out: List[Syn] = []
+    var i = 0
+    var j = 0
+    while i < list.len(a) or j < list.len(b) {
+      match list.get(a, i) {
+        some(x) => match list.get(b, j) {
+          some(y) => if x.idx <= y.idx then {
+            list.push(out, x)
+            i = i + 1
+          } else {
+            list.push(out, y)
+            j = j + 1
+          },
+          none => {
+            list.push(out, x)
+            i = i + 1
+          },
+        },
+        none => match list.get(b, j) {
+          some(y) => {
+            list.push(out, y)
+            j = j + 1
+          },
+          none => {
+            j = j + 1
+          },
+        },
+      }
+    }
+    out
   }
 }
 
@@ -292,7 +335,8 @@ local fn subst(e: MExpr, params: List[String], args: List[MExpr]) -> MExpr = mat
 type Proving = {
   label: String,
   hyps: Map[String, Hyp],
-  asserts: Map[String, Assertion],
+  // The assertions so far are passed beside it (`mut`, so not copied):
+  // copied into every proof's record they made absorbing quadratic.
   mandatory: List[String],
   // The binder each dummy variable (by hypothesis label) stands for.
   dummies: Map[String, String],
@@ -330,7 +374,7 @@ local fn apart(c: Proving, a: MExpr, b: MExpr) -> String! = match b {
   MStep(_, _) => err("${c.label}: a proof where an expression was expected"),
 }
 
-local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
+local fn step(c: Proving, mut asserts: Map[String, Assertion], stack: List[MExpr], label: String) -> List[MExpr]! =
   match map.get(c.hyps, label) {
     some(h) =>
       if list.contains(c.mandatory, label) then ok(stack + [if h.essential then MProof(h.name) else MVar(h.name, h.tc)])
@@ -338,7 +382,7 @@ local fn step(c: Proving, stack: List[MExpr], label: String) -> List[MExpr]! =
         some(s) => ok(stack + [MVar(s, h.tc)]),
         none => err("${c.label}: hypothesis ${label} is not available here"),
       },
-    none => match map.get(c.asserts, label) {
+    none => match map.get(asserts, label) {
       some(a) => {
         let k = list.len(a.params)
         let n = list.len(stack)
@@ -372,7 +416,7 @@ local fn proof_labels(proof: List[String]) -> List[String] =
 // statement, proof), in order (each may use the earlier ones). Naming them
 // keeps the proof a graph, as Metamath has it, instead of a tree that
 // copies each reused step at every use.
-fn proof_term(c: Proving, proof: List[String]) -> (MExpr, List[(String, String, String)])! = {
+fn proof_term(c: Proving, mut asserts: Map[String, Assertion], proof: List[String]) -> (MExpr, List[(String, String, String)])! = {
   var stack: List[MExpr] = []
   var named: List[(String, String, String)] = []
   if at(proof, 0) == "(" then {
@@ -389,9 +433,9 @@ fn proof_term(c: Proving, proof: List[String]) -> (MExpr, List[(String, String, 
         let num = acc * 20 + (cp - 65) + 1
         acc = 0
         if num <= m then {
-          stack = step(c, stack, list.get(c.mandatory, num - 1) ?? "")!
+          stack = step(c, asserts, stack, list.get(c.mandatory, num - 1) ?? "")!
         } else if num <= m + l then {
-          stack = step(c, stack, list.get(labels, num - m - 1) ?? "")!
+          stack = step(c, asserts, stack, list.get(labels, num - m - 1) ?? "")!
         } else {
           let s = list.get(saved, num - m - l - 1)
           guard s != none else err("${c.label}: bad back-reference in a compressed proof")
@@ -420,7 +464,7 @@ fn proof_term(c: Proving, proof: List[String]) -> (MExpr, List[(String, String, 
   } else {
     for label in proof {
       guard label != "?" else err("${c.label}: incomplete proof")
-      stack = step(c, stack, label)!
+      stack = step(c, asserts, stack, label)!
     }
   }
   match stack {
@@ -662,8 +706,13 @@ fn absorb_mm(src: String, upto: String) -> String! = {
               list.push(order, at(hy.toks, 0))
               list.push(cslots, (hy.name, binder_name(hy.tc)))
             }
-            let rule = Syn { name: name, toks: stmt, slots: slots, order: order }
+            let rule = Syn { name: name, toks: stmt, slots: slots, order: order, idx: list.len(ctors) }
             map.insert(grammar, tc, (map.get(grammar, tc) ?? []) + [rule])
+            // Indexed by the first token: a rule starting with a constant
+            // is tried only where that constant is.
+            let first = at(stmt, 0)
+            let key = if map.contains(slots, first) then tc + "\u{1}" else tc + "\u{1}" + first
+            map.insert(grammar, key, (map.get(grammar, key) ?? []) + [rule])
             let k = Ctor { name: name, tc: binder_name(tc), slots: cslots }
             list.push(ctors, k)
             if dv_on then {
@@ -734,8 +783,8 @@ fn absorb_mm(src: String, upto: String) -> String! = {
               list.push(fresh_before, d)
             } else ()
           }
-          let ctx = Proving { label: label, hyps: hyps, asserts: asserts, mandatory: mandatory, dummies: dummies, facts: facts }
-          let (proof, named) = proof_term(ctx, proof_toks)!
+          let ctx = Proving { label: label, hyps: hyps, mandatory: mandatory, dummies: dummies, facts: facts }
+          let (proof, named) = proof_term(ctx, asserts, proof_toks)!
           if tc == PROVABLE then {
             let closes = list.join(list.repeat(")", list.len(opens)), "")
             let opened = list.join(opens |> list.map((o) => o + "\n    "), "")

@@ -307,6 +307,9 @@ and reading Lean and Rocq libraries directly into these native features instead 
 
 ## Absorbing provers
 
+What Arlk takes from each system, natively and when absorbing it, and what is missing:
+[docs/COVERAGE.md](docs/COVERAGE.md).
+
 ```
 tools/lean-export/Export.lean      Lean side: a declaration (or module) and its dependencies as JSON
 tools/rocq-export/                 Rocq side: a plugin, `Arlk Export "out.json" name...`
