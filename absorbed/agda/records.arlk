@@ -1,0 +1,53 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Records (Records.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Records
+
+type Bool: Type =
+  | true: Bool
+  | false: Bool
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type eq(A: Type, x: A): A -> Type =
+  | refl: eq(A, x, x)
+
+type List(A: Type): Type =
+  | nil: List(A)
+  | cons(x1: A, x2: List(A)): List(A)
+
+type Pair(A: Type, B: Type): Type =
+  | pair(fst: A, snd: B): Pair(A, B)
+
+def Pair.fst[A: Type, B: Type](r: Pair(A, B)) -> A = match r {
+  pair(fst, snd) => fst,
+}
+
+def Pair.snd[A: Type, B: Type](r: Pair(A, B)) -> B = match r {
+  pair(fst, snd) => snd,
+}
+
+def swap[A: Type, B: Type](p: Pair(A, B)) -> Pair(B, A) = Pair.pair(Pair.snd(p), Pair.fst(p))
+
+def swap_swap[A: Type, B: Type](p: Pair(A, B)) -> eq(_, swap(swap(p)), p) = match p {
+  pair(a, b) => eq.refl,
+}
+
+def filter[A: Type](p: A -> Bool, x3: List(A)) -> List(A) = match x3 {
+  nil => List.nil,
+  cons(x, xs) =>  match p(x) {
+    true => List.cons(x, filter(p, xs)),
+    false => filter(p, xs),
+  },
+}
+
+def not(x1: Bool) -> Bool = match x1 {
+  true => Bool.false,
+  false => Bool.true,
+}
+
+def evens: List(Bool) = filter(not, List.cons(Bool.true, List.cons(Bool.false, List.cons(Bool.false, List.nil))))
+
+def evens_ok: eq(_, evens, List.cons(Bool.false, List.cons(Bool.false, List.nil))) = eq.refl

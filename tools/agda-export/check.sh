@@ -35,6 +35,10 @@ if "$arlk" check "$work/Bad.arlk" >"$work/bad.log" 2>&1; then echo "FAIL  a wron
 # constructor fits `suc m ≤ suc n`, but s≤s does; the kernel side refuses.
 sed 's/^≤-pred (s≤s p) = p/≤-pred ()/; s/^module Order/module BadOrder/' absorbed/agda/Order.agda >"$work/BadOrder.agda"
 if (cd "$work" && "$arlk" absorb-agda BadOrder.agda -o BadOrder.arlk >/dev/null) && "$arlk" check "$work/BadOrder.arlk" >"$work/badorder.log" 2>&1; then echo "FAIL  a wrong absurd pattern was accepted"; fails=1; elif grep -q "no arm for" "$work/badorder.log"; then echo "pass  a wrong absurd pattern is rejected"; else echo "FAIL  a wrong absurd pattern failed for another reason"; tail -2 "$work/badorder.log"; fails=1; fi
+# A wrong `with` arm: filter keeps nothing, so evens-ok is false.
+sed 's/^\.\.\. | true  = x ∷ filter p xs/... | true  = filter p xs/; s/^module Records/module BadWith/' absorbed/agda/Records.agda >"$work/BadWith.agda"
+if cmp -s absorbed/agda/Records.agda "$work/BadWith.agda"; then echo "FAIL  the with mutation did not apply"; fails=1; fi
+if (cd "$work" && "$arlk" absorb-agda BadWith.agda -o BadWith.arlk >/dev/null) && "$arlk" check "$work/BadWith.arlk" >"$work/badwith.log" 2>&1; then echo "FAIL  a wrong with arm was accepted"; fails=1; elif grep -q "BadWith.arlk:$(grep -n '^def evens_ok' "$work/BadWith.arlk" | cut -d: -f1): type mismatch" "$work/badwith.log"; then echo "pass  a wrong with arm is rejected (evens-ok)"; else echo "FAIL  a wrong with arm failed for another reason"; tail -2 "$work/badwith.log"; fails=1; fi
 # The transport: Agda's +-comm proves nat.add_comm, with nothing assumed.
 if "$arlk" check absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk >"$work/tr.log" 2>&1 && grep -q "symbols: (none)" "$work/tr.log"; then echo "pass  transport from Agda, no symbols"; else echo "FAIL  transport from Agda (see $work/tr.log)"; fails=1; fi
 exit $fails

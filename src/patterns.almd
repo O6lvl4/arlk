@@ -252,6 +252,11 @@ fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) 
   ok(raw_apply(call, other_names |> list.map((x) => RName(x))))
 }
 
+local fn codomain(r: Raw) -> Raw = match r {
+  RPi(_, _, b) => codomain(b),
+  other => other,
+}
+
 // ── Index patterns ──────────────────────────────────────────────────
 
 local fn raw_key(r: Raw) -> String = match r {
@@ -640,7 +645,13 @@ local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> R
     let taken = names_in(e) + names_in(ret) + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars
     let v = fresh("value", taken)
     let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
-    let cx2 = { ...cx, heads: cx.heads + [(v, "=" + fname)] }
+    // A call of a parameter (`p(x)` for `p: A -> Bool`): its type is the
+    // one its declared type ends in.
+    let head = match list.find(cx.d.params, ((x, _)) => x == fname) {
+      some((_, ty)) => raw_head_name(codomain(ty)),
+      none => "=" + fname,
+    }
+    let cx2 = { ...cx, heads: cx.heads + [(v, head)] }
     let inner = matrix(cx2, [v], rows, look, ret)!
     ok(RApp(RLam(v, hole(), inner), recursive_calls(cx, e)!))
   },

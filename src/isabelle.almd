@@ -284,7 +284,7 @@ fn absorb(src0: String, file: String) -> String! = {
   guard at(words, 0) == "theory" else err("${file}: expected `theory Name imports ... begin`")
   let thy = at(words, 1)
   var i = (list.index_of(words, "begin") ?? 0) + 1
-  var sc = AScope { datas: [], funs: [], fixes: [], own: "" }
+  var sc = AScope { datas: [], funs: [], fixes: [], own: "", opens: [] }
   var type_names: List[String] = []
   var sigs: List[(String, AExpr)] = []
   var out: List[String] = []

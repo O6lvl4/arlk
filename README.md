@@ -453,10 +453,12 @@ axioms, each next to its checked `nonempty` theorem).
 
 Agda's checked terms are not exported (that needs a Haskell backend); instead `arlk absorb-agda`
 ([src/agda.almd](src/agda.almd)) reads an Agda module's source, in a subset (`data` with
-parameters and indices, `infix` declarations, signatures with implicit arguments, clauses by
-pattern matching, binary mixfix operators, `λ`, `Set`), and writes the same development as Arlk
-types and definitions: clauses become a case tree of `match`es, `_+_` becomes `plus`, implicit
-arguments are inferred at uses. The result rests on no assumption; a mistranslation is a type
+parameters and indices, `record` with `open`, `infix` declarations, signatures with implicit
+arguments, clauses by pattern matching with absurd patterns `()` and `with`, binary mixfix
+operators, `λ`, `Set`), and writes the same development as Arlk types and definitions: clauses
+become a case tree of `match`es (an absurd clause leaves its arm out, for Arlk's match to find
+impossible; `with e` becomes `match e`), a record becomes a type with one constructor and a
+projection per field, `_+_` becomes `plus`, implicit arguments are inferred at uses. The result rests on no assumption; a mistranslation is a type
 error. [tools/agda-export/check.sh](tools/agda-export/check.sh) runs Agda on the source when it is
 installed, regenerates the translation and checks it, and checks that a wrong proof in the source
 is rejected. [examples/agda_transport.arlk](examples/agda_transport.arlk) uses Agda's `+-comm` to
@@ -467,6 +469,11 @@ $ ./arlk absorb-agda absorbed/agda/Arith.agda -o absorbed/agda/arith.arlk
 $ ./arlk check absorbed/agda/arith.arlk
 ok: absorbed/agda/arith.arlk (27 declarations)
 ```
+
+[absorbed/agda](absorbed/agda) holds three modules, all accepted by Agda 2.8.0.2 and checked in full:
+`Arith` (naturals, lists, equality and their laws, 27 declarations), `Order` (`_≤_` as an indexed
+family, `≤-pred`, `¬s≤z ()`, 15) and `Records` (a record with projections, `open`, `filter` by
+`with`, 26).
 
 ### Isabelle/HOL
 

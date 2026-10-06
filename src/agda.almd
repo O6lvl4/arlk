@@ -16,9 +16,11 @@
 // to confirm that Agda accepts what was absorbed).
 //
 // The subset: `module M where`, `data` (parameters, indices, constructors),
+// `record` (`constructor`, `field`; `open R` for its projections),
 // `infix`/`infixl`/`infixr`, type signatures and clauses by pattern
-// matching (constructor, variable, `_` and dot patterns, operators in
-// patterns), application, binary mixfix operators `_op_`, `→`, `(x : A) →`,
+// matching (constructor, variable, `_`, dot and absurd `()` patterns,
+// operators in patterns, `with e` and its `... | p = rhs` arms),
+// application, binary mixfix operators `_op_`, `→`, `(x : A) →`,
 // `{x : A} →`, `λ x →`, `Set`. Implicit arguments are inferred at uses, as
 // in Agda; implicit parameters of a definition move to the front (Arlk's
 // `[...]`), so they may depend only on earlier implicit ones. Clauses are
@@ -37,6 +39,8 @@ type AExpr =
   | ELam(List[String], AExpr)
   | ESet(Int)
   | EHole
+  // `f ps with e` and its `... | p = rhs` clauses: a match on e.
+  | EWith(AExpr, List[(APat, AExpr)])
 
 type APat =
   | PV(String)
@@ -52,7 +56,8 @@ type AFix = { op: String, level: Int, assoc: String }
 
 // What a term mentions: data types, constructors (by type), functions
 // (with their implicit parameters' positions), fixities.
-type AScope = { datas: List[AData], funs: List[(String, List[Bool])], fixes: List[AFix], own: String }
+// `opens`: names a module opened here stands for (`fst` for `Pair.fst`).
+type AScope = { datas: List[AData], funs: List[(String, List[Bool])], fixes: List[AFix], own: String, opens: List[(String, String)] }
 
 // ── Lexing ──────────────────────────────────────────────────────────
 
@@ -168,6 +173,10 @@ local fn char_name(c: String) -> String = match c {
   "₈" => "8",
   "₉" => "9",
   "-" => "_",
+  "," => "pair",
+  "." => ".",
+  "[" => "nil",
+  "]" => "",
   _ => if string.is_alphanumeric(c) or c == "_" or c == "'" then c else "x",
 }
 
@@ -395,6 +404,20 @@ fn emit(cx: ACx, e: AExpr) -> String = match e {
   ELam(ns, body) => "(" + list.join(ns |> list.map((n) => mangle(n) + ": _"), ", ") + ") => " + emit({ ...cx, bound: cx.bound + ns }, body),
   ESet(k) => if k == 0 then "Type" else "Sort(${int.to_string(k + 1)})",
   EHole => "_",
+  EWith(scrut, arms) => " match ${emit(cx, scrut)} {\n" + list.join(arms |> list.map(((p, rhs)) => "    ${emit_pat(cx.sc, p)} => ${emit({ ...cx, bound: cx.bound + pat_vars(p) }, rhs)},"), "\n") + "\n  }",
+}
+
+// A pattern in a `with` arm, as Arlk writes it.
+local fn emit_pat(sc: AScope, p: APat) -> String = match p {
+  PV(x) => mangle(x),
+  PW => "_",
+  PC(c, ps) => match ctor_of(sc, c) {
+    some((_, ci)) => {
+      let full = expand_implicit(ci, ps)
+      mangle(c) + (if list.is_empty(full) then "" else "(" + list.join(full |> list.map((q) => emit_pat(sc, q)), ", ") + ")")
+    },
+    none => mangle(c),
+  },
 }
 
 local fn paren_arrow(cx: ACx, a: AExpr) -> String = match a {
@@ -414,7 +437,10 @@ local fn emit_app(cx: ACx, n: String, args: List[AExpr]) -> String = {
     some(d) => call(mangle(d.name), fill(d.params |> list.map(((p, _, imp)) => if imp then some(if cx.sc.own == d.name then mangle(p) else "_") else none), out_args)),
     none => match ctor_of(cx.sc, n) {
       some((d, c)) => call(mangle(d.name) + "." + mangle(c.name), fill(c.args |> list.map(((_, _, imp)) => if imp then some("_") else none), out_args)),
-      none => call(mangle(n), out_args),
+      none => call(mangle(match list.find(cx.sc.opens, ((a, _)) => a == n) {
+        some((_, full)) => full,
+        none => n,
+      }), out_args),
     },
   }
 }
@@ -460,6 +486,7 @@ local fn free_vars(e: AExpr) -> List[String] = match e {
   EArrow(a, b) => free_vars(a) + free_vars(b),
   EPi(bs, _, body) => (bs |> list.flat_map(((_, t)) => free_vars(t))) + (free_vars(body) |> list.filter((v) => not list.any(bs, ((n, _)) => n == v))),
   ELam(ns, body) => free_vars(body) |> list.filter((v) => not list.contains(ns, v)),
+  EWith(e, arms) => free_vars(e) + (arms |> list.flat_map(((p, rhs)) => free_vars(rhs) |> list.filter((v) => not list.contains(pat_vars(p), v)))),
   _ => [],
 }
 
@@ -680,7 +707,7 @@ fn absorb(src: String, file: String) -> String! = {
   }
   let bl = blocks(body, base)
   // First pass: names, so that operators and constructors are known.
-  var sc = AScope { datas: [], funs: [], fixes: [], own: "" }
+  var sc = AScope { datas: [], funs: [], fixes: [], own: "", opens: [] }
   for b in bl {
     let words = b |> list.map((t) => t.text)
     let head = at(words, 0)
@@ -693,6 +720,11 @@ fn absorb(src: String, file: String) -> String! = {
       for op in list.drop(words, 2) {
         sc = { ...sc, fixes: sc.fixes + [AFix { op: string.slice(op, 1, string.len(op) - 1), level: level, assoc: assoc }] }
       }
+    } else if head == "record" then {
+      let rname = at(words, 1)
+      let ci = list.index_of(words, "constructor") ?? -1
+      let cname = if ci >= 0 then at(words, ci + 1) else rname + ".constructor"
+      sc = { ...sc, datas: sc.datas + [AData { name: rname, params: [], arity: EHole, ctors: [ACtor { name: cname, args: [], result: EHole }] }] }
     } else if head == "data" then {
       // Constructors' names first; their types later.
       let ctors = data_ctor_names(b, base)
@@ -704,6 +736,7 @@ fn absorb(src: String, file: String) -> String! = {
   var pending: List[(String, AExpr)] = []
   var clauses: Map[String, List[(List[APat], AExpr)]] = [:]
   var order: List[String] = []
+  var pending_with: (String, List[APat], AExpr, List[(APat, AExpr)])? = none
   for b in bl {
     let words = b |> list.map((t) => t.text)
     let head = at(words, 0)
@@ -711,8 +744,50 @@ fn absorb(src: String, file: String) -> String! = {
       some(t) => t.line,
       none => 0,
     }
-    guard head != "open" and head != "import" else err("${file}:${int.to_string(line)}: imports are not supported; absorb a self-contained module")
-    if head == "infix" or head == "infixl" or head == "infixr" then ()
+    // `open R`: a record's projections by their field names.
+    let opened = if head == "open" then data_of(sc, at(words, 1)) else none
+    guard head != "import" and (head != "open" or opened != none) else err("${file}:${int.to_string(line)}: imports are not supported; absorb a self-contained module")
+    if head != "..." then {
+      flush_with(clauses, pending_with)
+      pending_with = none
+    } else ()
+    if head == "open" then {
+      match opened {
+        some(d) => {
+          for c in d.ctors {
+            for (f, _, _) in c.args {
+              sc = { ...sc, opens: sc.opens + [(f, d.name + "." + f)] }
+            }
+          }
+        },
+        none => (),
+      }
+    } else if head == "..." then {
+      // `... | p = rhs`: an arm of the `with` above.
+      let bar = list.index_of(words, "|") ?? -1
+      let eq2 = list.index_of(words, "=") ?? -1
+      guard bar >= 0 and eq2 > bar else err("${file}:${int.to_string(line)}: expected `... | pattern = right-hand side`")
+      let (pe, _) = parse_expr(sc, list.slice(words, bar + 1, eq2), 0)!
+      let (rhs, _) = parse_expr(sc, list.drop(words, eq2 + 1), 0)!
+      let p = to_pat(sc, pe)!
+      pending_with = match pending_with {
+        some((f, ps, e, arms)) => some((f, ps, e, arms + [(p, rhs)])),
+        none => none,
+      }
+      guard pending_with != none else err("${file}:${int.to_string(line)}: `...` without a `with` clause above")
+    } else if head == "record" then {
+      let (d, projs) = parse_record(sc, b)!
+      sc = { ...sc, datas: (sc.datas |> list.filter((x) => x.name != d.name)) + [d] }
+      list.push(order, "data:" + d.name)
+      for (f, ty, cl) in projs {
+        list.push(pending, (f, ty))
+        let (pbs, _) = unpi(ty)
+        let pimps = pbs |> list.map(((_, _, imp)) => imp)
+        sc = { ...sc, funs: sc.funs + [(f, pimps)] }
+        list.push(order, "fun:" + f)
+        clauses = map.set(clauses, f, [cl])
+      }
+    } else if head == "infix" or head == "infixl" or head == "infixr" then ()
     else if head == "data" then {
       let d = parse_data(sc, b, base)!
       sc = { ...sc, datas: (sc.datas |> list.filter((x) => x.name != d.name)) + [d] }
@@ -731,6 +806,22 @@ fn absorb(src: String, file: String) -> String! = {
           sc = { ...sc, funs: sc.funs + [(f, imps)] }
           list.push(order, "fun:" + f)
         }
+      } else if list.contains(words, "with") and (eq < 0 or (list.index_of(words, "with") ?? 0) < eq) then {
+        // `f ps with e`: its arms follow as `... | p = rhs`.
+        let wi = list.index_of(words, "with") ?? 0
+        let (lhs, _) = parse_expr(sc, list.take(words, wi), 0)!
+        let (e, _) = parse_expr(sc, list.drop(words, wi + 1), 0)!
+        let (f, args) = match lhs {
+          EApp(EVar(f), args) => (f, args),
+          EVar(f) => (f, []),
+          _ => ("", []),
+        }
+        guard f != "" else err("${file}:${int.to_string(line)}: cannot read this clause's left-hand side")
+        var ps: List[APat] = []
+        for a in args {
+          list.push(ps, to_pat(sc, a)!)
+        }
+        pending_with = some((f, ps, e, []))
       } else {
         // An absurd clause, `f ()`: no right-hand side; `()` names an
         // argument whose type has no constructor that fits.
@@ -763,6 +854,7 @@ fn absorb(src: String, file: String) -> String! = {
       }
     }
   }
+  flush_with(clauses, pending_with)
   for item in order {
     if string.starts_with(item, "data:") then {
       match data_of(sc, string.drop(item, 5)) {
@@ -783,6 +875,95 @@ fn absorb(src: String, file: String) -> String! = {
     // ordinary Arlk type or definition, checked by the kernel.
     """
   ok(header + "\nroom agda." + mangle(modname) + "\n\n" + list.join(out, "\n\n") + "\n")
+}
+
+// A `with` clause and its arms, as one clause whose right-hand side
+// matches on the `with` expression.
+local fn flush_with(mut clauses: Map[String, List[(List[APat], AExpr)]], w: (String, List[APat], AExpr, List[(APat, AExpr)])?) -> Unit = match w {
+  some((f, ps, e, arms)) => {
+    map.insert(clauses, f, (map.get(clauses, f) ?? []) + [(ps, EWith(e, arms))])
+  },
+  none => (),
+}
+
+// `record R params : Set where constructor c; field f : T ...`: a data
+// type with one constructor taking the fields, and a projection per field
+// (`R.f`, defined by a clause on the constructor). A field's type may
+// mention earlier fields; in the projection's type they become earlier
+// projections of the record.
+local fn parse_record(sc: AScope, b: List[ATok]) -> (AData, List[(String, AExpr, (List[APat], AExpr))])! = {
+  let words = b |> list.map((t) => t.text)
+  let name = at(words, 1)
+  let w = list.index_of(words, "where") ?? -1
+  guard w > 0 else err("record ${name}: expected `where`")
+  var params: List[(String, AExpr, Bool)] = []
+  var j = 2
+  while at(words, j) == "(" or at(words, j) == "{" {
+    let e = group_end(words, j)
+    let inner = list.slice(words, j + 1, e)
+    let colon = list.index_of(inner, ":") ?? 0
+    let (ty, _) = parse_expr(sc, list.drop(inner, colon + 1), 0)!
+    for n in list.take(inner, colon) {
+      list.push(params, (n, ty, at(words, j) == "{"))
+    }
+    j = e + 1
+  }
+  guard at(words, j) == ":" else err("record ${name}: expected `:` after the parameters")
+  let (arity, _) = parse_expr(sc, list.slice(words, j + 1, w), 0)!
+  let sc2 = { ...sc, datas: sc.datas |> list.map((d) => if d.name == name then { ...d, params: params } else d) }
+  var cname = name + ".constructor"
+  var fields: List[(String, AExpr, Bool)] = []
+  for sub in blocks(list.drop(b, w + 1), ctor_col(b, w)) {
+    let ws = sub |> list.map((t) => t.text)
+    if at(ws, 0) == "constructor" then {
+      cname = at(ws, 1)
+    } else if at(ws, 0) == "field" then {
+      let rest = list.drop(sub, 1)
+      let col = match list.first(rest) {
+        some(t) => t.col,
+        none => 1,
+      }
+      for fl in blocks(rest, col) {
+        let fws = fl |> list.map((t) => t.text)
+        let colon = list.index_of(fws, ":") ?? 0
+        let (ty, _) = parse_expr(sc2, list.drop(fws, colon + 1), 0)!
+        for f in list.take(fws, colon) {
+          list.push(fields, (f, ty, false))
+        }
+      }
+    } else ()
+  }
+  let pvars = params |> list.map(((n, _, _)) => EVar(n))
+  let self_ty = if list.is_empty(pvars) then EVar(name) else EApp(EVar(name), pvars)
+  let d = AData { name: name, params: params, arity: arity, ctors: [ACtor { name: cname, args: fields, result: self_ty }] }
+  var projs: List[(String, AExpr, (List[APat], AExpr))] = []
+  let fnames = fields |> list.map(((f, _, _)) => f)
+  for (f, ty, _) in fields {
+    // Earlier fields in the type: projections of the record argument.
+    var ty2 = ty
+    for g in fnames {
+      if g != f then {
+        ty2 = subst_var(ty2, g, EApp(EVar(name + "." + g), [EVar("r")]))
+      } else ()
+    }
+    var pty = EPi([("r", self_ty)], false, ty2)
+    for (pn, pt, _) in list.reverse(params) {
+      pty = EPi([(pn, pt)], true, pty)
+    }
+    let pat = PC(cname, fnames |> list.map((g) => PV(g)))
+    list.push(projs, (name + "." + f, pty, ([pat], EVar(f))))
+  }
+  ok((d, projs))
+}
+
+// e with the variable x replaced by `by` (not under a binder for x).
+local fn subst_var(e: AExpr, x: String, by: AExpr) -> AExpr = match e {
+  EVar(n) => if n == x then by else e,
+  EApp(f, args) => EApp(subst_var(f, x, by), args |> list.map((a) => subst_var(a, x, by))),
+  EArrow(a, b) => EArrow(subst_var(a, x, by), subst_var(b, x, by)),
+  EPi(bs, imp, body) => EPi(bs |> list.map(((n, t)) => (n, subst_var(t, x, by))), imp, if list.any(bs, ((n, _)) => n == x) then body else subst_var(body, x, by)),
+  ELam(ns, body) => if list.contains(ns, x) then e else ELam(ns, subst_var(body, x, by)),
+  other => other,
 }
 
 local fn data_ctor_names(b: List[ATok], base: Int) -> List[String] = {
@@ -835,6 +1016,18 @@ local fn parse_data(sc: AScope, b: List[ATok], base: Int) -> AData! = {
     }
   }
   ok(AData { name: name, params: params, arity: arity, ctors: ctors })
+}
+
+test "records become a type with projections, and with becomes a match on the call" {
+  let src = "module R where\n\ndata Bool : Set where\n  true  : Bool\n  false : Bool\n\nrecord P (A : Set) : Set where\n  constructor mk\n  field\n    one : A\n    two : A\n\nopen P\n\nflip : {A : Set} → P A → P A\nflip p = mk (two p) (one p)\n\nchoose : (Bool → Bool) → Bool → Bool\nchoose f b with f b\n... | true  = b\n... | false = true\n"
+  let out = match absorb(src, "R.agda") {
+    ok(o) => o,
+    err(e) => e,
+  }
+  assert(string.contains(out, "| mk(one: A, two: A): P(A)"))
+  assert(string.contains(out, "def P.one[A: Type](r: P(A)) -> A = match r {"))
+  assert(string.contains(out, "P.mk(P.two(p), P.one(p))"))
+  assert(string.contains(out, "match f(b) {"))
 }
 
 test "Agda names become Arlk identifiers" {
