@@ -851,26 +851,22 @@ The full map of the trusted base, with the code each guarantee rests on, is in
 
 ## Roadmap
 
-1. **Kernel hardening.** Confluence and termination checks for rules, and checking subject
-   reduction properly instead of trusting the declared variable types.
-2. **Bridges between rooms.** Done: hand-built bridges ([examples/bridge.arlk](examples/bridge.arlk),
-   [examples/transport.arlk](examples/transport.arlk)) and checked views that carry theories
-   along (`view`/`translate`, [examples/hol_types.arlk](examples/hol_types.arlk)), in the spirit of
-   MMT's views and institution theory. Next: views between absorbed libraries (HOL's numbers as
-   Lean's), universe-polymorphic views, and carrying rewrite rules along a view.
-3. **Absorbing Lean 4 and Rocq** (started: Lean's `Init.Data.Nat.Basic` and Rocq's
-   `Corelib.Init` check). The goal is not to interoperate with Lean but to take it over. Lean's
-   type theory (universes, inductive types and their recursors, proof-irrelevant `Prop`,
-   quotients) becomes one room, `lean`, encoded in Arlk's own core. Lean's declarations, Mathlib
-   included, are translated into that room once and from then on are checked by Arlk's kernel
-   alone. Lean is needed only as the source of the original text, never to trust a result. The
-   translation starts from Lean's kernel export, the same way
-   [lean4-rust-backend](https://github.com/O6lvl4/lean4-rust-backend) takes Lean's compiler IR out
-   as JSON and rebuilds it outside Lean. Metamath has started too (set.mm's propositional
-   calculus, `$d`, and set.mm well into ZF), and HOL (OpenTheory's standard library). Next: Isabelle's
-   own theories (HOL is its logic; its proof terms are the way in), Agda, and Dedukti `.dk` files,
-   each into a room of its own.
-4. **Natural language layer.** Pair each theorem with a statement in natural language, and
+What each system's features are in Arlk, and what is missing, is tabulated in
+[docs/COVERAGE.md](docs/COVERAGE.md); the roadmap is its missing rows.
+
+1. **Kernel hardening.** Confluence and termination checks for user rewrite rules, and checking
+   subject reduction instead of trusting a rule's declared variable types.
+2. **The rest of each library.** Lean: string literals in the exporter, then `Init` as a whole;
+   `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
+   (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
+   `with` that abstracts the goal in proofs, instance arguments. Isabelle: Isar with `have` steps,
+   `⟹` premises, type classes, more of Main. Metamath: set.mm as a whole in CI.
+3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
+   guarded corecursion that is not a state machine.
+4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used
+   again, almide/almide#3434, fixed upstream and not yet released). Lean `Nat.Lemmas` takes about
+   10 minutes, `List.Lemmas` about 16.
+5. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 
 ## Almide issues found while building Arlk
