@@ -37,13 +37,13 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Lean feature | Status |
 |---|---|
 | Inductive types, recursors, K-like reduction | absorbed (symbols and rules); native equivalents |
-| Structures, projections, structure η | absorbed (`structure` declarations, η in conversion and in recursor matching); native records with η |
+| Structures, projections, structure η | absorbed (`structure` declarations, η in conversion and in recursor matching; the exporter exports every projection of a structure it uses, so η is declared wherever Lean has it); native records with η |
 | Quotients | absorbed (`Quot.lift`/`Quot.ind` rules, `Quot.sound` an axiom); native in `lib/quot.arlk` |
 | Nested and mutual inductives | native; absorbed as Lean's kernel declares them (symbols and rules) |
 | Well-founded recursion (`termination_by`) | native (`decreasing x by W`); absorbed as the kernel terms Lean compiles it to |
 | Universe polymorphism | native; absorbed constants are instantiated per use |
 | `Init.Data.Nat.Lemmas` | 1564 of 1573 declarations check; two roots run out of budget |
-| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | 2207 of 2223 declarations check; four roots run out of budget, one is a type mismatch; 119 theorems with string literals not exported yet |
+| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | 2221 of 2236 declarations check; four roots run out of budget; 119 theorems with string literals not exported yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 
 ## Rocq

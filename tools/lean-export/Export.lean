@@ -86,10 +86,26 @@ partial def ensure (c : Name) (us : List Level) : M String := do
         pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr #[rule])]))
       | _ => pure (Json.mkObj (base ++ [("kind", toJson "symbol")]))
     | .recInfo r =>
+      -- A structure's recursor also reduces on a value that is not a
+      -- constructor (Lean's eta for structures), which Arlk does through
+      -- the structure's declared eta: export its projections for that.
+      if let some s := getStructureInfo? env r.getMajorInduct then
+        -- The recursor's levels are the motive's (if any) and then the type's.
+        let tlen := (← getConstInfo s.structName).levelParams.length
+        for f in s.fieldNames do
+          let _ ← ensure (s.structName ++ f) (us.drop (us.length - tlen))
       let rules ← r.rules.toArray.mapM (recRule c us r)
       pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr rules)]))
     | _ => pure (Json.mkObj (base ++ [("kind", toJson "symbol")]))
   modify fun s => { s with decls := s.decls.push decl }
+  -- Every projection of a structure once one is used, so that Arlk can
+  -- declare its eta (`structure S = S.mk(S.f1, ...)` needs them all), as
+  -- Lean's kernel has eta for every structure. After this declaration: a
+  -- later field's type may mention this one.
+  if let some p := env.getProjectionFnInfo? c then
+    if let some s := getStructureInfo? env (← getConstInfoCtor p.ctorName).induct then
+      for f in s.fieldNames do
+        let _ ← ensure (s.structName ++ f) us
   return k
 
 partial def exportExpr (fvs : Array Expr) (e : Expr) : M Json := do

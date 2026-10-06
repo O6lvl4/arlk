@@ -528,7 +528,7 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
 | Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~10.5 min |
-| Lean `Init.Data.List.Lemmas` (570 theorems at their lowest universes; `ARLK_FULL=1` in CI) | 2207 of 2223 (`Nat.Linear`'s two roots and two list splitters run out of budget; `get_cons_succ'` is a type mismatch) | ~16 min |
+| Lean `Init.Data.List.Lemmas` (570 theorems at their lowest universes; `ARLK_FULL=1` in CI) | 2221 of 2236 (`Nat.Linear`'s two roots and two list splitters run out of budget) | ~16 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |

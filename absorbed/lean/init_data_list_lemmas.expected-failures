@@ -1,16 +1,15 @@
-absorbed/lean/init_data_list_lemmas.arlk:2364: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:2368: unknown name Nat.Linear.Expr.denote_toPoly_go
-absorbed/lean/init_data_list_lemmas.arlk:2408: unknown name Nat.Linear.Expr.denote_toPoly
-absorbed/lean/init_data_list_lemmas.arlk:2426: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:2428: unknown name Nat.Linear.Poly.isNum_._sparseCasesOn_1.else_eq@1@0
-absorbed/lean/init_data_list_lemmas.arlk:2430: unknown name _private.Init.Data.Nat.Linear.0.Nat.Linear.Poly.isZero.match_1.eq_2@1
-absorbed/lean/init_data_list_lemmas.arlk:2458: unknown name Nat.Linear.Poly.of_isZero
-absorbed/lean/init_data_list_lemmas.arlk:2460: unknown name Nat.Linear.ExprCnstr.denote_toNormPoly
-absorbed/lean/init_data_list_lemmas.arlk:2464: unknown name Nat.Linear.ExprCnstr.eq_false_of_isUnsat
-absorbed/lean/init_data_list_lemmas.arlk:2466: unknown name List.append_cancel_right@0
-absorbed/lean/init_data_list_lemmas.arlk:2468: unknown name List.append_cancel_right_eq@0
-absorbed/lean/init_data_list_lemmas.arlk:3778: type mismatch for
-absorbed/lean/init_data_list_lemmas.arlk:4049: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:4053: unknown name _private.Init.Data.List.Lemmas.0.List.isEqv.match_1.splitter@0@0
-absorbed/lean/init_data_list_lemmas.arlk:4521: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:4525: unknown name _private.Init.Data.List.Lemmas.0.List.splitAt.go.match_1.splitter@0@0
+absorbed/lean/init_data_list_lemmas.arlk:2388: out of budget: reduction did not finish
+absorbed/lean/init_data_list_lemmas.arlk:2392: unknown name Nat.Linear.Expr.denote_toPoly_go
+absorbed/lean/init_data_list_lemmas.arlk:2432: unknown name Nat.Linear.Expr.denote_toPoly
+absorbed/lean/init_data_list_lemmas.arlk:2450: out of budget: reduction did not finish
+absorbed/lean/init_data_list_lemmas.arlk:2452: unknown name Nat.Linear.Poly.isNum_._sparseCasesOn_1.else_eq@1@0
+absorbed/lean/init_data_list_lemmas.arlk:2454: unknown name _private.Init.Data.Nat.Linear.0.Nat.Linear.Poly.isZero.match_1.eq_2@1
+absorbed/lean/init_data_list_lemmas.arlk:2482: unknown name Nat.Linear.Poly.of_isZero
+absorbed/lean/init_data_list_lemmas.arlk:2484: unknown name Nat.Linear.ExprCnstr.denote_toNormPoly
+absorbed/lean/init_data_list_lemmas.arlk:2488: unknown name Nat.Linear.ExprCnstr.eq_false_of_isUnsat
+absorbed/lean/init_data_list_lemmas.arlk:2490: unknown name List.append_cancel_right@0
+absorbed/lean/init_data_list_lemmas.arlk:2492: unknown name List.append_cancel_right_eq@0
+absorbed/lean/init_data_list_lemmas.arlk:4094: out of budget: reduction did not finish
+absorbed/lean/init_data_list_lemmas.arlk:4098: unknown name _private.Init.Data.List.Lemmas.0.List.isEqv.match_1.splitter@0@0
+absorbed/lean/init_data_list_lemmas.arlk:4566: out of budget: reduction did not finish
+absorbed/lean/init_data_list_lemmas.arlk:4570: unknown name _private.Init.Data.List.Lemmas.0.List.splitAt.go.match_1.splitter@0@0
