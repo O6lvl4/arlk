@@ -48,4 +48,10 @@ lemma rev_two: "rev [a, b] = [b, a]"
 lemma map_double: "map double (xs @ ys) = map double xs @ map double ys"
   by simp
 
+lemma rev_cong: "xs = ys \<Longrightarrow> rev xs = rev ys"
+  by simp
+
+lemma length_snoc: "xs = ys @ [a] \<Longrightarrow> length xs = Suc (length ys)"
+  by simp
+
 end

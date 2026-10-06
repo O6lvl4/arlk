@@ -42,6 +42,11 @@ if "$arlk" check lib/std/eq.arlk lib/isabelle_main.arlk "$work/BadLists.arlk" >"
 sed 's/thus ?case by (simp add: add.commute)/thus ?case by simp/; s/^theory Lists/theory NoComm/' absorbed/isabelle/Lists.thy >"$work/NoComm.thy"
 (cd "$work" && "$arlk" absorb-isabelle NoComm.thy -o NoComm.arlk >/dev/null)
 if "$arlk" check lib/std/eq.arlk lib/isabelle_main.arlk "$work/NoComm.arlk" >"$work/nocomm.log" 2>&1; then echo "FAIL  total_rev was proved without add.commute"; fails=1; elif grep -q "simp could not prove it" "$work/nocomm.log"; then echo "pass  total_rev needs add.commute"; else echo "FAIL  total_rev without add.commute failed for another reason"; tail -2 "$work/nocomm.log"; fails=1; fi
+# A premise is what proves rev_cong: without it the lemma is false.
+sed 's/^lemma rev_cong: "xs = ys \\<Longrightarrow> rev xs = rev ys"/lemma rev_cong: "rev xs = rev ys"/; s/^theory Lists/theory NoPrem/' absorbed/isabelle/Lists.thy >"$work/NoPrem.thy"
+if cmp -s absorbed/isabelle/Lists.thy "$work/NoPrem.thy"; then echo "FAIL  the premise mutation did not apply"; fails=1; fi
+(cd "$work" && "$arlk" absorb-isabelle NoPrem.thy -o NoPrem.arlk >/dev/null)
+if "$arlk" check lib/std/eq.arlk lib/isabelle_main.arlk "$work/NoPrem.arlk" >"$work/noprem.log" 2>&1; then echo "FAIL  rev_cong was proved without its premise"; fails=1; elif grep -q "simp could not prove it" "$work/noprem.log"; then echo "pass  rev_cong needs its premise"; else echo "FAIL  rev_cong without its premise failed for another reason"; tail -2 "$work/noprem.log"; fails=1; fi
 # The transport: Isabelle's add_comm proves nat.add_comm, with nothing assumed.
 if "$arlk" check lib/std/eq.arlk lib/std/nat.arlk lib/isabelle_main.arlk absorbed/isabelle/arith.arlk examples/isabelle_transport.arlk >"$work/tr.log" 2>&1 && grep -q "symbols: (none)" "$work/tr.log"; then echo "pass  transport from Isabelle, no symbols"; else echo "FAIL  transport from Isabelle (see $work/tr.log)"; fails=1; fi
 exit $fails

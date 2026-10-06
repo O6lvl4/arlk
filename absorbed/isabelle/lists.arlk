@@ -43,3 +43,9 @@ theorem rev_two[a': Type](a: a', b: a') -> Eq(_, rev(list.Cons(a, list.Cons(b, l
 
 theorem map_double(xs: list(nat), ys: list(nat)) -> Eq(_, map(double, append(xs, ys)), append(map(double, xs), map(double, ys))) =
   by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.map_append)
+
+theorem rev_cong[a: Type](xs: list(a), ys: list(a), h1: Eq(_, xs, ys)) -> Eq(_, rev(xs), rev(ys)) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident)
+
+theorem length_snoc[a': Type](xs: list(a'), ys: list(a'), a: a', h1: Eq(_, xs, append(ys, list.Cons(a, list.nil)))) -> Eq(_, length(xs), nat.Suc(length(ys))) =
+  by simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.length_append)

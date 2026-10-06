@@ -22,7 +22,8 @@
 // statement `"l = r"` (free variables are universally quantified, their
 // types inferred from the functions and constructors they are passed to),
 // `[simp]` and `declare ... [simp]`, proofs `by m`, `by m1 m2`, and
-// `apply m ... done`, `arbitrary:`, and Isar proofs by induction and simp.
+// `apply m ... done`, `arbitrary:`, Isar proofs by induction and simp, and
+// equational premises `a = b ⟹ ...` (hypotheses simp rewrites with).
 // Terms are curried applications and Main's infix operators (`+`, `*`,
 // `#`, `@`, `=`), numerals and list literals, over Main's fragment (nat,
 // lists and their functions: MAIN_SRC below, lib/isabelle_main.arlk).
@@ -31,7 +32,8 @@ import self.agda.{AExpr, APat, AData, ACtor, AScope, ACx}
 import self.agda
 
 // Prefixed types: almide/almide#3439.
-type IThm = { name: String, lhs: AExpr, rhs: AExpr, induct: String, add: List[String], line: Int }
+// `prems`: equations assumed (`a = b ⟹ ...`), which simp rewrites with.
+type IThm = { name: String, lhs: AExpr, rhs: AExpr, prems: List[(AExpr, AExpr)], induct: String, add: List[String], line: Int }
 
 // ── Lexing (outer syntax) ───────────────────────────────────────────
 
@@ -512,7 +514,7 @@ local fn run(st0: IState, ts: List[ITok], from: Int, file: String) -> IState! = 
       } else ()
       // Only the [simp] lemmas about functions the statement can reach.
       // A usable lemma's right-hand side may bring more functions in.
-      var reach = reachable(fun_names(th.lhs, sigs) + fun_names(th.rhs, sigs), calls)
+      var reach = reachable(fun_names(th.lhs, sigs) + fun_names(th.rhs, sigs) + (th.prems |> list.flat_map(((a, b)) => fun_names(a, sigs) + fun_names(b, sigs))), calls)
       var usable: List[String] = []
       var grew = true
       while grew {
@@ -622,7 +624,28 @@ local fn lemma(bw: List[String], body: List[ITok], unnamed: Int, line: Int) -> I
   let named = stmt_at > 0 and at(bw, 0) != ":" and at(bw, 0) != "["
   let name = if named then at(bw, 0) else "lemma_" + int.to_string(unnamed + 1)
   let stmt = list.get(body, stmt_at) ?? ITok { text: "", quoted: true, line: line }
-  let (lhs, rhs) = parse_eq(inner(stmt.text))!
+  // `a = b ⟹ c = d ⟹ l = r`: premises, then the equation proved.
+  var parts: List[List[String]] = []
+  var cur: List[String] = []
+  var depth = 0
+  for t in inner(stmt.text) {
+    if t == "(" or t == "[" then {
+      depth = depth + 1
+    } else if t == ")" or t == "]" then {
+      depth = depth - 1
+    } else ()
+    if t == "⟹" and depth == 0 then {
+      list.push(parts, cur)
+      cur = []
+    } else list.push(cur, t)
+  }
+  var prems: List[(AExpr, AExpr)] = []
+  for ptoks in parts {
+    let pe = parse_eq(ptoks)
+    guard result.is_ok(pe) else err("line ${int.to_string(line)}: ${name}: a premise must be an equation `a = b`")
+    list.push(prems, pe ?? (EHole, EHole))
+  }
+  let (lhs, rhs) = parse_eq(cur)!
   // The proof: `by m [m]` or `apply m ... done`.
   let rest = list.drop(bw, stmt_at + 1)
   guard list.contains(rest, "by") or list.contains(rest, "apply") else err("line ${int.to_string(line)}: ${name}: expected a proof (`by ...`)")
@@ -644,7 +667,7 @@ local fn lemma(bw: List[String], body: List[ITok], unnamed: Int, line: Int) -> I
       in_add = false
     } else if in_add and w != "add" then list.push(add, w) else ()
   }
-  ok(IThm { name: name, lhs: lhs, rhs: rhs, induct: induct, add: add, line: line })
+  ok(IThm { name: name, lhs: lhs, rhs: rhs, prems: prems, induct: induct, add: add, line: line })
 }
 
 // ── Type inference for a statement ─────────────────────────────────
@@ -786,7 +809,7 @@ local fn ctor_type(sc: AScope, c: String) -> AExpr? = {
 }
 
 local fn emit_theorem(sc: AScope, sigs: List[(String, AExpr)], type_names: List[String], th: IThm, simps: List[String]) -> String! = {
-  let order = list.unique(agda.var_order(sc, sigs, th.lhs) + agda.var_order(sc, sigs, th.rhs))
+  let order = list.unique((th.prems |> list.flat_map(((a, b)) => agda.var_order(sc, sigs, a) + agda.var_order(sc, sigs, b))) + agda.var_order(sc, sigs, th.lhs) + agda.var_order(sc, sigs, th.rhs))
   // The variables' types, by unification over the statement (Isabelle's
   // type inference, for the first-order types used here); type variables
   // left open become the theorem's type parameters.
@@ -794,6 +817,11 @@ local fn emit_theorem(sc: AScope, sigs: List[(String, AExpr)], type_names: List[
   let tl = infer_type(sc, sigs, type_names, ti, th.lhs)!
   let tr = infer_type(sc, sigs, type_names, ti, th.rhs)!
   unify(ti, tl, tr)!
+  for (pa, pb) in th.prems {
+    let ta = infer_type(sc, sigs, type_names, ti, pa)!
+    let tb = infer_type(sc, sigs, type_names, ti, pb)!
+    unify(ti, ta, tb)!
+  }
   var vars: List[(String, AExpr)] = []
   for v in order {
     match list.find(ti.vars, ((x, _)) => x == v) {
@@ -823,8 +851,19 @@ local fn emit_theorem(sc: AScope, sigs: List[(String, AExpr)], type_names: List[
   guard th.induct == "" or list.any(vars, ((v, _)) => v == th.induct) else err("${th.name}: induction on ${th.induct}, which is not a variable of the statement")
   let cx = ACx { sc: sc, ren: [], bound: order + tvs }
   let generics = if list.is_empty(tvs) then "" else "[" + list.join(tvs |> list.map((v) => agda.mangle(v) + ": Type"), ", ") + "]"
-  let params = if list.is_empty(vars) then "" else "(" + list.join(vars |> list.map(((v, t)) => agda.mangle(v) + ": " + agda.emit(cx, t)), ", ") + ")"
-  let arrow = if list.is_empty(vars) and list.is_empty(tvs) then ": " else " -> "
+  // The premises: hypotheses after the variables, named apart from them.
+  var hyps: List[String] = []
+  for (k, pr) in list.enumerate(th.prems) {
+    let (pa, pb) = pr
+    var h = "h" + int.to_string(k + 1)
+    while list.contains(order, h) {
+      h = h + "'"
+    }
+    list.push(hyps, h + ": Eq(_, " + agda.emit(cx, pa) + ", " + agda.emit(cx, pb) + ")")
+  }
+  let binders = (vars |> list.map(((v, t)) => agda.mangle(v) + ": " + agda.emit(cx, t))) + hyps
+  let params = if list.is_empty(binders) then "" else "(" + list.join(binders, ", ") + ")"
+  let arrow = if list.is_empty(binders) and list.is_empty(tvs) then ": " else " -> "
   let rules = list.unique(simps + (th.add |> list.map((n) => match list.find(MAIN_ALIASES, ((a, _)) => a == n) {
     some((_, full)) => full,
     none => n,

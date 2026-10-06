@@ -25,3 +25,15 @@ test "Main's syntax: infix operators, numerals, list literals, and types by unif
     err(e) => assert_eq(e, ""),
   }
 }
+
+test "a premise `a = b ⟹` becomes a hypothesis that simp rewrites with" {
+  let src = "theory P imports Main begin\nlemma c: \"xs = ys ⟹ rev xs = rev ys\" by simp\nend\n"
+  match isabelle.absorb(src, "P.thy") {
+    ok(text) => assert(string.contains(text, "theorem c[a: Type](xs: list(a), ys: list(a), h1: Eq(_, xs, ys)) -> Eq(_, rev(xs), rev(ys)) =")),
+    err(e) => assert_eq(e, ""),
+  }
+  match isabelle.absorb("theory P imports Main begin\nlemma c: \"rev xs ⟹ rev xs = xs\" by simp\nend\n", "P.thy") {
+    ok(_) => assert(false),
+    err(e) => assert(string.contains(e, "a premise must be an equation")),
+  }
+}

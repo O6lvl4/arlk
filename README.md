@@ -501,7 +501,8 @@ A lemma's proof is its Isabelle proof method replayed by Arlk's own `simp`: `by 
 auto` becomes `by induction xs simp(...)` with the lemmas marked `[simp]` so far and those given by
 `simp add:` (Main's `add.commute` included); every function's equations are used, as in
 Isabelle. `arbitrary:` needs nothing more (the variables after the induction variable are
-generalised in its hypothesis), and a structured Isar proof (`proof (induction xs) case Nil ...
+generalised in its hypothesis), an equational premise (`xs = ys ⟹ ...`) becomes a hypothesis that
+simp rewrites with, and a structured Isar proof (`proof (induction xs) case Nil ...
 next ... qed`) is replayed the same way, from its induction and the lemmas it adds. A method that Arlk's `simp`
 cannot replay is a failed check, so a false lemma cannot get through, and nothing of Isabelle is
 trusted. Equality is Arlk's native one (lib/std/eq.arlk), not lib/hol.arlk's encoding: the HOL
