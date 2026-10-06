@@ -27,7 +27,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Rewriting tactic (`by simp`, `by induction x simp`) | native, produces checked terms | `simp.almd` |
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
 | Views and translations between theories | native | `checker.add_view`, `translate` |
-| Coinductive types, quotient types natively, setoid rewriting | missing | |
+| Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
+| Coinductive types, setoid rewriting | missing | |
 
 ## Lean 4
 
@@ -35,7 +36,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 |---|---|
 | Inductive types, recursors, K-like reduction | absorbed (symbols and rules); native equivalents |
 | Structures, projections, structure η | absorbed (`structure` declarations, η in conversion and in recursor matching); native records with η |
-| Quotients | absorbed (`Quot.lift`/`Quot.ind` rules, `Quot.sound` an axiom) |
+| Quotients | absorbed (`Quot.lift`/`Quot.ind` rules, `Quot.sound` an axiom); native in `lib/quot.arlk` |
 | Nested and mutual inductives | native; absorbed as Lean's kernel declares them (symbols and rules) |
 | Well-founded recursion (`termination_by`) | native (`decreasing x by W`); absorbed as the kernel terms Lean compiles it to |
 | Universe polymorphism | native; absorbed constants are instantiated per use |

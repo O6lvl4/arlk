@@ -1,0 +1,48 @@
+// Quotient types, natively: a type of classes of A under a relation r,
+// with Lean's four primitives, and function extensionality proved from
+// them.
+//
+//   arlk check lib/std/eq.arlk lib/quot.arlk YOUR.arlk
+//
+// Unlike the standard library (lib/std), this room assumes: `Quot`,
+// `Quot.mk`, `Quot.lift`, `Quot.ind` and `Quot.sound` are symbols, and
+// `Quot.lift` computes on a class by a rewrite rule. They are exactly
+// Lean 4's kernel quotients (consistent relative to Lean's logic), and
+// `axioms` lists them wherever they are used. r need not be an
+// equivalence: `Quot` is the quotient by the equivalence r generates.
+//
+// `funext` follows, as in Lean: two pointwise-equal functions have the same
+// class under pointwise equality, and applying a class to a point is
+// defined by `Quot.lift`, which computes back to the functions.
+
+room quot uses eq
+
+symbol Quot[u](A: Sort(u), r: A -> A -> Sort(0)) -> Sort(u)
+
+symbol Quot.mk[u](A: Sort(u), r: A -> A -> Sort(0), a: A) -> Quot[u](A, r)
+
+// A function that respects r, on classes.
+symbol Quot.lift[u, v](A: Sort(u), r: A -> A -> Sort(0), B: Sort(v), f: A -> B, h: (a: A, b: A, p: r(a, b)) -> Eq[v](B, f(a), f(b)), q: Quot[u](A, r)) -> B
+
+rule Quot.lift[u, v](A, r, B, f, h, Quot.mk[u]({A}, {r}, a)) = f(a)  where A: Sort(u), r: A -> A -> Sort(0), B: Sort(v), f: A -> B, h: (a: A, b: A, p: r(a, b)) -> Eq[v](B, f(a), f(b)), a: A
+
+// Every class has a representative (for propositions about classes).
+symbol Quot.ind[u](A: Sort(u), r: A -> A -> Sort(0), P: Quot[u](A, r) -> Sort(0), h: (a: A) -> P(Quot.mk[u](A, r, a)), q: Quot[u](A, r)) -> P(q)
+
+// Related elements have the same class.
+symbol Quot.sound[u](A: Sort(u), r: A -> A -> Sort(0), a: A, b: A, p: r(a, b)) -> Eq[u](Quot[u](A, r), Quot.mk[u](A, r, a), Quot.mk[u](A, r, b))
+
+// `Quot.lift` on a class computes to the function on its representative.
+theorem lift_mk[u, v](A: Sort(u), r: A -> A -> Sort(0), B: Sort(v), f: A -> B, h: (a: A, b: A, p: r(a, b)) -> Eq[v](B, f(a), f(b)), a: A) -> Eq[v](B, Quot.lift[u, v](A, r, B, f, h, Quot.mk[u](A, r, a)), f(a)) =
+  Eq.refl
+
+// Pointwise equality of functions.
+def Pointwise[u, v](A: Sort(u), B: A -> Sort(v), f: (x: A) -> B(x), g: (x: A) -> B(x)) -> Sort(0) = (x: A) -> Eq[v](B(x), f(x), g(x))
+
+// A class of pointwise-equal functions, applied to a point.
+def apply_class[u, v](A: Sort(u), B: A -> Sort(v), q: Quot[imax(u, v)]((x: A) -> B(x), Pointwise[u, v](A, B)), x: A) -> B(x) =
+  Quot.lift[imax(u, v), v]((x: A) -> B(x), Pointwise[u, v](A, B), B(x), (f: (x: A) -> B(x)) => f(x), (f: (x: A) -> B(x), g: (x: A) -> B(x), p: Pointwise[u, v](A, B, f, g)) => p(x), q)
+
+theorem funext[u, v](A: Sort(u), B: A -> Sort(v), f: (x: A) -> B(x), g: (x: A) -> B(x), h: Pointwise[u, v](A, B, f, g)) -> Eq[imax(u, v)]((x: A) -> B(x), f, g) =
+  eq.cong((q: Quot[imax(u, v)]((x: A) -> B(x), Pointwise[u, v](A, B))) => (x: A) => apply_class[u, v](A, B, q, x),
+    Quot.sound[imax(u, v)]((x: A) -> B(x), Pointwise[u, v](A, B), f, g, h))

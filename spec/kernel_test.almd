@@ -1565,3 +1565,44 @@ test "an open goal says which visible theorem closes it, and nothing for a false
     none => false,
   })
 }
+
+// ── Quotients ──────────────────────────────────────────────────────
+
+effect fn run_quot(src: String) -> String? = {
+  let std = ["lib/std/eq.arlk", "lib/std/logic.arlk", "lib/std/nat.arlk", "lib/quot.arlk"] |> list.map((f) => fs.read_text(f) ?? "")
+  match syntax.parse(list.join(std, "\n") + "\n" + src) {
+    err(e) => some("parse: " + e),
+    ok(ds) => checker.check_all(kernel.empty(), ds).error,
+  }
+}
+
+let QUOT_BASE = """
+room qt uses eq, logic, nat, quot
+def Par(m: Nat, n: Nat) -> Sort(0) = Eq(Nat, m, m)
+def Q: Type = Quot(Nat, Par)
+def is_zero(n: Nat) -> Nat = match n {
+  zero => Nat.succ(Nat.zero),
+  succ(k) => Nat.zero,
+}
+"""
+
+test "quotients: lift computes on a class, and funext follows from sound" {
+  assert_eq(run_quot(QUOT_BASE + "\n" + """
+def const(q: Q) -> Nat = Quot.lift(Nat, Par, Nat, (n: Nat) => Nat.zero, (a: Nat, b: Nat, p: Par(a, b)) => Eq.refl, q)
+theorem const_mk: Eq(Nat, const(Quot.mk(Nat, Par, Nat.succ(Nat.zero))), Nat.zero) = Eq.refl
+theorem ext: Eq(Nat -> Nat, (n: Nat) => add(n, Nat.zero), (n: Nat) => n) = funext(Nat, (n: Nat) => Nat, (n: Nat) => add(n, Nat.zero), (n: Nat) => n, add_zero)
+""")!, none)
+}
+
+test "quotients: a function that does not respect the relation cannot be lifted, and lift is stuck on a variable" {
+  let unsound = QUOT_BASE + "\ndef bad(q: Q) -> Nat = Quot.lift(Nat, Par, Nat, is_zero, (a: Nat, b: Nat, p: Par(a, b)) => Eq.refl, q)\n"
+  assert(match run_quot(unsound)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+  let stuck = QUOT_BASE + "\ndef const(q: Q) -> Nat = Quot.lift(Nat, Par, Nat, (n: Nat) => Nat.zero, (a: Nat, b: Nat, p: Par(a, b)) => Eq.refl, q)\ntheorem bad(q: Q) -> Eq(Q, q, Quot.mk(Nat, Par, const(q))) = Eq.refl\n"
+  assert(match run_quot(stuck)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}

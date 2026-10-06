@@ -83,6 +83,18 @@ contains wf-no-proof-why "a proof that the decreasing one is smaller" "$work/wf-
 mutate wf-not-smaller $WFX 's/msort(alt(List.cons(a, List.cons(b, t)), Bool.tt), alt_shorter/msort(List.cons(a, List.cons(b, t)), alt_shorter/'
 expect wf-not-smaller 1 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-not-smaller.arlk"
 contains wf-not-smaller-why "mismatch" "$work/wf-not-smaller.log"
+# Quotients (lib/quot.arlk assumes Lean's primitives): the integers as
+# pairs; negation that does not respect the relation, and a false
+# equation between classes, are rejected.
+QUOT=lib/quot.arlk; QX=examples/std/quot.arlk
+expect quot 0 "$arlk" check $EQ $LOGIC $NAT $QUOT $QX
+contains quot-assumes-sound "quot.Quot.sound" "$work/quot.log"
+mutate quot-not-respecting $QX 's/Quot.mk(Pair, Same, swap(p))/Quot.mk(Pair, Same, Pair.mk(fst(p), fst(p)))/'
+expect quot-not-respecting 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/quot-not-respecting.arlk"
+contains quot-not-respecting-why "mismatch" "$work/quot-not-respecting.log"
+mutate quot-false-class $QX 's/^theorem two_ways: Eq(Int, of(n3, n1), of(n2, Nat.zero))/theorem two_ways: Eq(Int, of(n3, n1), of(n3, Nat.zero))/'
+expect quot-false-class 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/quot-false-class.arlk"
+contains quot-false-class-why "mismatch" "$work/quot-false-class.log"
 # A false equality in the library itself.
 mutate false-add $NAT 's/^theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n)/theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), Nat.succ(n))/'
 expect false-add 1 "$arlk" check $EQ "$work/false-add.arlk"

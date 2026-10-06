@@ -484,7 +484,7 @@ ok: lib/std/eq.arlk absorbed/isabelle/arith.arlk (29 declarations)
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
-| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~12 min |
+| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~10.5 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Agda `Arith` (naturals, lists, equality and their laws; from source) | 27, all of them | < 0.1 s |
@@ -674,6 +674,12 @@ loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](do
 ```
 arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 ```
+
+Quotient types live beside it in [lib/quot.arlk](lib/quot.arlk): Lean's `Quot`, `Quot.mk`, `Quot.lift`
+(which computes on a class), `Quot.ind` and `Quot.sound`, declared as assumptions that `axioms` lists,
+and function extensionality (`funext`) proved from them. [examples/std/quot.arlk](examples/std/quot.arlk)
+builds the integers as pairs of naturals up to `a + d = c + b`, lifts negation to classes and proves
+`neg(neg(z)) = z` for every integer.
 
 ## Editors: `arlk lsp`
 

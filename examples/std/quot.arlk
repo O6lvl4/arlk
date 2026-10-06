@@ -1,0 +1,56 @@
+// The integers as a quotient: a pair (a, b) stands for a - b, and two
+// pairs are the same integer when a + d = c + b.
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
+//     examples/std/quot.arlk
+//
+// Negation is defined on representatives and lifted to classes with a
+// proof that it respects the relation; it computes on a class
+// (`neg_two` holds by computation). `neg_neg` is proved for every
+// integer by `Quot.ind`, and each step that equates two different pairs
+// goes through `Quot.sound`.
+
+room ints uses eq, logic, nat, quot
+
+type Pair: Type =
+  | mk(a: Nat, b: Nat)
+
+def fst(p: Pair) -> Nat = match p {
+  mk(a, b) => a,
+}
+
+def snd(p: Pair) -> Nat = match p {
+  mk(a, b) => b,
+}
+
+def Same(p: Pair, q: Pair) -> Sort(0) = Eq(Nat, add(fst(p), snd(q)), add(fst(q), snd(p)))
+
+def Int: Type = Quot(Pair, Same)
+
+def of(a: Nat, b: Nat) -> Int = Quot.mk(Pair, Same, Pair.mk(a, b))
+
+def swap(p: Pair) -> Pair = Pair.mk(snd(p), fst(p))
+
+theorem swap_same(p: Pair, q: Pair, h: Same(p, q)) -> Same(swap(p), swap(q)) =
+  trans(add_comm(snd(p), fst(q)), trans(symm(h), add_comm(fst(p), snd(q))))
+
+def neg(z: Int) -> Int =
+  Quot.lift(Pair, Same, Int, (p: Pair) => Quot.mk(Pair, Same, swap(p)),
+    (p: Pair, q: Pair, h: Same(p, q)) => Quot.sound(Pair, Same, swap(p), swap(q), swap_same(p, q, h)), z)
+
+def n1: Nat = Nat.succ(Nat.zero)
+def n2: Nat = Nat.succ(n1)
+def n3: Nat = Nat.succ(n2)
+
+// 3 - 1 and 2 - 0 are the same integer.
+theorem two_ways: Eq(Int, of(n3, n1), of(n2, Nat.zero)) =
+  Quot.sound(Pair, Same, Pair.mk(n3, n1), Pair.mk(n2, Nat.zero), Eq.refl)
+
+// Negation computes on a class.
+theorem neg_two: Eq(Int, neg(of(n2, Nat.zero)), of(Nat.zero, n2)) = Eq.refl
+
+theorem neg_neg(z: Int) -> Eq(Int, neg(neg(z)), z) =
+  Quot.ind(Pair, Same, (w: Int) => Eq(Int, neg(neg(w)), w),
+    (p: Pair) => Quot.sound(Pair, Same, swap(swap(p)), p, Eq.refl), z)
+
+axioms neg_neg

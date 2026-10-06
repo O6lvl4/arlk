@@ -111,6 +111,9 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   that the names are this room's symbols, the constructor builds S, and each projection computes
   to its field). They appear in `axioms`. `arlk absorb` declares a structure for each Lean
   constructor all of whose projections it exports, as Lean's kernel has eta for every structure.
+* **Quotients.** [lib/quot.arlk](../lib/quot.arlk) declares Lean 4's kernel quotients as symbols
+  (`Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind`, `Quot.sound`) and one rule (`Quot.lift` computes on
+  `Quot.mk`); `funext` there is proved from them. A result that uses them lists them in `axioms`.
 * **Imported theories.** [lib/core.arlk](../lib/core.arlk) (the shared foundation for Lean and Rocq),
   the absorbed Lean/Rocq libraries' symbols and rules, Metamath's axioms and the `Apart`/`fresh`
   facts about Metamath syntax, and for HOL [lib/hol.arlk](../lib/hol.arlk) (HOL's inference rules as
