@@ -2054,7 +2054,8 @@ local fn computes(env: Env, zero_name: String, fields: List[(String, String)]) -
       // A helper, not a let-bound block: a guard in such a block is lifted
       // into a function that does not return a result (almide/almide#3451).
       let result = op_result(env, zero_name, op, zty, yes, no)!
-      let want = Pi("_", zty, Pi("_", zty, result))
+      let unary = kernel.is_unary_op(op)
+      let want = if unary then Pi("_", zty, result) else Pi("_", zty, Pi("_", zty, result))
       guard conv(env, [], cty, want, bu) else err("numerals ${zero_name} computes: ${op}: ${c} must be a ${show(env, [], want)}, but it is a ${show(env, [], cty)}")
       // Unfold c on small literals and compare with the operation.
       for m in [0, 1, 2, 3, 7] {
@@ -2062,8 +2063,8 @@ local fn computes(env: Env, zero_name: String, fields: List[(String, String)]) -
           let r = kernel.compute_op(op, m, n) ?? 0
           let expected = if kernel.is_test_op(op) then Const(if r == 1 then yes else no, []) else kernel.literal(z, r)
           var cb = budget()
-          let call = App(App(Const(c, []), kernel.literal(z, m)), kernel.literal(z, n))
-          guard conv(env, [], call, expected, cb) else err("numerals ${zero_name} computes: ${op}: ${c}(${int.to_string(m)}, ${int.to_string(n)}) does not reduce to ${show(env, [], expected)}, so ${c} is not ${op}")
+          let call = if unary then App(Const(c, []), kernel.literal(z, m)) else App(App(Const(c, []), kernel.literal(z, m)), kernel.literal(z, n))
+          guard conv(env, [], call, expected, cb) else err("numerals ${zero_name} computes: ${op}: ${c}(${int.to_string(m)}${if unary then "" else ", " + int.to_string(n)}) does not reduce to ${show(env, [], expected)}, so ${c} is not ${op}")
         }
       }
       list.push(out, (c, kernel.Compute { zero: z, op: op, yes: yes, no: no }))

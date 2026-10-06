@@ -226,9 +226,22 @@ local fn numeral_step(env: Env, zero: String, n: Int) -> Term = match map.get(en
 
 let COMPUTE_LIMIT = 4611686018427387904
 
-let COMPUTE_OPS = ["add", "sub", "mul", "div", "mod", "gcd", "pow", "shiftLeft", "shiftRight", "beq", "ble"]
+let COMPUTE_OPS = ["add", "sub", "mul", "div", "mod", "gcd", "pow", "shiftLeft", "shiftRight", "land", "lor", "xor", "log2", "beq", "ble"]
 
 fn is_test_op(op: String) -> Bool = op == "beq" or op == "ble"
+
+// Operations of one argument (the others take two).
+fn is_unary_op(op: String) -> Bool = op == "log2"
+
+local fn log2_of(n: Int) -> Int = {
+  var k = 0
+  var m = n
+  while m >= 2 {
+    m = m / 2
+    k = k + 1
+  }
+  k
+}
 
 local fn gcd_of(a: Int, b: Int) -> Int = {
   var x = a
@@ -276,6 +289,10 @@ fn compute_op(op: String, m: Int, n: Int) -> Int? =
     some(p) => some(m / p),
     none => some(0),
   }
+  else if op == "land" then some(int.band(m, n))
+  else if op == "lor" then some(int.bor(m, n))
+  else if op == "xor" then some(int.bxor(m, n))
+  else if op == "log2" then some(log2_of(m))
   else if op == "beq" then some(if m == n then 1 else 0)
   else if op == "ble" then some(if m <= n then 1 else 0)
   else none
@@ -327,9 +344,9 @@ local fn computed(env: Env, ctx: Ctx, c: String, args: List[Term], mut b: Budget
     none => none,
     some((succ, _)) => match list.get(args, 0) {
       none => none,
-      some(x) => match list.get(args, 1) {
+      some(x) => match (if is_unary_op(cp.op) then some(literal(cp.zero, 0)) else list.get(args, 1)) {
         none => none,
-        some(y) => if list.len(args) != 2 then none else match number_of(env, ctx, cp.zero, succ, x, b) {
+        some(y) => if list.len(args) != (if is_unary_op(cp.op) then 1 else 2) then none else match number_of(env, ctx, cp.zero, succ, x, b) {
           none => none,
           some(m) => match number_of(env, ctx, cp.zero, succ, y, b) {
             none => none,

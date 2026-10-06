@@ -781,7 +781,11 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
       let (mk, p3) = ident(ts, p2)!
       var q = expect(ts, p3, "(")!
       var projs: List[String] = []
-      var going = true
+      // `S.mk()`: a structure without fields (Lean's unit-like eta).
+      var going = not is_sym(ts, q, ")")
+      if not going then {
+        q = q + 1
+      } else ()
       while going {
         let (f, q1) = ident(ts, q)!
         list.push(projs, f)

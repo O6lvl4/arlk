@@ -127,7 +127,9 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   declarations (every value of S is its constructor applied to its projections; checked only in
   that the names are this room's symbols, the constructor builds S, and each projection computes
   to its field). They appear in `axioms`. `arlk absorb` declares a structure for each Lean
-  constructor all of whose projections it exports, as Lean's kernel has eta for every structure.
+  constructor all of whose projections it exports, as Lean's kernel has eta for every structure;
+  a structure without fields (`structure PUnit = PUnit.unit()`, Lean's unit-like types) says every
+  value of the type is its constructor.
 * **Computing on literals** (`numerals zero computes { add: f, ... }`): the kernel answers `f(m, n)`
   for two literals by computing the operation on the numbers (`kernel.computed`, `step_head`), as
   Lean's kernel does for `Nat.add`, `Nat.ble`, ... (GMP acceleration). That f is that operation is
@@ -136,7 +138,8 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   those would make false equations convertible. Results past 2^62 are left to unfolding. A
   theorem that reaches a computed constant lists it in `axioms` (`computed on literals`).
   `arlk absorb` declares it for Lean's `Nat.add`, `sub`, `mul`, `div`, `mod`, `gcd`, `pow`,
-  `shiftLeft`, `shiftRight`, `beq` and `ble` when they are absorbed.
+  `shiftLeft`, `shiftRight`, `land`, `lor`, `xor`, `log2`, `beq` and `ble` when they are absorbed
+  (the operations Lean's kernel computes on literals).
 * **Quotients.** [lib/quot.arlk](../lib/quot.arlk) declares Lean 4's kernel quotients as symbols
   (`Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind`, `Quot.sound`) and one rule (`Quot.lift` computes on
   `Quot.mk`); `funext` there is proved from them. A result that uses them lists them in `axioms`.

@@ -1535,6 +1535,27 @@ test "structure eta applies after definitions are unfolded" {
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst, P.snd)\n" + "def swap(p: P) -> P = P.rec((q: P) => P, (x: N, y: N) => P.mk(y, x), p)\ntheorem bad(p: P) -> Eq(P, swap(p), p) = Eq.refl\n", "mismatch"))
 }
 
+// A structure without fields (Lean's unit-like types): every value is the
+// constructor, so functions from it are determined by one value.
+let UNIT_BASE = """
+room ut
+type Eq[u](A: Sort(u), a: A): (b: A) -> Sort(0) = | refl: Eq(A, a, a)
+symbol U: Type
+symbol U.unit: U
+symbol N: Type
+"""
+
+let UNIT_USE = """
+theorem all_unit(u: U) -> Eq(U, u, U.unit) = Eq.refl
+theorem fun_eta(f: U -> N) -> Eq(U -> N, (u: U) => f(U.unit), f) = Eq.refl
+"""
+
+test "a structure without fields: every value is its constructor" {
+  assert_eq(run(UNIT_BASE + "\nstructure U = U.unit()\n" + UNIT_USE), none)
+  assert(rejects_with(UNIT_BASE + "\n" + UNIT_USE, "mismatch"))
+  assert(rejects_with(UNIT_BASE + "\nsymbol V: Type\nstructure U = V()\n", "must build"))
+}
+
 test "a structure declaration is checked against its projections" {
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.snd, P.fst)\n", "does not compute to field"))
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst)\n", "must build"))
@@ -1801,6 +1822,9 @@ test "computes: a wrong operation, a wrong type, a test without booleans and a f
     (COMPUTE + "numerals Nat.zero computes { mul: add }\n", "is not mul"),
     (COMPUTE + "numerals Nat.zero computes { add: pred2 }\n", "must be a"),
     (COMPUTE + "numerals Nat.zero computes { frob: add }\n", "unknown operation"),
+    (COMPUTE + "numerals Nat.zero computes { log2: add }\n", "must be a"),
+    (COMPUTE + "numerals Nat.zero computes { log2: pred2 }\n", "is not log2"),
+    (COMPUTE + "numerals Nat.zero computes { xor: add }\n", "is not xor"),
     (COMPUTE + "numerals Nat.zero computes { ble: ble }\n", "give `true: T, false: F`"),
     (COMPUTE + "numerals Nat.zero computes { ble: ble, true: B.no, false: B.yes }\n", "is not ble"),
     (COMPUTING + "theorem wrong: Eq(Nat, mul(1000, 1000), 1000001) = Eq.refl\n", "mismatch"),

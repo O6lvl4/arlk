@@ -227,6 +227,8 @@ local fn decl(o: Out, d: Value) -> String! = {
   }
   // Rocq's auxiliary symbols get their rules after the rest of their block.
   guard kind != "rules" else ok(list.join(rules, "\n"))
+  // A Lean structure without fields: every value is its constructor.
+  guard kind != "eta" else ok("structure ${cname(o, str_of(get(d, "type")!)!)} = ${cname(o, str_of(get(d, "ctor")!)!)}()")
   let name = cname(o, str_of(get(d, "name")!)!)
   let ty = el([], o, get(d, "type")!, int_of(get(d, "level")!)!)!
   let head = match kind {
@@ -299,7 +301,7 @@ local fn structure_of(c: String) -> String = {
 }
 
 // The Lean operations Arlk computes on literals, as Lean's kernel does.
-let LEAN_COMPUTES = [("Nat.add", "add"), ("Nat.sub", "sub"), ("Nat.mul", "mul"), ("Nat.div", "div"), ("Nat.mod", "mod"), ("Nat.gcd", "gcd"), ("Nat.pow", "pow"), ("Nat.shiftLeft", "shiftLeft"), ("Nat.shiftRight", "shiftRight"), ("Nat.beq", "beq"), ("Nat.ble", "ble")]
+let LEAN_COMPUTES = [("Nat.add", "add"), ("Nat.sub", "sub"), ("Nat.mul", "mul"), ("Nat.div", "div"), ("Nat.mod", "mod"), ("Nat.gcd", "gcd"), ("Nat.pow", "pow"), ("Nat.shiftLeft", "shiftLeft"), ("Nat.shiftRight", "shiftRight"), ("Nat.land", "land"), ("Nat.lor", "lor"), ("Nat.xor", "xor"), ("Nat.log2", "log2"), ("Nat.beq", "beq"), ("Nat.ble", "ble")]
 
 fn absorb(src: String) -> String! = {
   let root = json.parse(src)!
@@ -310,7 +312,10 @@ fn absorb(src: String) -> String! = {
   let prover = if th == "rocq" then "Rocq" else "Lean 4"
   let lib = library_room(th)
   let decls = arr_of(get(root, "decls")!)!
-  let named = decls |> list.filter((d) => (str_of(get(d, "kind") ?? value.null()) ?? "") != "rules")
+  let named = decls |> list.filter((d) => {
+    let k = str_of(get(d, "kind") ?? value.null()) ?? ""
+    k != "rules" and k != "eta"
+  })
   let raws = named |> list.map((d) => str_of(get(d, "name")!)!)!
   let bare = Out { lib: lib, reserved: set.new(), renamed: clashes(lib, raws) }
   let names = raws |> list.map((r) => cname(bare, r))

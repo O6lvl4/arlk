@@ -39,6 +39,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Lean feature | Status |
 |---|---|
 | Inductive types, recursors, K-like reduction | absorbed (symbols and rules); native equivalents |
+| Nested inductive types (`Lean.Syntax` over `Array`/`List`), unit-like structures (`PUnit`, `True`) with their η |  absorbed: auxiliary recursors (`rec_1`, `rec_2`) with their rules, structures without fields declared `structure S = S.mk()` |
 | Structures, projections, structure η | absorbed (`structure` declarations, η in conversion and in recursor matching; the exporter exports every projection of a structure it uses, so η is declared wherever Lean has it); native records with η |
 | Quotients | absorbed (`Quot.lift`/`Quot.ind` rules, `Quot.sound` an axiom); native in `lib/quot.arlk` |
 | Nested and mutual inductives | native; absorbed as Lean's kernel declares them (symbols and rules) |
@@ -46,8 +47,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Universe polymorphism | native; absorbed constants are instantiated per use |
 | `Init.Data.Nat.Lemmas` | 1572 of 1573 declarations check; one theorem runs out of budget |
 | `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); 2612 of 2617 declarations check, two roots run out of budget |
-| `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas` | each module whole (1762 theorems): every declaration checks |
-| `Init.Data.Fin.Lemmas` (2283 of 2290), `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic`, `Init.Core` (1339 of 1346) | mostly: failures from Lean's nested `Syntax` recursors and out-of-budget roots |
+| `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` | each module whole (2136 theorems): every declaration checks |
+| `Init.Data.Fin.Lemmas` (2283 of 2290), `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic` | mostly: their failures descend from roots that run out of budget, chiefly `Nat.mul_add_div`, whose `Nat.Linear` reflection proof recurses on a fuel of 1 000 000 |
 | `Init.Data.String.Lemmas` | not exported: its proofs project out of `Exists` (a non-structure), which the exporter does not translate yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 

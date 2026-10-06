@@ -94,8 +94,13 @@ partial def ensure (c : Name) (us : List Level) : M String := do
         let tlen := (← getConstInfo s.structName).levelParams.length
         for f in s.fieldNames do
           let _ ← ensure (s.structName ++ f) (us.drop (us.length - tlen))
+      -- The symbol first, its rules after: the recursors of a nested or
+      -- mutual type mention each other in their rules (`rec_2` on
+      -- `List Syntax` calls `Syntax.rec`), so each must be declared before
+      -- any rule uses it.
+      modify fun s => { s with decls := s.decls.push (Json.mkObj (base ++ [("kind", toJson "symbol")])) }
       let rules ← r.rules.toArray.mapM (recRule c us r)
-      pure (Json.mkObj (base ++ [("kind", toJson "symbol"), ("rules", Json.arr rules)]))
+      pure (Json.mkObj [("kind", toJson "rules"), ("rules", Json.arr rules)])
     | _ => pure (Json.mkObj (base ++ [("kind", toJson "symbol")]))
   modify fun s => { s with decls := s.decls.push decl }
   -- Every projection of a structure once one is used, so that Arlk can
@@ -106,6 +111,12 @@ partial def ensure (c : Name) (us : List Level) : M String := do
     if let some s := getStructureInfo? env (← getConstInfoCtor p.ctorName).induct then
       for f in s.fieldNames do
         let _ ← ensure (s.structName ++ f) us
+  -- A structure without fields has no projection to announce it: its eta
+  -- (every value is the constructor, Lean's unit-like eta) is marked here.
+  if let .ctorInfo ci := info then
+    if isStructureLike env ci.induct && ci.numFields == 0 then
+        let tk ← ensure ci.induct us
+        modify fun st => { st with decls := st.decls.push (Json.mkObj [("kind", toJson "eta"), ("type", toJson tk), ("ctor", toJson k)]) }
   return k
 
 partial def exportExpr (fvs : Array Expr) (e : Expr) : M Json := do
@@ -184,14 +195,20 @@ partial def recRule (rec : Name) (us : List Level) (r : RecursorVal) (rule : Rec
     let np := r.numParams
     let nm := r.numMotives
     let nmin := r.numMinors
-    let params := xs[:np].toArray
     let pmm := xs[:np + nm + nmin].toArray
     let ctorInfo ← getConstInfoCtor rule.ctor
-    let ctorUs := ctorInfo.levelParams.map fun n =>
-      match (r.levelParams.zip us).find? (·.1 == n) with
-      | some (_, u) => u
-      | none => Level.zero
-    let ctorTy ← instantiateForall (ctorInfo.type.instantiateLevelParams ctorInfo.levelParams ctorUs) params
+    -- The constructor's parameters and levels are those of the major
+    -- premise's type. For a nested type's auxiliary recursor (`rec_2` on
+    -- `List Syntax`) they are not the recursor's own parameters.
+    let majorTy ← whnf (← inferType xs.back!)
+    let ctorUs := match majorTy.getAppFn with
+      | .const _ ls => ls
+      | _ => ctorInfo.levelParams.map fun n =>
+        match (r.levelParams.zip us).find? (·.1 == n) with
+        | some (_, u) => u
+        | none => Level.zero
+    let ctorParams := majorTy.getAppArgs[:ctorInfo.numParams].toArray
+    let ctorTy ← instantiateForall (ctorInfo.type.instantiateLevelParams ctorInfo.levelParams ctorUs) ctorParams
     forallTelescope ctorTy fun fields resTy => do
       if r.k then
         -- K-like: the major premise need not be the constructor itself; any
@@ -201,7 +218,7 @@ partial def recRule (rec : Name) (us : List Level) (r : RecursorVal) (rule : Rec
           let jvars ← exportVars vars
           let mut args := #[]
           for x in pmm do args := args.push (← patVar vars x)
-          for i in resTy.getAppArgs[np:].toArray do args := args.push (← patBracket vars i)
+          for i in resTy.getAppArgs[ctorInfo.numParams:].toArray do args := args.push (← patBracket vars i)
           args := args.push (← patVar vars h)
           let rhs := (rule.rhs.instantiateLevelParams r.levelParams us).beta pmm
           let jrhs ← exportExpr vars rhs
@@ -210,9 +227,9 @@ partial def recRule (rec : Name) (us : List Level) (r : RecursorVal) (rule : Rec
       let vars := pmm ++ fields
       let jvars ← exportVars vars
       let ctorKey ← ensure rule.ctor ctorUs
-      let indices := resTy.getAppArgs[np:].toArray
+      let indices := resTy.getAppArgs[ctorInfo.numParams:].toArray
       let mut ctorArgs := #[]
-      for p in params do ctorArgs := ctorArgs.push (← patBracket vars p)
+      for p in ctorParams do ctorArgs := ctorArgs.push (← patBracket vars p)
       for f in fields do ctorArgs := ctorArgs.push (← patVar vars f)
       let mut args := #[]
       for x in pmm do args := args.push (← patVar vars x)
