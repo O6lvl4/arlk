@@ -5,6 +5,7 @@
 import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat}
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
 import self.syntax
+import self.kernel
 import self.kernel.{IndInfo, StructEta, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
@@ -20,7 +21,7 @@ fn resolve(env: Env, lv: List[String], scope: List[String], r: Raw) -> Term! = m
   RName(x) => match index_in(scope, x, 0) {
     some(i) => ok(Var(i)),
     none => {
-      let c = resolve_const(env, x)!
+      let c = kernel.resolve_named(env, x)!
       let ps = map.get(env.lparams, c) ?? []
       guard list.is_empty(ps) else err("${x} takes universe levels: write ${x}[${list.join(ps, ", ")}]")
       ok(Const(c, []))

@@ -107,7 +107,8 @@ f(a, b)   f(a)(b)                      call (the same thing)
 match x { c(a) => t, _ => u }        pattern matching (structural recursion), see below
 { let h: A = e  let k = e'  t }      a block: named steps of a proof (like Isar's `have`)
 _                                      a hole the elaborator fills
-?                                      an open goal: checking stops and shows its type and context
+?                                      an open goal: checking stops and shows its type, its context,
+                                       and a visible theorem that closes it if a quick search finds one
 logic.Prf                              a qualified name (another room's symbol)
 Nat.add   Eq@1                         names may contain dots and @ (absorbed names use both)
 // comment
@@ -115,6 +116,9 @@ Nat.add   Eq@1                         names may contain dots and @ (absorbed na
 
 Unicode aliases: `→` for `->`, `⇒` for `=>`. Declarations need no terminator: each one starts with
 its keyword.
+
+An unknown name is reported with the visible names spelled almost the same (`did you mean add_zero?`)
+or the rooms that declare it (`add uses nat`).
 
 ## Universes, inductive types and inference
 

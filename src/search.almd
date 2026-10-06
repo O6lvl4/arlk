@@ -314,3 +314,28 @@ local fn same_shape(env: Env, ctx: Ctx, a: Term, b: Term, depth: Int, mut sol: S
     true
   } else false
 }
+
+// A proof of `goal` under `ctx` from its hypotheses and the visible
+// theorems, found within a small budget: what an open `?` goal is told it
+// could be. None means nothing turned up quickly, not that nothing exists.
+fn suggest(env: Env, ctx: Ctx, goal: Term) -> Term? = {
+  let rooms = [env.room] + (map.get(env.rooms, env.room) ?? [])
+  var using: List[(String, List[String], Term)] = []
+  for (q, e) in map.entries(env.entries) {
+    if e.kind == "theorem" and list.contains(rooms, e.room) then match map.get(env.types, q) {
+      some(ty) => list.push(using, (q, map.get(env.lparams, q) ?? [], ty)),
+      none => (),
+    } else ()
+  }
+  let lemmas = list.sort_by(using, ((q, _, _)) => q)
+  // The shallowest proof first: a lemma that fits outright beats one
+  // reached through another.
+  var found: Term? = none
+  var depth = 1
+  while found == none and depth <= 3 {
+    var s = Search { nodes: 0, max_nodes: 1000, next: 0, path: [], side: [], exhausted: false }
+    found = prove(env, ctx, goal, lemmas, depth, s)
+    depth = depth + 1
+  }
+  found
+}

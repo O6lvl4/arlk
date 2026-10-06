@@ -18,6 +18,7 @@ import self.syntax.{Raw}
 import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
 import self.simp
+import self.search
 
 // `typed`: holes for implicit arguments with the type their solution must
 // have, checked once solved (that is how levels like the u in `id[u]` are
@@ -628,7 +629,10 @@ fn infer(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Ter
       ok(c) => constant(env, sc, st, ctx, c, none, true),
       err(e) => match field_access(env, sc, st, ctx, x) {
         some(found) => found,
-        none => err(e),
+        none => err(match kernel.resolve_named(env, x) {
+          err(m) => m,
+          ok(_) => e,
+        }),
       },
     },
   },
@@ -972,7 +976,14 @@ local fn goal_report(env: Env, sc: Scope, st: ElabState) -> String = {
       i = i - 1
     }
     let zm = zonk(st, m)
-    if not has_meta(zm) then list.push(out, "    (unification found: ${show(env, ctx, zm)})") else ()
+    if not has_meta(zm) then list.push(out, "    (unification found: ${show(env, ctx, zm)})")
+    else {
+      let zty = zonk(st, ty)
+      if has_meta(zty) then () else match search.suggest(env, ctx, zty) {
+        some(t) => list.push(out, "    (search closes it: ${show(env, ctx, t)})"),
+        none => (),
+      }
+    }
   }
   list.join(out, "\n")
 }

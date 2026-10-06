@@ -917,6 +917,61 @@ fn resolve_const(env: Env, x: String) -> String! = {
   }
 }
 
+// The number of single-character edits between two spellings.
+fn edit_distance(a: List[String], b: List[String]) -> Int = {
+  var prev = list.range(0, list.len(b) + 1)
+  var i = 0
+  for ca in a {
+    i = i + 1
+    var row = [i]
+    var j = 0
+    for cb in b {
+      let sub = (list.get(prev, j) ?? 0) + (if ca == cb then 0 else 1)
+      let del = (list.get(prev, j + 1) ?? 0) + 1
+      let ins = (list.get(row, j) ?? 0) + 1
+      list.push(row, int.min(sub, int.min(del, ins)))
+      j = j + 1
+    }
+    prev = row
+  }
+  list.last(prev) ?? 0
+}
+
+// What to add to an "unknown name" error: the rooms that do declare the
+// name, or visible names spelled almost the same.
+fn name_hint(env: Env, x: String) -> String = {
+  let rooms = visible(env)
+  let xs = string.chars(x)
+  let limit = if list.len(xs) <= 3 then 1 else 2
+  let dotted = string.contains(x, ".")
+  var elsewhere: List[String] = []
+  var close: List[(Int, String)] = []
+  for (q, e) in map.entries(env.entries) {
+    let short = if e.room == "" then q else string.drop(q, string.len(e.room) + 1)
+    if short == x then list.push(elsewhere, e.room)
+    else if list.contains(rooms, e.room) and int.abs(string.len(short) - list.len(xs)) <= limit then {
+      let d = edit_distance(xs, string.chars(short))
+      if d <= limit then list.push(close, (d, short)) else ()
+    } else if dotted and int.abs(string.len(q) - list.len(xs)) <= limit then {
+      let d = edit_distance(xs, string.chars(q))
+      if d <= limit then list.push(close, (d, q)) else ()
+    } else ()
+  }
+  if not list.is_empty(elsewhere) then {
+    let rs = list.sort(list.unique(elsewhere))
+    " (declared in room ${list.join(rs, ", ")}: add `uses ${list.first(rs) ?? ""}` or write ${list.first(rs) ?? ""}.${x})"
+  } else {
+    let names = list.unique(list.sort_by(list.sort_by(close, ((_, n)) => n), ((d, _)) => d) |> list.map(((_, n)) => n))
+    if list.is_empty(names) then "" else " (did you mean ${list.join(list.take(names, 3), ", ")}?)"
+  }
+}
+
+// `resolve_const` for a name the user wrote, with a hint when it is unknown.
+fn resolve_named(env: Env, x: String) -> String! = match resolve_const(env, x) {
+  ok(q) => ok(q),
+  err(e) => err(if string.starts_with(e, "unknown name") then e + name_hint(env, x) else e),
+}
+
 // ── Names and levels in surface syntax ──────────────────────────────
 
 fn index_in(scope: List[String], x: String, i: Int) -> Int? = match scope {

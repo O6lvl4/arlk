@@ -1541,3 +1541,27 @@ test "simp rejects what it cannot rewrite to the same term" {
     none => false,
   })
 }
+
+// ── Error messages ──────────────────────────────────────────────────
+
+test "an unknown name suggests close spellings or the room that declares it" {
+  let base = "room ea\nsymbol Thing: Type\nsymbol thing_a: Thing\nroom eb\nsymbol other: Type\n"
+  assert(rejects_with(base + "room ec uses ea\nsymbol x: Thng", "did you mean Thing?"))
+  assert(rejects_with(base + "room ec uses ea\nsymbol f(t: Thing) -> Type\nsymbol y: f(thing_b)", "did you mean thing_a?"))
+  assert(rejects_with(base + "room ec uses ea\nsymbol x: other", "declared in room eb: add `uses eb`"))
+  assert(rejects_with(base + "room ec uses ea\nsymbol x: Zzzzzz", "unknown name Zzzzzz"))
+  assert(not rejects_with(base + "room ec uses ea\nsymbol x: Zzzzzz", "did you mean"))
+}
+
+test "an open goal says which visible theorem closes it, and nothing for a false one" {
+  let open_goal = "room gs uses eq, logic, nat\ntheorem c(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = ?\n"
+  assert(match run_wf(open_goal)! {
+    some(e) => string.contains(e, "search closes it: nat.add_comm(m, n)"),
+    none => false,
+  })
+  let false_goal = "room gs uses eq, logic, nat\ntheorem c(m: Nat) -> Eq(Nat, add(m, Nat.zero), Nat.succ(m)) = ?\n"
+  assert(match run_wf(false_goal)! {
+    some(e) => string.contains(e, "1 open goal") and not string.contains(e, "search closes it"),
+    none => false,
+  })
+}
