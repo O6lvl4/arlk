@@ -1,0 +1,120 @@
+// A large file split into parts that can be checked separately (in
+// parallel), without trusting anything more than one check of the whole.
+//
+// Part k of n proves its share of the file's theorems (split by the size of
+// their proofs) and assumes the theorems before it by their statements:
+// each of those becomes a `symbol` with the theorem's exact signature. The
+// other declarations up to the part's last theorem (symbols, definitions,
+// rules) are kept as they are. So every theorem is proved in exactly one
+// part, and a part rests only on statements that an earlier part proves:
+// when all n parts check, the whole file does.
+//
+//   arlk chunk FILE.arlk --part K/N -o PART.arlk
+
+// What starts a declaration at the top level.
+let DECL_WORDS = ["room", "symbol", "def", "theorem", "rule", "irrelevant", "type", "structure", "numerals", "codata", "axioms", "check", "eval", "view", "translate", "views", "routes", "mutual"]
+
+type Part = { text: String, first: Int, last: Int, total: Int }
+
+local fn starts_decl(line: String) -> Bool = match list.first(string.split(line, " ")) {
+  some(w) => list.contains(DECL_WORDS, w),
+  none => false,
+}
+
+// A theorem's statement as a symbol: `theorem f(x: A) -> T =` becomes
+// `symbol f(x: A) -> T`. None when the header is not of that shape.
+fn as_symbol(header: String) -> String? =
+  if string.starts_with(header, "theorem ") and string.ends_with(header, " =") then
+    some("symbol " + string.drop(string.take(header, string.len(header) - 2), 8))
+  else none
+
+// Part k (from 1) of n of the file's text.
+fn split(text: String, k: Int, n: Int) -> Part! = {
+  guard n >= 1 and k >= 1 and k <= n else err("a part is K/N with 1 <= K <= N")
+  let lines = string.split(text, "\n")
+  // Blocks: the lines of one declaration (the first line starts it).
+  var starts: List[Int] = []
+  for (i, l) in list.enumerate(lines) {
+    if starts_decl(l) then list.push(starts, i) else ()
+  }
+  let nblocks = list.len(starts)
+  let block_end = (b: Int) => list.get(starts, b + 1) ?? list.len(lines)
+  // The theorems' blocks and their weights.
+  var theorems: List[Int] = []
+  var weights: List[Int] = []
+  var total_weight = 0
+  for b in 0..<nblocks {
+    let s = list.get(starts, b) ?? 0
+    if string.starts_with(list.get(lines, s) ?? "", "theorem ") then {
+      var w = 0
+      for i in s..<block_end(b) {
+        w = w + string.len(list.get(lines, i) ?? "") + 1
+      }
+      list.push(theorems, b)
+      list.push(weights, w)
+      total_weight = total_weight + w
+    } else ()
+  }
+  let nthm = list.len(theorems)
+  // Theorem i goes to the part its weight's midpoint falls in.
+  var first = -1
+  var last = -2
+  var acc = 0
+  for (i, w) in list.enumerate(weights) {
+    let mid = acc + w / 2
+    let part = if total_weight == 0 then 1 else (mid * n) / total_weight + 1
+    if part == k then {
+      if first < 0 then {
+        first = i
+      } else ()
+      last = i
+    } else ()
+    acc = acc + w
+  }
+  guard first >= 0 else err("part ${int.to_string(k)}/${int.to_string(n)} has no theorems (${int.to_string(nthm)} in all)")
+  let first_block = list.get(theorems, first) ?? 0
+  let last_block = list.get(theorems, last) ?? 0
+  var out: List[String] = ["// Part ${int.to_string(k)} of ${int.to_string(n)} (arlk chunk): theorems ${int.to_string(first + 1)} to ${int.to_string(last + 1)} of ${int.to_string(nthm)} are proved here;", "// the theorems before them are assumed by their statements, each proved in an earlier part."]
+  // The header before the first declaration.
+  for i in 0..<(list.first(starts) ?? list.len(lines)) {
+    list.push(out, list.get(lines, i) ?? "")
+  }
+  for b in 0..<(last_block + 1) {
+    let s = list.get(starts, b) ?? 0
+    let head = list.get(lines, s) ?? ""
+    if string.starts_with(head, "theorem ") and b < first_block then {
+      match as_symbol(head) {
+        some(sym) => list.push(out, sym),
+        none => list.push(out, "// cannot assume: " + head),
+      }
+    } else if (string.starts_with(head, "axioms ") or string.starts_with(head, "check ") or string.starts_with(head, "eval ")) and b < first_block then ()
+    else {
+      for i in s..<block_end(b) {
+        list.push(out, list.get(lines, i) ?? "")
+      }
+    }
+  }
+  ok(Part { text: list.join(out, "\n") + "\n", first: first + 1, last: last + 1, total: nthm })
+}
+
+test "parts prove each theorem once and assume the earlier ones" {
+  let src = "room r\nsymbol A: Type\nsymbol a: A\ntheorem t1: A =\n  a\ntheorem t2: A =\n  t1\ndef d: A = a\ntheorem t3(x: A) -> A =\n  x\n"
+  match split(src, 1, 2) {
+    ok(p) => {
+      assert_eq((p.first, p.last, p.total), (1, 2, 3))
+      assert(string.contains(p.text, "theorem t1: A =\n  a\n"))
+      assert(not string.contains(p.text, "t3"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+  match split(src, 2, 2) {
+    ok(p) => {
+      assert_eq((p.first, p.last), (3, 3))
+      assert(string.contains(p.text, "symbol t1: A\nsymbol t2: A\ndef d: A = a\ntheorem t3(x: A) -> A =\n  x\n"))
+      assert(not string.contains(p.text, "theorem t1"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+  assert_eq(as_symbol("theorem f(x: A) -> B(x) ="), some("symbol f(x: A) -> B(x)"))
+  assert_eq(as_symbol("def f: A = a"), none)
+}

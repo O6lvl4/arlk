@@ -25,6 +25,7 @@ import self.bundle
 import self.almide_src
 import self.package
 import self.session
+import self.chunk
 
 let USAGE = """
   usage:
@@ -55,6 +56,9 @@ let USAGE = """
                                          reusing what an edit did not affect; prints what was
                                          checked again and why, and each step's digest
     arlk check FILE... --digest          a fresh check's digest, to compare with a session's
+    arlk chunk FILE.arlk --part K/N [-o OUT]
+                                         part K of N of FILE, to check apart: its share of the
+                                         theorems proved, the earlier ones assumed by statement
     arlk package pin PKG.arlkpkg         fill in a package's source hashes and export identities
     arlk package verify PKG.arlkpkg      resolve, check and compare a package with its pins
     arlk project DIR [--bundle OUT]      check a project (DIR/arlk-project.txt) against the
@@ -66,7 +70,7 @@ let USAGE = """
 effect fn main() -> Unit = {
   let args = process.args()
   let upto = flag(args, "--upto")
-  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--expect") and some(a) != flag(args, "--bundle") and some(a) != flag(args, "--verify"))
+  let files = list.drop(args, 2) |> list.filter((a) => not string.starts_with(a, "-") and some(a) != upto and some(a) != flag(args, "-o") and some(a) != flag(args, "--part") and some(a) != flag(args, "--expect") and some(a) != flag(args, "--bundle") and some(a) != flag(args, "--verify"))
   match list.get(args, 1) {
     some("check") if not list.is_empty(files) and list.contains(args, "--digest") => run_digest(files)!,
     some("check") if not list.is_empty(files) => run_check(files, list.contains(args, "--timing"), list.contains(args, "--keep-going"))!,
@@ -81,6 +85,7 @@ effect fn main() -> Unit = {
     some("absorb-isabelle") if not list.is_empty(files) => run_absorb_isabelle(list.first(files) ?? "", flag(args, "-o"))!,
     some("absorb-agda") if not list.is_empty(files) => run_absorb_agda(list.first(files) ?? "", flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
+    some("chunk") if list.len(files) == 1 => run_chunk(list.first(files) ?? "", flag(args, "--part") ?? "", flag(args, "-o"))!,
     some("package") if list.len(files) == 2 => run_package(list.first(files) ?? "", list.get(files, 1) ?? "")!,
     some("project") if list.len(files) == 1 => run_project(list.first(files) ?? "", flag(args, "--bundle"))!,
     _ => {
@@ -277,6 +282,26 @@ effect fn run_absorb_agda(path: String, out: String?) -> Unit = {
         println("wrote ${o}")
       },
       none => println(text),
+    },
+  }
+}
+
+effect fn run_chunk(path: String, part: String, out: String?) -> Unit = {
+  let kn = string.split(part, "/")
+  let k = int.parse(list.get(kn, 0) ?? "") ?? 0
+  let n = int.parse(list.get(kn, 1) ?? "") ?? 0
+  let text = fs.read_text(path) |> result.map_err((e) => "reading ${path}: ${e}")!
+  match chunk.split(text, k, n) {
+    err(e) => {
+      println("✗ ${path}: ${e}")
+      process.exit(1)
+    },
+    ok(p) => {
+      match out {
+        some(o) => fs.write(o, p.text) |> result.map_err((e) => "writing ${o}: ${e}")!,
+        none => println(p.text),
+      }
+      println("part ${part} of ${path}: theorems ${int.to_string(p.first)} to ${int.to_string(p.last)} of ${int.to_string(p.total)}")
     },
   }
 }

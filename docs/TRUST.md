@@ -161,6 +161,18 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   on the encoding in lib/hol.arlk (a HOL term of type `a` is a value of `Tm(a)`, a theorem
   `Γ ⊦ φ` is a function from proofs of `Γ` to a proof of `φ`).
 
+## 5a. Checking in parts
+
+`arlk chunk FILE --part K/N` ([src/chunk.almd](../src/chunk.almd)) writes part K of a file: its
+share of the theorems with their proofs, and every earlier theorem as a `symbol` with exactly the
+theorem's signature. A part checked alone is therefore relative to those assumed statements (as
+`axioms` would list); it is the set of all N parts passing that establishes the file, because every
+theorem is proved in exactly one part and each assumed statement is the statement an earlier part
+proves. `chunk` only writes text; a mistake in it can make a part fail or leave a theorem out, so
+the coverage (parts 1..N, theorems 1..total, contiguous) is printed for every part and the parts
+are checked against the same absorbed file. .github/workflows/setmm.yml checks all of set.mm this
+way.
+
 ## 6. Below Arlk
 
 The Almide compiler and its Rust backend, and the Rust toolchain and OS, run all of the above.

@@ -81,6 +81,13 @@ must_pass "Lean Nat.add_zero" 300 ./arlk check lib/core.arlk absorbed/lean/nat_a
 must_pass "Rocq Init.Peano" 300 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
 must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
 must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set_prop.arlk
+# A database checked in parts (`arlk chunk`, as .github/workflows/setmm.yml
+# does for the whole of set.mm): each part proves its share and assumes the
+# earlier theorems by statement; all three parts of set_prop check.
+for k in 1 2 3; do
+  ./arlk chunk absorbed/metamath/set_prop.arlk --part "$k/3" -o "$LOGS/set_prop-part$k.arlk" >"$LOGS/set_prop-chunk$k.log" 2>&1
+  must_pass "Metamath set_prop part $k/3" 300 ./arlk check "$LOGS/set_prop-part$k.arlk"
+done
 # set.mm's propositional calculus read in Arlk's own logic (a checked view):
 # Peirce's law, proved by set.mm, as a native theorem resting only on
 # excluded middle. A view that reads negation as the identity is rejected.

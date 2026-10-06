@@ -17,8 +17,9 @@ was found.
   dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
 - Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: 969 of 973 declarations) is
   checked the same way.
-- Metamath's `set.mm`: its whole propositional calculus (1776 theorems, from `ax-mp` to `stoic4b`)
-  is read straight from the database, proofs included, and checked by the same kernel.
+- Metamath's `set.mm`, the whole database (47 913 theorems: logic, ZFC, the number systems,
+  analysis, ...), is read straight from the database, proofs included, and every theorem is checked
+  by the same kernel, none failing; split into parts that are checked in parallel (`arlk chunk`).
 - HOL, the logic of HOL Light, HOL4 and Isabelle/HOL: OpenTheory's whole standard library
   (`base-1.221`: 95 articles, 2.7 million proof commands, from Booleans through lists, natural
   numbers and the reals) is run by Arlk's own article reader and checked by the same kernel, with
@@ -425,9 +426,12 @@ Metamath tool is involved.
 Status of `$d`: regression-tested on small fixtures whose verdicts were cross-checked with the
 reference verifier mmverify.py ([spec/fixtures/metamath](spec/fixtures/metamath)): obligations in
 normal and compressed proofs, setvars named with punctuation, fresh dummies, and rejection of a
-missing `$d`, of a use collapsing two distinct variables and of an unconstrained dummy. The large
-run below covers set.mm up to the construction of the positive fractions; it is development
-evidence, not part of the test suite. The `Apart_*`, `apart_*` and `fresh_*` declarations are
+missing `$d`, of a use collapsing two distinct variables and of an unconstrained dummy. The whole
+of set.mm (commit 584b685) checks: `arlk chunk setmm.arlk --part K/N` writes part K of N, which
+proves its share of the theorems and assumes the earlier ones by their exact statements, so all N
+parts passing means every theorem was checked once (docs/TRUST.md, "Checking in parts").
+.github/workflows/setmm.yml does this daily in 24 parallel jobs, and checks that the parts cover
+every theorem. The `Apart_*`, `apart_*` and `fresh_*` declarations are
 assumptions about Metamath's syntax that `axioms` lists, like the database's own axioms.
 
 Metamath's definitions (`df-an`, `df-bi`, ...) are axioms there, and they stay symbols here, so
@@ -551,7 +555,7 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
-| Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
+| Metamath `set.mm`, the whole database (commit 584b685; absorbed, not committed) | 47 913 theorems, all of them, in 12 parts | absorb 17 min, check ~17 CPU-hours (parts: 24 min to 3.7 h) |
 | Metamath `iset.mm` (intuitionistic logic and set theory), the whole database, not committed | 18 661, all of them | absorb 89 s, check ~48 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
 
@@ -885,7 +889,7 @@ What each system's features are in Arlk, and what is missing, is tabulated in
    `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
    (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
    `with … | inspect`, instance arguments. Isabelle: Isar steps inside induction cases,
-   premises other than equations, type classes, more of Main. Metamath: set.mm as a whole in CI.
+   premises other than equations, type classes, more of Main. Metamath: set.mm's heaviest theorems (hours each part).
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
    guarded corecursion that is not a state machine.
 4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used

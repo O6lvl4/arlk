@@ -1,0 +1,103 @@
+name: setmm
+
+# The whole of Metamath's set.mm, absorbed and checked by Arlk's kernel, in
+# parallel parts (`arlk chunk`): part k proves its share of the theorems and
+# assumes the earlier ones by their exact statements, so when every part
+# passes, every theorem of set.mm has been checked once and nothing more is
+# trusted than in one check of the whole file. No Metamath verifier is run.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - src/kernel.almd
+      - src/term.almd
+      - src/metamath.almd
+      - src/chunk.almd
+      - .github/workflows/setmm.yml
+
+env:
+  ALMIDE_REPO: https://github.com/almide/almide
+  ALMIDE_COMMIT: 963df767bc9c1ef7f4e7cc3d6f0662073e66baec
+  RUST_VERSION: 1.96.1
+  # set.mm at a fixed commit, by checksum.
+  SETMM_COMMIT: 584b6852f57f281e9be1793332f1e52e077693c8
+  SETMM_SHA256: 90de6bac87d549023fc83fb698a1baacfed3f99b71438722171674f16777c881
+  PARTS: "24"
+
+jobs:
+  part:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache the Almide build
+        uses: actions/cache@v4
+        with:
+          path: ~/almide-src/target
+          key: almide-${{ env.ALMIDE_COMMIT }}-rust-${{ env.RUST_VERSION }}-${{ runner.os }}
+
+      - name: Build Almide at ${{ env.ALMIDE_COMMIT }}
+        run: |
+          mkdir -p ~/almide-src && cd ~/almide-src
+          git init -q . 2>/dev/null || true
+          git fetch -q --depth 1 "$ALMIDE_REPO" "$ALMIDE_COMMIT"
+          git checkout -q --force FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ALMIDE_COMMIT"
+          cargo build --release --locked
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/almide "$HOME/.local/bin/almide"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build arlk
+        run: almide build src/main.almd -o arlk
+
+      - name: Fetch set.mm ${{ env.SETMM_COMMIT }} (checksum pinned)
+        run: |
+          curl -fsSL -o set.mm "https://raw.githubusercontent.com/metamath/set.mm/${SETMM_COMMIT}/set.mm"
+          echo "${SETMM_SHA256}  set.mm" | sha256sum -c -
+
+      - name: Absorb set.mm
+        run: ./arlk absorb-mm set.mm -o setmm.arlk
+
+      - name: Part ${{ matrix.part }} of ${{ env.PARTS }}
+        run: |
+          ./arlk chunk setmm.arlk --part "${{ matrix.part }}/${PARTS}" -o part.arlk | tee range.txt
+          ./arlk check part.arlk > part.log 2>&1; status=$?
+          tail -3 part.log
+          exit $status
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: setmm-part-${{ matrix.part }}
+          path: |
+            part.log
+            range.txt
+
+  # Every theorem was proved in some part: the parts' ranges are 1..total,
+  # contiguous, with no gap or overlap.
+  coverage:
+    needs: part
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: setmm-part-*
+      - name: The parts cover every theorem once
+        run: |
+          cat setmm-part-*/range.txt | sed -E 's/^part ([0-9]+)\/([0-9]+) of .*: theorems ([0-9]+) to ([0-9]+) of ([0-9]+)$/\1 \2 \3 \4 \5/' | sort -n > ranges.txt
+          cat ranges.txt
+          awk -v parts="$PARTS" 'BEGIN { next_first = 1 } { if ($2 != parts || $3 != next_first) { print "gap or overlap at part " $1; bad = 1 } next_first = $4 + 1; total = $5; n++ } END { if (n != parts || next_first != total + 1) { print "the parts do not cover all " total " theorems"; bad = 1 } else print "all " total " theorems proved, in " n " parts"; exit bad }' ranges.txt
