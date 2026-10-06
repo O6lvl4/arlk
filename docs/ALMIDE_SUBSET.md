@@ -5,7 +5,7 @@ definitions ([src/almide_src.almd](../src/almide_src.almd)), so that properties 
 stated and proved in Arlk. This page says which programs it accepts, what they mean, and what a
 proof about them does and does not establish.
 
-Pinned: the subset `arlk-almide-1`, read with the syntax of Almide 0.64.0 (the version CI pins).
+Pinned: the subset `arlk-almide-1`, read with the syntax of Almide 0.67.0 development, commit `963df767b` (the build CI pins).
 
 ## Grammar
 

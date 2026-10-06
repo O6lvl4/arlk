@@ -1,0 +1,8 @@
+# Test files the pinned compiler declines to lower to WASM; they run natively.
+# All six compare an AST value (`Decl`) with assert_eq: almide/almide#3450 (hold-depth-i32).
+spec/absorb_test.almd
+spec/isabelle_test.almd
+spec/kernel_test.almd
+spec/metamath_test.almd
+src/agda.almd
+src/syntax.almd

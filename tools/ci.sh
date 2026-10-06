@@ -69,6 +69,9 @@ fi
 
 must_pass "almide test (spec)" 3600 almide test
 must_pass "almide test src/" 1800 almide test src/
+# Every test file on each backend, counted (tools/toolchain/wasm-walls lists
+# the files the compiler still runs natively only).
+must_pass "toolchain: test files per backend" 3600 tools/toolchain-check.sh "$LOGS/toolchain"
 
 for f in examples/logic.arlk examples/nat.arlk examples/data.arlk examples/mutual.arlk examples/nested.arlk; do
   must_pass "example $f" 300 ./arlk check "$f"

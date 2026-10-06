@@ -688,7 +688,10 @@ lemma is rejected.
 ## Usage
 
 CI (`.github/workflows/ci.yml`) runs [tools/ci.sh](tools/ci.sh) on a pinned toolchain (Almide
-v0.64.0 by checksum, Rust 1.96.1): build, both test suites, the native examples, the committed
+built from the exact source commit `963df767b` with its lockfile, Rust 1.96.1; wasmtime v47.0.2 by
+checksum): build, both test suites, every test file counted on each backend
+([tools/toolchain-check.sh](tools/toolchain-check.sh): native for all, WASM for all but those listed
+in [tools/toolchain/wasm-walls](tools/toolchain/wasm-walls); see [docs/TOOLCHAIN.md](docs/TOOLCHAIN.md)), the native examples, the committed
 absorbed libraries without any prover, OpenTheory's base library (fetched by checksum, absorbed
 and checked, with two false statements that must be rejected), the exact known baseline of Rocq `Corelib.Init` (four
 declarations fail, see above), and the inputs in [spec/fixtures/reject](spec/fixtures/reject),
@@ -907,3 +910,5 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 | [almide#3437](https://github.com/almide/almide/issues/3437) comparing a match-arm binding of a recursive variant with `==` emits `&T == T` | compare the scrutinee itself (`checker.shape`) |
 | [almide#3439](https://github.com/almide/almide/issues/3439) same-named types in two modules still clash (as #3401) | `agda.almd`'s types are prefixed (`AExpr`, `ACx`, ...) |
 | [almide#3440](https://github.com/almide/almide/issues/3440) a list from a tuple binding is moved by `|> list.map` in a loop | map once before the loop (`agda.absorb`) |
+| [almide#3449](https://github.com/almide/almide/issues/3449) `almide test --json` exits 0 when a test fails | `tools/toolchain-check.sh` counts passed tests instead of reading exit statuses |
+| [almide#3450](https://github.com/almide/almide/issues/3450) wasm: `==` on nested distinct types walls (`hold-depth-i32`) | the six files that compare a `Decl` run natively (`tools/toolchain/wasm-walls`) |
