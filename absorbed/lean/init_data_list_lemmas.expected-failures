@@ -9,11 +9,6 @@ absorbed/lean/init_data_list_lemmas.arlk:2460: unknown name Nat.Linear.ExprCnstr
 absorbed/lean/init_data_list_lemmas.arlk:2464: unknown name Nat.Linear.ExprCnstr.eq_false_of_isUnsat
 absorbed/lean/init_data_list_lemmas.arlk:2466: unknown name List.append_cancel_right@0
 absorbed/lean/init_data_list_lemmas.arlk:2468: unknown name List.append_cancel_right_eq@0
-absorbed/lean/init_data_list_lemmas.arlk:3586: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:3588: unknown name List.getElem_append_left@0
-absorbed/lean/init_data_list_lemmas.arlk:3594: unknown name List.getElem_append_left@0
-absorbed/lean/init_data_list_lemmas.arlk:3632: out of budget: reduction did not finish
-absorbed/lean/init_data_list_lemmas.arlk:3752: unknown name List.getElem_dropLast@0
 absorbed/lean/init_data_list_lemmas.arlk:3778: type mismatch for
 absorbed/lean/init_data_list_lemmas.arlk:4049: out of budget: reduction did not finish
 absorbed/lean/init_data_list_lemmas.arlk:4053: unknown name _private.Init.Data.List.Lemmas.0.List.isEqv.match_1.splitter@0@0

@@ -144,12 +144,23 @@ fn show(env: Env, ctx: Ctx, t: Term) -> String = pretty.show(env.room, names_of(
 // rejected with "out of budget", not accepted and not reported as a
 // type mismatch. So a looping rule set makes the kernel incomplete, never
 // unsound and never stuck.
-type Budget = { left: Int, depth: Int, exhausted: Bool }
+//
+// `failed` remembers pairs of applications with the same head whose
+// arguments were found not convertible, so that unfolding both sides does
+// not compare the same arguments again at every level of a tower of
+// definitions (which made such comparisons exponential, as Lean's
+// List.getElem_append_left showed). Pairs are told apart by a bounded
+// fingerprint of the two terms and of the context entries their
+// variables reach (conversion looks at those types, for proof
+// irrelevance). A remembered pair only skips that shortcut: both sides are
+// then unfolded and compared as if the shortcut had failed again, so a
+// fingerprint that collides can cost completeness, never soundness.
+type Budget = { left: Int, depth: Int, exhausted: Bool, failed: Map[(Int, Int, Int), Bool] }
 
 let STEPS = 50_000_000
 let MAX_DEPTH = 512
 
-fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false }
+fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:] }
 
 // Pay for one step; false once the budget is gone.
 fn spend_step(mut b: Budget) -> Bool = spend(b)
@@ -590,13 +601,114 @@ local fn all_conv(env: Env, ctx: Ctx, xs: List[Term], ys: List[Term], mut bu: Bu
 local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool = {
   let (ha, xs) = spine(a)
   let (hb, ys) = spine(b)
-  match ha {
+  let same = match ha {
     Const(c, ls) => match hb {
-      Const(d, ms) => c == d and levels_eq(ls, ms) and all_conv(env, ctx, xs, ys, bu),
+      Const(d, ms) => c == d and levels_eq(ls, ms),
       _ => false,
     },
     _ => false,
   }
+  if not same then false
+  else {
+    let key = pair_key(ctx, a, b)
+    if map.contains(bu.failed, key) then false
+    else if all_conv(env, ctx, xs, ys, bu) then true
+    else {
+      if not bu.exhausted then map.insert(bu.failed, key, true) else ()
+      false
+    }
+  }
+}
+
+// ── Fingerprints for the failure memory ─────────────────────────────
+
+let FP_NODES = 256
+let FP_MOD = 1_000_000_007
+
+type Fp = { h: Int, left: Int, vars: List[Int] }
+
+local fn mix(h: Int, x: Int) -> Int = (h * 31 + x % FP_MOD + FP_MOD) % FP_MOD
+
+local fn name_code(s: String) -> Int = list.fold(string.to_bytes(s), 7, (h, b) => (h * 131 + b) % FP_MOD)
+
+local fn level_code(l: Level) -> Int = match l {
+  LZero => 1,
+  LSucc(x) => mix(2, level_code(x)),
+  LMax(x, y) => mix(mix(3, level_code(x)), level_code(y)),
+  LIMax(x, y) => mix(mix(4, level_code(x)), level_code(y)),
+  LParam(p) => mix(5, name_code(p)),
+  LMeta(n) => mix(6, n),
+}
+
+// The first FP_NODES nodes of t, hashed; the variables met there (free
+// above `depth` binders) are collected as context positions.
+local fn fingerprint(t: Term, depth: Int, mut f: Fp) -> Unit =
+  if f.left <= 0 then ()
+  else {
+    f.left = f.left - 1
+    match t {
+      Var(i) => {
+        f.h = mix(mix(f.h, 11), i)
+        if i >= depth and not list.contains(f.vars, i - depth) then list.push(f.vars, i - depth) else ()
+      },
+      Sort(l) => {
+        f.h = mix(mix(f.h, 12), level_code(l))
+      },
+      Const(c, ls) => {
+        f.h = mix(mix(f.h, 13), name_code(c))
+        for l in ls {
+          f.h = mix(f.h, level_code(l))
+        }
+      },
+      App(g, x) => {
+        f.h = mix(f.h, 14)
+        fingerprint(g, depth, f)
+        fingerprint(x, depth, f)
+      },
+      Lam(_, ty, b) => {
+        f.h = mix(f.h, 15)
+        fingerprint(ty, depth, f)
+        fingerprint(b, depth + 1, f)
+      },
+      Pi(_, ty, b) => {
+        f.h = mix(f.h, 16)
+        fingerprint(ty, depth, f)
+        fingerprint(b, depth + 1, f)
+      },
+      Meta(n) => {
+        f.h = mix(mix(f.h, 17), n)
+      },
+    }
+  }
+
+local fn pair_key(ctx: Ctx, a: Term, b: Term) -> (Int, Int, Int) = {
+  var fa = Fp { h: 1, left: FP_NODES, vars: [] }
+  fingerprint(a, 0, fa)
+  var fb = Fp { h: 2, left: FP_NODES, vars: fa.vars }
+  fingerprint(b, 0, fb)
+  // The context entries those variables reach, through their types.
+  var seen: List[Int] = []
+  var queue = fb.vars
+  var hc = 3
+  while not list.is_empty(queue) and list.len(seen) < 64 {
+    let i = list.first(queue) ?? 0
+    queue = list.drop(queue, 1)
+    if not list.contains(seen, i) then {
+      list.push(seen, i)
+      match list.get(ctx, i) {
+        some((_, ty)) => {
+          var ft = Fp { h: 4, left: FP_NODES, vars: [] }
+          fingerprint(ty, 0, ft)
+          hc = mix(mix(hc, i), ft.h)
+          for j in ft.vars {
+            list.push(queue, i + 1 + j)
+          }
+        },
+        none => (),
+      }
+    } else ()
+  }
+  (fa.h, fb.h, hc)
 }
 
 // Unfold one step on the side whose head was defined later (both when

@@ -180,3 +180,12 @@ Observations, not claims:
 - **Cross-logic reuse.** It is dominated by checking the absorbed libraries: Lean `Nat.Basic` plus
   Rocq `Init.Peano` take about 30 s, the OpenTheory bool theory about 3 s. The composed view
   alone takes 4 ms.
+- **Same-head conversion.** Comparing two applications of the same definition first compares
+  their arguments, and unfolds both sides when that fails. In a tower of definitions the same
+  failing argument comparison was paid for again at every level, nested: Lean's
+  `List.getElem_append_left` ran out of its 50 million steps. The kernel now remembers such
+  failures for the declaration (`Budget.failed`, keyed by a bounded fingerprint of the pair and of
+  the context entries it reaches). The cons case of that proof alone went from out of budget (150 s)
+  to 46 s; `Init.Data.List.Lemmas` from 21 failures (2202 of 2223 checked) and 1178 s to 16 (2207 of 2223) and 967 s; Lean
+  `Nat.Lemmas` (9 failures, ~630 s) and Rocq `Init` (4 failures, 36 s) are unchanged. Capping the
+  shortcut's own budget instead was tried and rejected: `Nat.Lemmas` went to 28 failures.

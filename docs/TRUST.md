@@ -23,6 +23,10 @@ soundness proof, and a passing test suite is not one either.
 A rewrite also pays for the size of the term it builds (up to 10 000 per step), so a rule that keeps
 growing the term (`f(x) = f(f(x))`) exhausts the budget instead of copying ever larger terms.
 Exhaustion makes the checker incomplete (a proof needing more work is rejected), not unsound.
+Conversion remembers, per declaration, pairs of same-head applications whose arguments failed to
+convert (`Budget.failed`, keyed by a bounded fingerprint); a remembered pair only skips that
+shortcut and is decided by unfolding instead, so the memory (and a fingerprint collision) can make
+conversion fail where it would have succeeded, never succeed where it would have failed.
 Regression tests: [spec/kernel_test.almd](../spec/kernel_test.almd), issues #1, #3, #7.
 
 ## 2. Declarations — trusted

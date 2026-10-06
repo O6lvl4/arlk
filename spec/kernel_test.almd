@@ -1699,3 +1699,16 @@ test "codata: a false value, a field that hides the type, and a type that is not
     })
   }
 }
+
+// ── Conversion: same-head arguments that fail are remembered ───────
+
+test "a same-head comparison that failed once still converts by unfolding, and a false one is still rejected" {
+  let base = "room ck uses eq, logic, nat\ndef k(a: Nat, b: Nat) -> Nat = a\ndef twice(a: Nat, b: Nat) -> Nat = add(k(a, b), k(a, b))\n"
+  // k(x, y) and k(x, z) differ in their arguments but unfold to x; the
+  // pair is met twice, the second time after its failure is remembered.
+  assert_eq(run_wf(base + "theorem same(x: Nat, y: Nat, z: Nat) -> Eq(Nat, twice(x, y), add(k(x, z), k(x, z))) = Eq.refl\n")!, none)
+  assert(match run_wf(base + "theorem wrong(x: Nat, y: Nat, z: Nat) -> Eq(Nat, twice(y, x), add(k(z, x), k(z, x))) = Eq.refl\n")! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}
