@@ -233,6 +233,10 @@ must_pass "benchmark change challenge" 300 python3 bench/change.py ./arlk
 # An Almide program verified through the subset's semantics (#16).
 must_pass "Almide program: reverse keeps length" 1200 tools/almide-check.sh ./arlk "$LOGS/almide"
 
+# One program property composed from Agda and Isabelle, with checked bridges,
+# explicit dependency provenance and tampered combinations rejected.
+must_pass "proof fusion: Agda + Isabelle batch" 600 tools/fusion-check.sh ./arlk "$LOGS/fusion"
+
 for f in spec/fixtures/reject/*.arlk; do
   want="$(sed -nE 's|^// expect: (.*)$|\1|p' "$f" | head -1)"
   must_reject "reject $(basename "$f")" 120 "$want" ./arlk check "$f"

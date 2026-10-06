@@ -72,6 +72,11 @@ tests the model, it does not prove that compilation preserves it.
 
 ## Later stages
 
+[The batch-flush example](FUSION.md) additionally composes lemmas from Agda
+and Isabelle in one program-length proof, with a separate exact-order theorem.
+Its bridges are checked proofs; its bundle records the imported dependencies.
+It has the same source-model boundary described above.
+
 Executable correctness is a separate claim, with its own milestones: the correspondence between
 this model and Almide's own IR for the subset; preservation for one lowering pass at a time; then
 the emitted Rust, with the Rust compiler and runtime as stated assumptions. Until that chain

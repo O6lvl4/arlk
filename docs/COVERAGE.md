@@ -103,6 +103,11 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 
 ## Between systems
 
+[The batch-flush proof](FUSION.md) combines Agda and Isabelle in one theorem
+about an Almide subset program: checked list/number/equality bridges, explicit
+dependency provenance, bundle replay and negative controls. This is a source
+model property, not compiled-binary correctness.
+
 | Transport | Where |
 |---|---|
 | Lean's naturals and Rocq's, as the same theory (a bridge and views) | [examples/bridge.arlk](../examples/bridge.arlk), [examples/transport.arlk](../examples/transport.arlk) |

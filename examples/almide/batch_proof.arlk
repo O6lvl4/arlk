@@ -1,0 +1,84 @@
+// Two absorbed systems in one proof about an Almide program.
+// Agda supplies append's length; Isabelle supplies tail-reverse's meaning
+// and reverse's length. Each conversion below is a checked definition;
+// every preservation property is proved, never assumed.
+//
+// Run tools/fusion-check.sh ./arlk WORKDIR for the complete check,
+// source/model verification, bundle/replay and negative controls.
+
+room agda_list_bridge uses agda_transport, list
+
+def encode[A: Type](xs: almide.List(A)) -> agda.Arith.List(A) = match xs {
+  nil => agda.Arith.List.nil,
+  cons(h, t) => agda.Arith.List.cons(h, encode(t)),
+}
+
+theorem encode_append[A: Type](xs: almide.List(A), ys: almide.List(A)) -> eq.Eq(agda.Arith.List(A), encode(almide.append(xs, ys)), agda.Arith.plusplus(encode(xs), encode(ys))) = by induction xs simp
+
+theorem encode_length[A: Type](xs: almide.List(A)) -> eq.Eq(nat.Nat, agda_transport.to(agda.Arith.length(encode(xs))), list.length(xs)) = by induction xs simp
+
+// This proof actually applies the absorbed Agda lemma. The native
+// list.length_append theorem is deliberately not used.
+theorem length_append[A: Type](xs: almide.List(A), ys: almide.List(A)) -> eq.Eq(nat.Nat, list.length(almide.append(xs, ys)), nat.add(list.length(xs), list.length(ys))) = {
+  let encoded = eq.cong((zs: agda.Arith.List(A)) => agda_transport.to(agda.Arith.length(zs)), encode_append(xs, ys))
+  let imported = eq.cong(agda_transport.to, agda_transport.from_agda(agda.Arith.plusplus_length(encode(xs), encode(ys))))
+  let addition = agda_transport.to_plus(agda.Arith.length(encode(xs)), agda.Arith.length(encode(ys)))
+  let lengths = eq.cong2(nat.add, encode_length(xs), encode_length(ys))
+  eq.trans(eq.symm(encode_length(almide.append(xs, ys))), eq.trans(encoded, eq.trans(imported, eq.trans(addition, lengths))))
+}
+
+room isabelle_list_bridge uses isabelle.Lists, list, almide_batch
+
+def encode[A: Type](xs: almide.List(A)) -> isabelle.Main.list(A) = match xs {
+  nil => isabelle.Main.list.nil,
+  cons(h, t) => isabelle.Main.list.Cons(h, encode(t)),
+}
+
+def decode[A: Type](xs: isabelle.Main.list(A)) -> almide.List(A) = match xs {
+  nil => almide.List.nil,
+  Cons(h, t) => almide.List.cons(h, decode(t)),
+}
+
+def to_nat(n: isabelle.Main.nat) -> nat.Nat = match n {
+  zero => nat.Nat.zero,
+  Suc(k) => nat.Nat.succ(to_nat(k)),
+}
+
+theorem round_trip[A: Type](xs: almide.List(A)) -> eq.Eq(almide.List(A), decode(encode(xs)), xs) = by induction xs simp
+
+theorem decode_append[A: Type](xs: isabelle.Main.list(A), ys: isabelle.Main.list(A)) -> eq.Eq(almide.List(A), decode(isabelle.Main.append(xs, ys)), almide.append(decode(xs), decode(ys))) = by induction xs simp
+
+theorem decode_length[A: Type](xs: isabelle.Main.list(A)) -> eq.Eq(nat.Nat, list.length(decode(xs)), to_nat(isabelle.Main.length(xs))) = by induction xs simp
+
+theorem encode_length[A: Type](xs: almide.List(A)) -> eq.Eq(nat.Nat, to_nat(isabelle.Main.length(encode(xs))), list.length(xs)) = by induction xs simp
+
+// The accumulator is generalised in the induction hypothesis. Changing
+// the program to drop an element breaks this bridge.
+theorem encode_flush[A: Type](pending: almide.List(A), ready: almide.List(A)) -> eq.Eq(isabelle.Main.list(A), encode(almide_batch.flush(pending, ready)), isabelle.Lists.itrev(encode(pending), encode(ready))) = by induction pending simp
+
+// A specification of reversal, using Isabelle's list representation.
+def reversed[A: Type](xs: almide.List(A)) -> almide.List(A) = decode(isabelle.Main.rev(encode(xs)))
+
+theorem flush_order[A: Type](pending: almide.List(A), ready: almide.List(A)) -> eq.Eq(almide.List(A), almide_batch.flush(pending, ready), almide.append(reversed(pending), ready)) = {
+  let modeled = eq.cong((zs: isabelle.Main.list(A)) => decode(zs), encode_flush(pending, ready))
+  let imported = eq.cong((zs: isabelle.Main.list(A)) => decode(zs), isabelle.Lists.itrev_rev(encode(pending), encode(ready)))
+  let app = decode_append(isabelle.Main.rev(encode(pending)), encode(ready))
+  let back = eq.cong((zs: almide.List(A)) => almide.append(reversed(pending), zs), round_trip(ready))
+  eq.trans(eq.symm(round_trip(almide_batch.flush(pending, ready))), eq.trans(modeled, eq.trans(imported, eq.trans(app, back))))
+}
+
+theorem reversed_length[A: Type](xs: almide.List(A)) -> eq.Eq(nat.Nat, list.length(reversed(xs)), list.length(xs)) =
+  eq.trans(decode_length(isabelle.Main.rev(encode(xs))), eq.trans(eq.cong(to_nat, isabelle.Main.length_rev(encode(xs))), encode_length(xs)))
+
+room batch_proof uses agda_list_bridge, isabelle_list_bridge
+
+// One final theorem, using both imported systems through the bridges.
+// All finite lists and every element type in the modeled subset.
+theorem flush_length[A: Type](pending: almide.List(A), ready: almide.List(A)) -> eq.Eq(nat.Nat, list.length(almide_batch.flush(pending, ready)), nat.add(list.length(pending), list.length(ready))) = {
+  let order = eq.cong((zs: almide.List(A)) => list.length(zs), isabelle_list_bridge.flush_order(pending, ready))
+  let combined = agda_list_bridge.length_append(isabelle_list_bridge.reversed(pending), ready)
+  let reverse_keeps_length = eq.cong((n: nat.Nat) => nat.add(n, list.length(ready)), isabelle_list_bridge.reversed_length(pending))
+  eq.trans(order, eq.trans(combined, reverse_keeps_length))
+}
+
+axioms flush_length
