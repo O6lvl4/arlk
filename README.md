@@ -84,6 +84,7 @@ rule lhs = rhs  where x: A, y: B       a rewrite rule on a symbol of this room
                                        ({t} in lhs: must be convertible to t, not matched)
 irrelevant T  where x: A               values of T are all equal (definitional proof irrelevance)
 type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
+codata T(params) = { x: A, r: T(...) }  a coinductive type: infinite values, built by T.corec
 view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
 translate V name                       carry name (from a room built on S) here along V, checked again
 view V from S via v1, v2               compose two views (S read in R by v1, R read here by v2), checked
@@ -203,6 +204,15 @@ that occurs twice in the patterns, is refused with a message (it would need equa
 projection per field, defined by a match; a field's type may mention earlier fields
 (`type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }`).
 As in Almide, `p.x` reads a field and `Point { x: a, y: b }` builds a value.
+
+**Coinductive types.** `codata Stream(A: Type) = { head: A, tail: Stream(A) }` declares infinite
+values whose fields may be the type again (streams, infinite trees with several such fields). It is
+defined, not assumed (src/codata.almd): a value is what each path down through its recursive fields
+leads to (`Stream.Path`), `Stream.corec(h, t, seed)` builds one from a seed and a step per field, and
+the destructors compute on it, so `Stream.tail(Stream.corec(h, t, s))` is `Stream.corec(h, t, t(s))`
+by conversion. Bisimilar values are equal by function extensionality:
+[examples/std/stream.arlk](examples/std/stream.arlk) proves the coinduction principle by induction on
+paths and uses it for `map(id, s) = s`.
 
 **Proof search.** `theorem t(...) -> T = search` or `search(lemma, ..., depth: n)` looks for an
 ordinary proof term (src/search.almd): it introduces function types, and applies hypotheses (most

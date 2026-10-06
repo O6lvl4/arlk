@@ -95,6 +95,18 @@ contains quot-not-respecting-why "mismatch" "$work/quot-not-respecting.log"
 mutate quot-false-class $QX 's/^theorem two_ways: Eq(Int, of(n3, n1), of(n2, Nat.zero))/theorem two_ways: Eq(Int, of(n3, n1), of(n3, Nat.zero))/'
 expect quot-false-class 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/quot-false-class.arlk"
 contains quot-false-class-why "mismatch" "$work/quot-false-class.log"
+# Coinduction (examples/std/stream.arlk): streams by codata, bisimulation by
+# funext. A relation whose tails are not kept, and a false computed head,
+# are rejected.
+SX=examples/std/stream.arlk
+expect stream 0 "$arlk" check $EQ $LOGIC $NAT $QUOT $SX
+contains stream-only-quotients "symbols: quot.Quot, quot.Quot.mk, quot.Quot.lift, quot.Quot.sound" "$work/stream.log"
+mutate stream-wrong-third $SX 's/^theorem third: Eq(Nat, Stream.head(Stream.tail(Stream.tail(from(Nat.zero)))), two)/theorem third: Eq(Nat, Stream.head(Stream.tail(from(Nat.zero))), two)/'
+expect stream-wrong-third 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/stream-wrong-third.arlk"
+contains stream-wrong-third-why "mismatch" "$work/stream-wrong-third.log"
+mutate stream-bad-step $SX 's/tail(rest) => agree(R, heads, tails, rest, Stream.tail(x), Stream.tail(y), tails(x, y, r)),/tail(rest) => agree(R, heads, tails, rest, Stream.tail(x), Stream.tail(y), r),/'
+expect stream-bad-step 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/stream-bad-step.arlk"
+contains stream-bad-step-why "mismatch" "$work/stream-bad-step.log"
 # A false equality in the library itself.
 mutate false-add $NAT 's/^theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n)/theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), Nat.succ(n))/'
 expect false-add 1 "$arlk" check $EQ "$work/false-add.arlk"

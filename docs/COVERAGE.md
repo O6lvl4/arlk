@@ -29,7 +29,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
 | Views and translations between theories | native | `checker.add_view`, `translate` |
 | Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
-| Coinductive types, setoid rewriting | missing | |
+| Coinductive types of record shape (`codata`: streams, infinite trees), corecursion, coinduction by bisimulation | native, defined from paths (adds no trust); coinduction from `funext` | `codata.almd`, `examples/std/stream.arlk` |
+| Coinductive types with several constructors (colists), guarded corecursion by copatterns, setoid rewriting | missing | |
 
 ## Lean 4
 

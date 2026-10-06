@@ -10,6 +10,7 @@ import self.kernel.{IndInfo, StructEta, View, Env, Entry, Pat, Rule, Rw, Ctx, Bu
 import self.inductive
 import self.elab
 import self.patterns
+import self.codata
 import self.search
 import self.mutual
 import self.pretty
@@ -426,6 +427,18 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
       },
     }
   },
+  // All or nothing: the declarations a codata type stands for.
+  DCodata(ind) => {
+    let start = list.len(env.order)
+    let nrules = list.len(env.rules)
+    match add_codata(env, d.line, ind) {
+      ok(lines) => ok(lines),
+      err(e) => {
+        rollback(env, start, nrules)
+        err(e)
+      },
+    }
+  },
   // All or nothing, like a type.
   DMutual(inds) => {
     let start = list.len(env.order)
@@ -449,6 +462,17 @@ fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
     commit(env, change)
     ok(lines)
   },
+}
+
+local fn add_codata(mut env: Env, line: Int, ind: Inductive) -> List[String]! = {
+  var lines: List[String] = []
+  for decl in codata.expand(ind)! {
+    for l in process(env, Located { line: line, decl: decl })! {
+      list.push(lines, l)
+    }
+  }
+  list.push(lines, "✓ codata ${env.room}.${ind.name}: defined by its paths (${ind.name}.corec builds one; nothing assumed)")
+  ok(lines)
 }
 
 local fn matches_mutual(env: Env, sig: Sig, body: Raw) -> Bool = {
@@ -1959,6 +1983,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   },
   DTranslate(_, _) => err("a translation is processed by `process`"),
   DMutual(_) => err("a mutual group is processed by `process`"),
+  DCodata(_) => err("a codata type is processed by `process`"),
   DMutualDefs(_) => err("mutually recursive definitions are processed by `process`"),
 }
 

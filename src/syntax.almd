@@ -75,6 +75,9 @@ type Decl =
   // Consecutive definitions that refer forward to each other (formed after
   // parsing): mutually recursive, see mutual.almd.
   | DMutualDefs(List[Decl])
+  // `codata T(params) = { f: A, r: T(params) }`: a coinductive type, defined
+  // by ordinary declarations (codata.almd).
+  | DCodata(Inductive)
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -113,6 +116,7 @@ let KEYWORDS = [
   "where",
   "irrelevant",
   "structure",
+  "codata",
   "check",
   "eval",
   "axioms",
@@ -691,6 +695,17 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
         let (ctors, p6) = constructors(ts, p5, [])!
         ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: ctors, fields: [] }), p6))
       }
+    },
+    "codata" => {
+      let (name, p0) = ident(ts, p + 1)!
+      let (levels, p1) = level_params(ts, p0)!
+      let (params, p2) = opt_binders(ts, p1)!
+      let (arity, p4) = (if is_sym(ts, p2, ":") then term(ts, p2 + 1) else ok((RType, p2)))!
+      let p5 = expect(ts, p4, "=")!
+      guard is_sym(ts, p5, "{") else err(fail_at(ts, p5, "codata ${name}: expected its fields, `{ f: A, ... }`"))
+      let (fields, p6) = field_list(ts, p5 + 1, [])!
+      let ctor = Constructor { name: "mk", args: fields, result: none }
+      ok((DCodata(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: [ctor], fields: fields |> list.map(((f, _)) => f) }), p6))
     },
     "symbol" => {
       let (sg, p1) = signature(ts, p + 1)!

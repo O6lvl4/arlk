@@ -1,0 +1,140 @@
+// Coinductive types, defined: `codata T(params) = { f1: A1, ..., r: T(params) }`
+// is a type of infinite values with one constructor's worth of fields,
+// some of which are T again (streams, infinite trees).
+//
+//   codata Stream(A: Type) = { head: A, tail: Stream(A) }
+//
+// becomes ordinary declarations, so it adds nothing to the trusted base:
+//
+//   type Stream.Node(A: Type) = { head: A }           the fields that are not T
+//   type Stream.Path = | here | tail(rest: Stream.Path)   a way down through T's fields
+//   def Stream(A: Type) -> Type = (path: Stream.Path) -> Stream.Node(A)
+//   def Stream.head[A: Type](s: Stream(A)) -> A = Stream.Node.head(s(Stream.Path.here))
+//   def Stream.tail[A: Type](s: Stream(A)) -> Stream(A) = (path) => s(Stream.Path.tail(path))
+//   def Stream.walk[S: Type](tail: S -> S, path: Stream.Path, seed: S) -> S
+//   def Stream.corec[A: Type, S: Type](head: S -> A, tail: S -> S, seed: S) -> Stream(A)
+//
+// A value is what each path down through it leads to. `corec` builds one
+// from a seed and a step per field, and its destructors compute:
+// `Stream.head(Stream.corec(h, t, s))` is `h(s)` and
+// `Stream.tail(Stream.corec(h, t, s))` is `Stream.corec(h, t, t(s))`, both
+// by conversion. Two values that agree on every path are equal by function
+// extensionality (lib/quot.arlk), which is how bisimilar values are equal.
+
+import self.syntax.{Raw, Decl, Inductive, Constructor, Sig, Arm, Sub}
+
+local fn app(f: Raw, args: List[Raw]) -> Raw = list.fold(args, f, (acc, a) => RApp(acc, a))
+
+local fn pis(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RPi(x, ty, acc))
+
+local fn lams(bs: List[(String, Raw)], body: Raw) -> Raw =
+  list.fold(list.reverse(bs), body, (acc, (x, ty)) => RLam(x, ty, acc))
+
+local fn spine(r: Raw) -> (Raw, List[Raw]) = {
+  var head = r
+  var rev: List[Raw] = []
+  var going = true
+  while going {
+    match head {
+      RApp(f, a) => {
+        list.push(rev, a)
+        head = f
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  (head, list.reverse(rev))
+}
+
+local fn mentions(r: Raw, x: String) -> Bool = match r {
+  RName(y) => y == x,
+  RInst(y, _) => y == x,
+  RExplicit(y, _) => y == x,
+  RApp(f, a) => mentions(f, x) or mentions(a, x),
+  RLam(_, ty, b) => mentions(ty, x) or mentions(b, x),
+  RPi(_, ty, b) => mentions(ty, x) or mentions(b, x),
+  _ => false,
+}
+
+local fn fresh(x: String, taken: List[String]) -> String =
+  if list.contains(taken, x) then fresh(x + "'", taken) else x
+
+// The declarations a codata declaration stands for.
+fn expand(ind: Inductive) -> List[Decl]! = {
+  let t = ind.name
+  guard ind.arity == RType or (match ind.arity {
+    RApp(RSort, _) => true,
+    RApp(RType, _) => true,
+    _ => false,
+  }) else err("codata ${t}: indices are not supported; its type must be a sort")
+  let fields = match list.first(ind.ctors) {
+    some(c) => c.args,
+    none => [],
+  }
+  guard not list.is_empty(fields) else err("codata ${t}: give its fields, `= { f: A, ... }`")
+  let pnames = ind.params |> list.map(((x, _)) => x)
+  // T itself, at the declaration's universe levels.
+  let cref = (name: String) => if list.is_empty(ind.levels) then RName(name) else RInst(name, ind.levels |> list.map((l) => RName(l)))
+  let self_ty = app(cref(t), pnames |> list.map((x) => RName(x)))
+  var data: List[(String, Raw)] = []
+  var recs: List[String] = []
+  for (f, ty) in fields {
+    let (h, args) = spine(ty)
+    let is_self = match h {
+      RName(x) => x == t,
+      RInst(x, _) => x == t,
+      _ => false,
+    } and args == (pnames |> list.map((x) => RName(x)))
+    if is_self then list.push(recs, f)
+    else {
+      guard not mentions(ty, t) else err("codata ${t}: field ${f} must be ${t} applied to its parameters, or not mention ${t}")
+      list.push(data, (f, ty))
+    }
+  }
+  guard not list.is_empty(recs) else err("codata ${t}: no field is ${t} itself, so it is not coinductive; declare it with `type`")
+  let node = t + ".Node"
+  let path = t + ".Path"
+  let taken = pnames + (fields |> list.map(((f, _)) => f))
+  let s_ty = fresh("S", taken)
+  let seed = fresh("seed", taken)
+  let way = fresh("path", taken)
+  let rest = fresh("rest", taken)
+  let val = fresh("s", taken)
+  let implicit = list.len(ind.params)
+  var out: List[Decl] = []
+  // The fields that are not T: one record per node.
+  list.push(out, DInductive(Inductive { name: node, levels: ind.levels, params: ind.params, arity: ind.arity, ctors: [Constructor { name: "mk", args: data, result: none }], fields: data |> list.map(((f, _)) => f) }))
+  // Paths: here, or down a T field and on.
+  list.push(out, DInductive(Inductive { name: path, levels: [], params: [], arity: RType, ctors: [Constructor { name: "here", args: [], result: none }] + (recs |> list.map((r) => Constructor { name: r, args: [(rest, RName(path))], result: none })), fields: [] }))
+  // T: what each path leads to.
+  let node_ty = app(cref(node), pnames |> list.map((x) => RName(x)))
+  list.push(out, DDef(Sig { name: t, levels: ind.levels, implicits: 0, ty: pis(ind.params, ind.arity) }, lams(ind.params, RPi(way, RName(path), node_ty))))
+  // Destructors.
+  let here = RName(path + ".here")
+  let at_here = app(RName(val), [here])
+  for (f, ty) in data {
+    list.push(out, DDef(Sig { name: t + "." + f, levels: ind.levels, implicits: implicit, ty: pis(ind.params + [(val, self_ty)], ty) }, lams(ind.params + [(val, self_ty)], app(cref(node + "." + f), [at_here]))))
+  }
+  for r in recs {
+    let body = RLam(way, RName(path), app(RName(val), [app(RName(path + "." + r), [RName(way)])]))
+    list.push(out, DDef(Sig { name: t + "." + r, levels: ind.levels, implicits: implicit, ty: pis(ind.params + [(val, self_ty)], self_ty) }, lams(ind.params + [(val, self_ty)], body)))
+  }
+  // Following a path from a seed: one step per field taken.
+  let s_var = RName(s_ty)
+  let steps = recs |> list.map((r) => (r, RPi("_", s_var, s_var)))
+  let walk = t + ".walk"
+  let walk_params = [(s_ty, RType)] + steps + [(way, RName(path)), (seed, s_var)]
+  let call_on = (q: String, r: String) => app(RName(walk), (recs |> list.map((x) => RName(x))) + [RName(q), app(RName(r), [RName(seed)])])
+  let arms = [Arm { ctor: "here", subs: [], body: RName(seed) }] + (recs |> list.map((r) => Arm { ctor: r, subs: [SName(rest)], body: call_on(rest, r) }))
+  list.push(out, DDef(Sig { name: walk, levels: [], implicits: 1, ty: pis(walk_params, s_var) }, lams(walk_params, RMatch(RName(way), arms))))
+  // Corecursion: a seed, and what each field is at a seed.
+  let outs = (data |> list.map(((f, ty)) => (f, RPi("_", s_var, ty)))) + steps
+  let corec_params = ind.params + [(s_ty, RType)] + outs + [(seed, s_var)]
+  let reached = app(RName(walk), (recs |> list.map((x) => RName(x))) + [RName(way), RName(seed)])
+  let node_val = app(cref(node + ".mk"), data |> list.map(((f, _)) => app(RName(f), [reached])))
+  list.push(out, DDef(Sig { name: t + ".corec", levels: ind.levels, implicits: implicit + 1, ty: pis(corec_params, self_ty) }, lams(corec_params, RLam(way, RName(path), node_val))))
+  ok(out)
+}

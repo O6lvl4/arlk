@@ -1,0 +1,57 @@
+// Streams, a coinductive type: defined from its paths, built by
+// corecursion, and equal when bisimilar.
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
+//     examples/std/stream.arlk
+//
+// `codata` declares no symbol: Stream(A) is what each path down its tails
+// leads to, and `Stream.corec` builds one from a seed. Its destructors
+// compute on a corecursive stream, so `third` and the corecursion laws
+// hold by computation. The coinduction principle `bisim` (a relation that
+// relates the heads and is kept by the tails holds only of equal streams)
+// is proved by induction on paths and function extensionality, which is
+// the one assumption here (lib/quot.arlk, from Lean's quotients).
+
+room streams uses eq, logic, nat, quot
+
+codata Stream(A: Type) = { head: A, tail: Stream(A) }
+
+def from(n: Nat) -> Stream(Nat) = Stream.corec((k: Nat) => k, Nat.succ, n)
+
+def map[A: Type, B: Type](f: A -> B, s: Stream(A)) -> Stream(B) =
+  Stream.corec((x: Stream(A)) => f(Stream.head(x)), (x: Stream(A)) => Stream.tail(x), s)
+
+def two: Nat = Nat.succ(Nat.succ(Nat.zero))
+
+theorem third: Eq(Nat, Stream.head(Stream.tail(Stream.tail(from(Nat.zero)))), two) = Eq.refl
+
+// Corecursion's laws, by computation.
+theorem head_corec[A: Type, S: Type](h: S -> A, t: S -> S, s: S) -> Eq(A, Stream.head(Stream.corec(h, t, s)), h(s)) = Eq.refl
+theorem tail_corec[A: Type, S: Type](h: S -> A, t: S -> S, s: S) -> Eq(Stream(A), Stream.tail(Stream.corec(h, t, s)), Stream.corec(h, t, t(s))) = Eq.refl
+
+// Related streams agree at every path: at the root by their heads, below
+// it by their tails, which are related again.
+theorem agree[A: Type](R: Stream(A) -> Stream(A) -> Sort(0),
+    heads: (x: Stream(A), y: Stream(A), r: R(x, y)) -> Eq(A, Stream.head(x), Stream.head(y)),
+    tails: (x: Stream(A), y: Stream(A), r: R(x, y)) -> R(Stream.tail(x), Stream.tail(y)),
+    path: Stream.Path, x: Stream(A), y: Stream(A), r: R(x, y)) -> Eq(Stream.Node(A), x(path), y(path)) = match path {
+  here => cong(Stream.Node.mk, heads(x, y, r)),
+  tail(rest) => agree(R, heads, tails, rest, Stream.tail(x), Stream.tail(y), tails(x, y, r)),
+}
+
+// Coinduction: bisimilar streams are equal.
+theorem bisim[A: Type](R: Stream(A) -> Stream(A) -> Sort(0),
+    heads: (x: Stream(A), y: Stream(A), r: R(x, y)) -> Eq(A, Stream.head(x), Stream.head(y)),
+    tails: (x: Stream(A), y: Stream(A), r: R(x, y)) -> R(Stream.tail(x), Stream.tail(y)),
+    x: Stream(A), y: Stream(A), r: R(x, y)) -> Eq(Stream(A), x, y) =
+  funext(Stream.Path, (p: Stream.Path) => Stream.Node(A), x, y, (p: Stream.Path) => agree(R, heads, tails, p, x, y, r))
+
+// Mapping the identity changes nothing: the streams x and map(id, y) with
+// x = map(id, y) are a bisimulation.
+theorem map_id[A: Type](s: Stream(A)) -> Eq(Stream(A), map((a: A) => a, s), s) =
+  bisim((x: Stream(A), y: Stream(A)) => Eq(Stream(A), x, map((a: A) => a, y)),
+    (x: Stream(A), y: Stream(A), r: Eq(Stream(A), x, map((a: A) => a, y))) => cong(Stream.head, r),
+    (x: Stream(A), y: Stream(A), r: Eq(Stream(A), x, map((a: A) => a, y))) => cong(Stream.tail, r),
+    map((a: A) => a, s), s, Eq.refl)
+
+axioms map_id

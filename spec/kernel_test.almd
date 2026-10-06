@@ -1666,3 +1666,36 @@ test "index patterns: an impossible arm, a wrong body, non-linear and variable-a
     })
   }
 }
+
+// ── Coinductive types (codata), defined from paths ─────────────────
+
+let CODATA = """
+room cd uses eq, logic, nat
+codata Stream(A: Type) = { head: A, tail: Stream(A) }
+def from(n: Nat) -> Stream(Nat) = Stream.corec((k: Nat) => k, Nat.succ, n)
+"""
+
+test "codata: destructors compute on corecursive values, and the corecursion laws hold by computation" {
+  assert_eq(run_wf(CODATA + "\n" + """
+theorem second: Eq(Nat, Stream.head(Stream.tail(from(Nat.zero))), Nat.succ(Nat.zero)) = Eq.refl
+theorem tail_corec[A: Type, S: Type](h: S -> A, t: S -> S, s: S) -> Eq(Stream(A), Stream.tail(Stream.corec(h, t, s)), Stream.corec(h, t, t(s))) = Eq.refl
+codata Tree(A: Type) = { label: A, left: Tree(A), right: Tree(A) }
+def t(n: Nat) -> Tree(Nat) = Tree.corec((k: Nat) => k, Nat.succ, (k: Nat) => Nat.succ(Nat.succ(k)), n)
+theorem rl: Eq(Nat, Tree.label(Tree.right(Tree.left(t(Nat.zero)))), Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+""")!, none)
+}
+
+test "codata: a false value, a field that hides the type, and a type that is not coinductive are rejected" {
+  let cases = [
+    (CODATA + "\ntheorem wrong: Eq(Nat, Stream.head(Stream.tail(from(Nat.zero))), Nat.zero) = Eq.refl\n", "mismatch"),
+    ("room cd uses eq, nat\ncodata Bad(A: Type) = { head: A, next: Nat -> Bad(A) }\n", "must be Bad applied to its parameters"),
+    ("room cd uses eq, nat\ncodata Flat(A: Type) = { head: A }\n", "not coinductive"),
+    ("room cd uses eq, nat\ncodata Ix: (n: Nat) -> Type = { here: Nat, next: Ix }\n", "indices are not supported"),
+  ]
+  for (src, want) in cases {
+    assert(match run_wf(src)! {
+      some(e) => string.contains(e, want),
+      none => false,
+    })
+  }
+}

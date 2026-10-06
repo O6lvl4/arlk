@@ -81,6 +81,14 @@ functions becomes, are ordinary definitions, checked by part 1. A wrong encoding
 it cannot make a false theorem true. Functions over a nested type (`add_nested_defs`) are compiled to
 applications of its recursors, likewise checked by part 1.
 
+Coinductive types (`codata`, [src/codata.almd](../src/codata.almd)) add nothing: a declaration
+becomes an inductive record of its other fields, an inductive type of paths, and definitions (the
+type as functions from paths, its destructors, `walk` and `corec`), all checked by parts 1 and 3.
+
+Index patterns in a `match` (`h: Le(succ(m), succ(n))`) add nothing: the motive inverts them by
+cases on the index type's own recursor, and an impossible arm is the identity at a type that
+computes to `R -> R`; a wrong inversion is a type error.
+
 Well-founded recursion (`decreasing x by W`, `checker.add_wf_def`) adds nothing: a definition
 becomes a `step` definition and an application of `fix`, which [lib/std/wf.arlk](../lib/std/wf.arlk)
 defines from the recursor of `Acc`; both, and the unfolding law, are checked by part 1. The
