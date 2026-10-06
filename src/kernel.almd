@@ -263,19 +263,23 @@ local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term
   }
 
 local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term = {
+  // `cur` is taken apart, not read again: it is rebuilt from its head and
+  // arguments when reduction stops, so no step copies the whole term.
   var cur = t
   var going = true
   while going {
     if not spend(b) then {
       going = false
     } else {
-      let (h, args) = spine(cur)
+      let (h, args0) = spine(cur)
+      var args = args0
       match h {
-        Lam(_, _, body) => match list.first(args) {
+        Lam(x, ty, body) => match list.first(args) {
           some(a) => {
             cur = apply(subst(body, a), list.drop(args, 1))
           },
           none => {
+            cur = Lam(x, ty, body)
             going = false
           },
         },
@@ -288,11 +292,13 @@ local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) ->
               cur = t2
             },
             none => {
+              cur = apply(Const(c, ls), args)
               going = false
             },
           },
         },
-        _ => {
+        other => {
+          cur = apply(other, args)
           going = false
         },
       }
@@ -308,7 +314,23 @@ local fn unfold(env: Env, c: String, ls: List[Level]) -> Term? =
     none => none,
   } else none
 
-local fn rewrite(env: Env, ctx: Ctx, c: String, ls: List[Level], args: List[Term], mut b: Budget) -> Term? = {
+// The arguments after the first n, copied one by one: `list.drop` on a
+// borrowed list does not compile (almide/almide#3442).
+local fn beyond(mut args: List[Term], n: Int) -> List[Term] = {
+  var out: List[Term] = []
+  var i = n
+  while i < list.len(args) {
+    match list.get(args, i) {
+      some(a) => list.push(out, a),
+      none => (),
+    }
+    i = i + 1
+  }
+  out
+}
+
+// `mut args`: borrowed, so trying the rules does not copy the arguments.
+local fn rewrite(env: Env, ctx: Ctx, c: String, ls: List[Level], mut args: List[Term], mut b: Budget) -> Term? = {
   var found: Term? = none
   for r in map.get(env.rws, c) ?? [] {
     if found == none and not b.exhausted then {
@@ -324,7 +346,7 @@ local fn rewrite(env: Env, ctx: Ctx, c: String, ls: List[Level], args: List[Term
 // projection's own rule (it would rewrite `f(t)` to `f(t)`).
 type MState = { sub: Map[Int, Term], pending: List[(Term, Term)], head: String }
 
-local fn try_rule(env: Env, ctx: Ctx, head: String, r: Rw, ls: List[Level], args: List[Term], mut b: Budget) -> Term? =
+local fn try_rule(env: Env, ctx: Ctx, head: String, r: Rw, ls: List[Level], mut args: List[Term], mut b: Budget) -> Term? =
   if list.len(args) < r.arity then none
   else match match_all_at(env, ctx, list.zip(r.lhs_args, list.take(args, r.arity)), b, head) {
     some(st) => {
@@ -333,7 +355,7 @@ local fn try_rule(env: Env, ctx: Ctx, head: String, r: Rw, ls: List[Level], args
       let st2 = if list.is_empty(r.lparams) then st
         else { ...st, pending: st.pending |> list.map(((br, t)) => (inst_levels(br, r.lparams, ls), t)) }
       if brackets_hold(env, ctx, st2, vals, b) then {
-        let out = apply(instantiate(inst_levels(r.rhs, r.lparams, ls), vals, 0), list.drop(args, r.arity))
+        let out = apply(instantiate(inst_levels(r.rhs, r.lparams, ls), vals, 0), beyond(args, r.arity))
         if spend_size(b, out) then some(out) else none
       } else none
     },
