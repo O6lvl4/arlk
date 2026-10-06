@@ -26,6 +26,7 @@ def instHAdd@0: core.El(core.l2, core.pi(core.l2, core.l1, core.sort(core.l1), (
   (α: core.El(core.l2, core.sort(core.l1))) => (inst: core.El(core.l1, Add@0(α))) => HAdd.mk@0@0@0(α, α, α, (a: core.El(core.l1, α)) => (b: core.El(core.l1, α)) => Add.add@0(α, inst, a, b))
 symbol Nat.zero: core.El(core.l1, Nat)
 symbol Nat.succ: core.El(core.l1, core.pi(core.l1, core.l1, Nat, (n: core.El(core.l1, Nat)) => Nat))
+numerals Nat.zero, Nat.succ
 symbol Nat.rec@2: core.El(core.l3, core.pi(core.l3, core.l2, core.pi(core.l1, core.l3, Nat, (t: core.El(core.l1, Nat)) => core.sort(core.l2)), (motive: core.El(core.l3, core.pi(core.l1, core.l3, Nat, (t: core.El(core.l1, Nat)) => core.sort(core.l2)))) => core.pi(core.l2, core.l2, motive(Nat.zero), (zero: core.El(core.l2, motive(Nat.zero))) => core.pi(core.l2, core.l2, core.pi(core.l1, core.l2, Nat, (n: core.El(core.l1, Nat)) => core.pi(core.l2, core.l2, motive(n), (n_ih: core.El(core.l2, motive(n))) => motive(Nat.succ(n)))), (succ: core.El(core.l2, core.pi(core.l1, core.l2, Nat, (n: core.El(core.l1, Nat)) => core.pi(core.l2, core.l2, motive(n), (n_ih: core.El(core.l2, motive(n))) => motive(Nat.succ(n)))))) => core.pi(core.l1, core.l2, Nat, (t: core.El(core.l1, Nat)) => motive(t))))))
 rule Nat.rec@2(motive, zero, succ, Nat.zero) =
   zero

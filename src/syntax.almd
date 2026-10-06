@@ -78,6 +78,9 @@ type Decl =
   // `codata T(params) = { f: A, r: T(params) }`: a coinductive type, defined
   // by ordinary declarations (codata.almd).
   | DCodata(Inductive)
+  // `numerals zero, succ`: number literals `n` stand for succ applied n
+  // times to zero.
+  | DNumerals(String, String)
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -117,6 +120,7 @@ let KEYWORDS = [
   "irrelevant",
   "structure",
   "codata",
+  "numerals",
   "check",
   "eval",
   "axioms",
@@ -695,6 +699,12 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
         let (ctors, p6) = constructors(ts, p5, [])!
         ok((DInductive(Inductive { name: name, levels: levels, params: params, arity: arity, ctors: ctors, fields: [] }), p6))
       }
+    },
+    "numerals" => {
+      let (zero, p1) = ident(ts, p + 1)!
+      let p2 = expect(ts, p1, ",")!
+      let (succ, p3) = ident(ts, p2)!
+      ok((DNumerals(zero, succ), p3))
     },
     "codata" => {
       let (name, p0) = ident(ts, p + 1)!

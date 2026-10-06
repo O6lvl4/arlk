@@ -81,6 +81,7 @@ type Change =
   | AddRule(Rule)
   | AddIrrelevant(Rule)
   | AddStruct(String, StructEta)
+  | AddNumerals(String, String, Term)
   | NoChange
 
 local fn declare(env: Env, sig: Sig, kind: String, ty: Term, body: Term?) -> Change! = {
@@ -123,6 +124,7 @@ local fn commit(mut env: Env, c: Change) -> Unit = match c {
   },
   AddIrrelevant(r) => list.push(env.irrelevants, r),
   AddStruct(c, si) => map.insert(env.structs, c, si),
+  AddNumerals(z, sc, ty) => map.insert(env.numerals, z, (sc, ty)),
   NoChange => (),
 }
 
@@ -1952,7 +1954,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     infer(env, [], e, bu)!
     let v = nf(env, [], e, bu)
     guard not bu.exhausted else err(exhausted_error())
-    ok((NoChange, ["${show(env, [], e)} = ${show(env, [], v)}"]))
+    ok((NoChange, ["${show(env, [], e)} = ${show(env, [], kernel.fold_numerals(env, v))}"]))
   },
   DAxioms(name) => {
     let q = resolve_const(env, name)!
@@ -1984,6 +1986,19 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   DTranslate(_, _) => err("a translation is processed by `process`"),
   DMutual(_) => err("a mutual group is processed by `process`"),
   DCodata(_) => err("a codata type is processed by `process`"),
+  // Literals are abbreviations (kernel.numeral), so all that is checked is
+  // that succ is a function from zero's type to itself.
+  DNumerals(zero_name, succ_name) => {
+    let z = resolve_const(env, zero_name)!
+    let sc = resolve_const(env, succ_name)!
+    guard list.is_empty(map.get(env.lparams, z) ?? []) and list.is_empty(map.get(env.lparams, sc) ?? []) else err("numerals ${zero_name}, ${succ_name}: constants with universe parameters cannot make numerals")
+    var bu = budget()
+    let zty = map.get(env.types, z) ?? type0()
+    let sty = map.get(env.types, sc) ?? type0()
+    guard conv(env, [], sty, Pi("_", zty, zty), bu) else err("numerals ${zero_name}, ${succ_name}: ${succ_name} must be a function from ${show(env, [], zty)} to itself, but it is a ${show(env, [], sty)}")
+    guard not map.contains(env.numerals, z) else err("${zero_name} already makes numerals")
+    ok((AddNumerals(z, sc, zty), ["✓ numerals: 0, 1, 2, ... stand for ${z}, ${sc}(${z}), ..."]))
+  },
   DMutualDefs(_) => err("mutually recursive definitions are processed by `process`"),
 }
 

@@ -1712,3 +1712,38 @@ test "a same-head comparison that failed once still converts by unfolding, and a
     none => false,
   })
 }
+
+// ── Numerals: literals as succ applied n times to zero ─────────────
+
+let NUMS = """
+room nm uses eq, logic, nat
+numerals Nat.zero, Nat.succ
+def pred2(n: Nat) -> Nat = match n {
+  zero => Nat.zero,
+  succ(k) => k,
+}
+"""
+
+test "numerals: literals compute like the succ terms they stand for, at any size" {
+  assert_eq(run_wf(NUMS + "\n" + """
+theorem three: Eq(Nat, 3, Nat.succ(Nat.succ(Nat.succ(Nat.zero)))) = Eq.refl
+theorem sum: Eq(Nat, add(2, 3), 5) = Eq.refl
+theorem big: Eq(Nat, pred2(1000000), 999999) = Eq.refl
+theorem zero_lit: Eq(Nat, 0, Nat.zero) = Eq.refl
+""")!, none)
+}
+
+test "numerals: a false equation, a succ of the wrong type, and a number without numerals are rejected" {
+  let cases = [
+    (NUMS + "\ntheorem wrong: Eq(Nat, add(2, 2), 5) = Eq.refl\n", "mismatch"),
+    (NUMS + "\ntheorem wrong: Eq(Nat, 1000000, 1000001) = Eq.refl\n", "mismatch"),
+    ("room nm2 uses eq, logic, nat\ndef bad(n: Nat) -> Unit = Unit.unit\nnumerals Nat.zero, bad\n", "must be a function from"),
+    ("room nm3 uses eq, logic, nat\ntheorem t: Eq(Nat, 3, 3) = Eq.refl\n", "no numerals in scope"),
+  ]
+  for (src, want) in cases {
+    assert(match run_wf(src)! {
+      some(e) => string.contains(e, want),
+      none => false,
+    })
+  }
+}

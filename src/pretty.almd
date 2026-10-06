@@ -12,7 +12,17 @@ local fn fresh(names: List[String], x: String) -> String = {
 
 local fn paren(cond: Bool, s: String) -> String = if cond then "(" + s + ")" else s
 
-local fn short(room: String, c: String) -> String = string.strip_prefix(c, room + ".") ?? c
+local fn short(room: String, c: String) -> String = match literal_digits(c) {
+  some(d) => d,
+  none => string.strip_prefix(c, room + ".") ?? c,
+}
+
+// A numeral literal `T#n` prints as n.
+local fn literal_digits(c: String) -> String? = {
+  let parts = string.split(c, "#")
+  let last = list.last(parts) ?? ""
+  if list.len(parts) >= 2 and last != "" and list.all(string.chars(last), (d) => string.is_digit(d)) then some(last) else none
+}
 
 // prec 0: anywhere; 1: a callee or the left of an arrow, where a function
 // or a function type needs parentheses.

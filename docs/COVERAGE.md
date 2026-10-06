@@ -30,6 +30,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Views and translations between theories | native | `checker.add_view`, `translate` |
 | Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
 | Coinductive types of record shape (`codata`: streams, infinite trees), corecursion, coinduction by bisimulation | native, defined from paths (adds no trust); coinduction from `funext` | `codata.almd`, `examples/std/stream.arlk` |
+| Numerals (`numerals Nat.zero, Nat.succ`: `1000000` as one constant unfolded lazily) | native, abbreviations (adds no trust) | `kernel.numeral_step` |
 | Coinductive types with several constructors (colists), guarded corecursion by copatterns, setoid rewriting | missing | |
 
 ## Lean 4

@@ -75,6 +75,10 @@ type Env = {
   structs: Map[String, StructEta],
   // views (`view V from S`), by their full name
   views: Map[String, View],
+  // numerals (`numerals zero, succ`), by zero: its succ and their type.
+  // The literal `n` is the constant `zero#n`, which stands for succ
+  // applied n times to zero (see `numeral`).
+  numerals: Map[String, (String, Term)],
   room: String,
   order: List[String],
 }
@@ -126,8 +130,80 @@ fn empty() -> Env = Env {
   inductives: [:],
   structs: [:],
   views: [:],
+  numerals: [:],
   room: "main",
   order: [],
+}
+
+// ── Numerals ────────────────────────────────────────────────────────
+//
+// `zero#n` is the literal n of the numerals built from zero: an abbreviation for
+// succ(succ(... zero)), n times, unfolded one succ at a time when a rule
+// or a comparison needs to see it (`numeral_step`). Two literals of the
+// same type are compared by their numbers. So a literal costs O(1) to
+// write, whatever its size, and adds no assumption: it is a definition,
+// expanded lazily.
+
+// The zero and number of a literal constant.
+fn numeral(env: Env, c: String) -> (String, Int)? = match string.last_index_of(c, "#") {
+  some(i) => {
+    let zero = string.take(c, i)
+    let digits = string.drop(c, i + 1)
+    if map.contains(env.numerals, zero) and digits != "" and list.all(string.chars(digits), (d) => string.is_digit(d)) then match int.parse(digits) {
+      ok(n) => some((zero, n)),
+      err(_) => none,
+    } else none
+  },
+  none => none,
+}
+
+// A literal's type: its zero's.
+fn numeral_type(env: Env, zero: String) -> Term = match map.get(env.numerals, zero) {
+  some((_, ty)) => ty,
+  none => Sort(LZero),
+}
+
+// succ applied k times to zero (or to a literal), written back as one
+// literal, everywhere in t: for printing normal forms.
+fn fold_numerals(env: Env, t: Term) -> Term = match t {
+  App(f, a) => {
+    let folded = App(fold_numerals(env, f), fold_numerals(env, a))
+    match folded {
+      App(Const(s, _), x) => match succ_of(env, s) {
+        some(zero) => match literal_value(env, zero, x) {
+          some(n) => Const(zero + "#" + int.to_string(n + 1), []),
+          none => folded,
+        },
+        none => folded,
+      },
+      _ => folded,
+    }
+  },
+  Lam(x, ty, b) => Lam(x, fold_numerals(env, ty), fold_numerals(env, b)),
+  Pi(x, ty, b) => Pi(x, fold_numerals(env, ty), fold_numerals(env, b)),
+  other => other,
+}
+
+// The zero of the numerals whose succ is s.
+local fn succ_of(env: Env, s: String) -> String? =
+  list.find(map.keys(env.numerals), (z) => match map.get(env.numerals, z) {
+    some((sc, _)) => sc == s,
+    none => false,
+  })
+
+// x as a number of the numerals built from zero: zero, or a literal.
+local fn literal_value(env: Env, zero: String, x: Term) -> Int? = match x {
+  Const(c, _) => if c == zero then some(0) else match numeral(env, c) {
+    some((z, n)) => if z == zero then some(n) else none,
+    none => none,
+  },
+  _ => none,
+}
+
+// A literal one succ unfolded: zero for 0, succ(zero#(n-1)) otherwise.
+local fn numeral_step(env: Env, zero: String, n: Int) -> Term = match map.get(env.numerals, zero) {
+  some((succ, _)) => if n == 0 then Const(zero, []) else App(Const(succ, []), Const(zero + "#" + int.to_string(n - 1), [])),
+  none => Const(zero + "#" + int.to_string(n), []),
 }
 
 local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
@@ -298,13 +374,20 @@ local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) ->
           some(body) => {
             cur = apply(body, args)
           },
-          none => match rewrite(env, ctx, c, ls, args, b) {
-            some(t2) => {
-              cur = t2
-            },
-            none => {
-              cur = apply(Const(c, ls), args)
+          none => match (if list.is_empty(args) then numeral(env, c) else none) {
+            // A literal: one succ unfolded is its head normal form.
+            some((zero, n)) => {
+              cur = numeral_step(env, zero, n)
               going = false
+            },
+            none => match rewrite(env, ctx, c, ls, args, b) {
+              some(t2) => {
+                cur = t2
+              },
+              none => {
+                cur = apply(Const(c, ls), args)
+                going = false
+              },
             },
           },
         },
@@ -515,6 +598,7 @@ fn unfold_head(env: Env, t: Term) -> Term = {
 // brackets consult it.
 fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
   if a == b then true
+  else if both_numerals(env, a, b) then false
   else if not enter(bu) then false
   else {
     // One `let` per reduced side: almide/almide#3405 merges two such
@@ -525,6 +609,21 @@ fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
     leave(bu)
     r
   }
+
+// Two different literals of the same type: not equal (a and b are not ==).
+fn both_numerals(env: Env, a: Term, b: Term) -> Bool = match a {
+  Const(c, _) => match b {
+    Const(d, _) => match numeral(env, c) {
+      some((t1, _)) => match numeral(env, d) {
+        some((t2, _)) => t1 == t2,
+        none => false,
+      },
+      none => false,
+    },
+    _ => false,
+  },
+  _ => false,
+}
 
 // Two terms in weak-head normal form. Unfolding definitions is a loop, not
 // a recursion: comparing a numeral built from n definitions takes n
@@ -909,13 +1008,17 @@ fn infer(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term! = match t {
     none => err("unbound variable #${int.to_string(i)}"),
   },
   Const(c, ls) => match map.get(env.types, c) {
+    // (A literal is tested in the arm, not by a guard: almide/almide#3414.)
+    none => match numeral(env, c) {
+      some((zero, _)) => ok(numeral_type(env, zero)),
+      none => err("unknown constant ${c}"),
+    },
     some(ty) => {
       let ps = map.get(env.lparams, c) ?? []
       guard not list.any(ls, (l) => level_has_meta(l)) else err("unsolved universe level of ${c}: the elaborator could not infer it")
       guard list.len(ps) == list.len(ls) else err("${c} takes ${int.to_string(list.len(ps))} universe levels, given ${int.to_string(list.len(ls))}")
       ok(inst_levels(ty, ps, ls))
     },
-    none => err("unknown constant ${c}"),
   },
   App(f, a) => {
     // Neither f nor a is used after the call that checks it: a value used
@@ -1008,7 +1111,16 @@ local fn visible(env: Env) -> List[String] = [env.room] + (map.get(env.rooms, en
 // A name resolves, in order, to: this room's declaration, a declaration
 // written with its room in front (`logic.Prf`), or a unique declaration of
 // a visible room.
-fn resolve_const(env: Env, x: String) -> String! = {
+fn resolve_const(env: Env, x: String) -> String! = if x != "" and list.all(string.chars(x), (d) => string.is_digit(d)) then {
+  // A number: the literal of the numeral type in scope.
+  let rooms = visible(env)
+  let zeros = map.keys(env.numerals) |> list.filter((z) => list.contains(rooms, room_of(env, z)))
+  match zeros {
+    [] => err("${x}: no numerals in scope (declare them: `numerals Nat.zero, Nat.succ`)"),
+    [z] => ok(z + "#" + x),
+    many => err("${x} could be a literal built from ${list.join(list.sort(many), " or ")}"),
+  }
+} else {
   let own = env.room + "." + x
   // The own-room shortcut only counts if the entry really is this room's:
   // `room a` + `b.T` and `room a.b` + `T` spell the same key (issue #2).

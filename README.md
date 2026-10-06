@@ -85,6 +85,7 @@ rule lhs = rhs  where x: A, y: B       a rewrite rule on a symbol of this room
 irrelevant T  where x: A               values of T are all equal (definitional proof irrelevance)
 type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
 codata T(params) = { x: A, r: T(...) }  a coinductive type: infinite values, built by T.corec
+numerals zero, succ                    write n for succ(...succ(zero)) (n times); 1000000 costs no memory
 view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
 translate V name                       carry name (from a room built on S) here along V, checked again
 view V from S via v1, v2               compose two views (S read in R by v1, R read here by v2), checked
@@ -204,6 +205,11 @@ that occurs twice in the patterns, is refused with a message (it would need equa
 projection per field, defined by a match; a field's type may mention earlier fields
 (`type Sigma[u, v](A: Type(u), B: A -> Type(v)): Type(max(u, v)) = { fst: A, snd: B(fst) }`).
 As in Almide, `p.x` reads a field and `Point { x: a, y: b }` builds a value.
+
+**Numerals.** `numerals Nat.zero, Nat.succ` lets `0`, `1`, `1000000` stand for `Nat.succ` applied
+that many times to `Nat.zero`. A literal is a single constant (`Nat.zero#1000000`) that the kernel
+unfolds one `succ` at a time, only as far as a reduction needs, so a big literal is as cheap as a
+small one. Absorbed Lean libraries declare it for `Nat`.
 
 **Coinductive types.** `codata Stream(A: Type) = { head: A, tail: Stream(A) }` declares infinite
 values whose fields may be the type again (streams, infinite trees with several such fields). It is

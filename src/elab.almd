@@ -351,6 +351,8 @@ fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   let x = zonk(st, a)
   let y = zonk(st, b)
   if x == y then true
+  // Two different literals of the same numerals differ (kernel.numeral).
+  else if kernel.both_numerals(env, x, y) then false
   else if try_solve(st, ctx, x, y) or try_solve(st, ctx, y, x) then true
   // A variable the solution may not mention can disappear by computing
   // (`((p) => B(p.fst))(mk(a, b))` is `B(a)`): normalise, then try again.
@@ -587,7 +589,10 @@ local fn constant(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, c: String, g
   guard list.len(ls) == list.len(ps) else err("${c} takes ${int.to_string(list.len(ps))} universe levels, given ${int.to_string(list.len(ls))}")
   let ty0 = match map.get(env.types, c) {
     some(t) => inst_levels(t, ps, ls),
-    none => type0(),
+    none => match kernel.numeral(env, c) {
+      some((zero, _)) => kernel.numeral_type(env, zero),
+      none => type0(),
+    },
   }
   var t = Const(c, ls)
   var ty = ty0

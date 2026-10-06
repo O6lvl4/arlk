@@ -27,6 +27,11 @@ Conversion remembers, per declaration, pairs of same-head applications whose arg
 convert (`Budget.failed`, keyed by a bounded fingerprint); a remembered pair only skips that
 shortcut and is decided by unfolding instead, so the memory (and a fingerprint collision) can make
 conversion fail where it would have succeeded, never succeed where it would have failed.
+Numerals (`numerals zero, succ`, checked to have `succ: Z -> Z` where `zero: Z`) add no axiom: the
+literal `n` is the constant `zero#n`, an abbreviation that weak-head reduction unfolds to
+`succ(zero#(n-1))` (`kernel.numeral_step`). Conversion decides two different literals of the same
+`zero` unequal without unfolding (`both_numerals`); answering "not convertible" can only make
+conversion incomplete (if `succ` were not injective), never unsound.
 Regression tests: [spec/kernel_test.almd](../spec/kernel_test.almd), issues #1, #3, #7.
 
 ## 2. Declarations — trusted

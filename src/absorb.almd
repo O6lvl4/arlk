@@ -85,6 +85,10 @@ fn expr(names: List[String], o: Out, v: Value) -> String! = match kind_of(v) {
   "n" => {
     let n = int_of(get(v, "n")!)!
     guard n >= 0 else err("the numeral ${int.to_string(n)} is negative; natural-number literals must be at least 0")
+    // A large literal is written as a number: `numerals Nat.zero,
+    // Nat.succ` (written after Nat.succ) makes it succ applied n times to
+    // zero, unfolded only as far as needed.
+    guard n <= 4096 or not (set.contains(o.reserved, "Nat.zero") and set.contains(o.reserved, "Nat.succ")) else ok(int.to_string(n))
     guard n <= 4096 or (set.contains(o.reserved, "Nat.add") and set.contains(o.reserved, "Nat.mul")) else err("the numeral ${int.to_string(n)} is too large to spell in unary (and Nat.add, Nat.mul are not in the export to spell it in binary)")
     ok(numeral(n))
   },
@@ -290,8 +294,21 @@ fn absorb(src: String) -> String! = {
   // the structure, so the kernel has Lean's structure eta for it.
   var body: List[String] = []
   var found: Map[String, Map[Int, String]] = [:]
+  var seen_zero = false
+  var seen_succ = false
+  var numerals = false
   for d in decls {
     list.push(body, decl(o, d)!)
+    let dname = str_of(get(d, "name") ?? value.null()) ?? ""
+    if dname == "Nat.zero" then {
+      seen_zero = true
+    } else if dname == "Nat.succ" then {
+      seen_succ = true
+    } else ()
+    if th != "rocq" and seen_zero and seen_succ and not numerals then {
+      list.push(body, "numerals Nat.zero, Nat.succ")
+      numerals = true
+    } else ()
     if th != "rocq" then {
       match projection(d) {
         some((c, nf, i, h)) => {
