@@ -86,4 +86,5 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Lean's naturals and Rocq's, as the same theory (a bridge and views) | [examples/bridge.arlk](../examples/bridge.arlk), [examples/transport.arlk](../examples/transport.arlk) |
 | Agda's `+-comm` to Arlk's `nat.add_comm` | [examples/agda_transport.arlk](../examples/agda_transport.arlk) |
 | HOL in Arlk's types (excluded middle carried by a view) | [examples/hol_types.arlk](../examples/hol_types.arlk) |
-| Isabelle's and Agda's naturals to the native ones, Metamath to the others | missing |
+| Isabelle's `add_comm` to Arlk's `nat.add_comm` | [examples/isabelle_transport.arlk](../examples/isabelle_transport.arlk) |
+| Metamath's arithmetic to the others | missing |

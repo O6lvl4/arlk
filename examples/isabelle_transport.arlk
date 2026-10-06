@@ -1,0 +1,37 @@
+// Transport from Isabelle: a lemma absorbed from an Isabelle theory, its
+// proof replayed by Arlk's simp, used for Arlk's own naturals.
+//
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk absorbed/isabelle/arith.arlk examples/isabelle_transport.arlk
+//
+// absorbed/isabelle/arith.arlk is `arlk absorb-isabelle absorbed/isabelle/Arith.thy`.
+// Isabelle's `num` and nat.Nat are isomorphic, the isomorphism carries
+// Isabelle's `add` to nat.add (both proved by `simp`), and both state
+// equations with Arlk's own equality, so Isabelle's `add_comm` proves
+// nat.add_comm again.
+
+room isabelle_transport uses isabelle.Arith, eq, nat
+
+def to(n: num) -> Nat = match n {
+  Z => Nat.zero,
+  S(k) => Nat.succ(to(k)),
+}
+
+def from(n: Nat) -> num = match n {
+  zero => num.Z,
+  succ(k) => num.S(from(k)),
+}
+
+theorem to_from(n: Nat) -> Eq(Nat, to(from(n)), n) = by induction n simp
+
+theorem to_add(a: num, b: num) -> Eq(Nat, to(isabelle.Arith.add(a, b)), nat.add(to(a), to(b))) = by induction a simp
+
+// From both naturals' facts: simp proves the two halves (to and from), the
+// chain is written out, as rewriting runs one way only.
+theorem add_comm_from_isabelle(m: Nat, n: Nat) -> Eq(Nat, nat.add(m, n), nat.add(n, m)) = {
+  let back: Eq(Nat, nat.add(to(from(m)), to(from(n))), nat.add(m, n)) = eq.cong2(nat.add, to_from(m), to_from(n))
+  let swapped: Eq(Nat, to(isabelle.Arith.add(from(m), from(n))), to(isabelle.Arith.add(from(n), from(m)))) = eq.cong(to, isabelle.Arith.add_comm(from(m), from(n)))
+  let forth: Eq(Nat, nat.add(to(from(n)), to(from(m))), nat.add(n, m)) = eq.cong2(nat.add, to_from(n), to_from(m))
+  eq.trans(eq.symm(back), eq.trans(eq.symm(to_add(from(m), from(n))), eq.trans(swapped, eq.trans(to_add(from(n), from(m)), forth))))
+}
+
+axioms add_comm_from_isabelle

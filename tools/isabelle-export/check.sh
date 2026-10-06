@@ -30,4 +30,6 @@ sed 's/^lemma rev_rev: "rev (rev xs) = xs"/lemma rev_rev: "rev (rev xs) = rev xs
 sed -i.bak 's/^theory Arith/theory Bad/' "$work/Bad.thy"
 (cd "$work" && "$arlk" absorb-isabelle Bad.thy -o Bad.arlk >/dev/null)
 if "$arlk" check lib/std/eq.arlk "$work/Bad.arlk" >"$work/bad.log" 2>&1; then echo "FAIL  a false lemma was accepted"; fails=1; elif grep -q "simp could not prove it" "$work/bad.log"; then echo "pass  a false lemma is rejected"; else echo "FAIL  a false lemma is rejected for another reason"; tail -3 "$work/bad.log"; fails=1; fi
+# The transport: Isabelle's add_comm proves nat.add_comm, with nothing assumed.
+if "$arlk" check lib/std/eq.arlk lib/std/nat.arlk absorbed/isabelle/arith.arlk examples/isabelle_transport.arlk >"$work/tr.log" 2>&1 && grep -q "symbols: (none)" "$work/tr.log"; then echo "pass  transport from Isabelle, no symbols"; else echo "FAIL  transport from Isabelle (see $work/tr.log)"; fails=1; fi
 exit $fails
