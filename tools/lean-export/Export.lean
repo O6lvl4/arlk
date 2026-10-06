@@ -5,7 +5,8 @@
   program only has to produce text that a correct kernel will accept.
 
   - Universe polymorphism is removed: every constant is instantiated at the
-    concrete universe levels it is used at, and named `c@l1@l2...`.
+    concrete universe levels it is used at, and named `c@l1@l2...`; a
+    universe-polymorphic theorem asked for is exported at level 0.
   - Every binder carries the universe level of its domain, and every
     function type the level of its codomain, so the Arlk side can write
     `El l A` without inferring levels itself.
@@ -255,11 +256,12 @@ def run (targets : List Name) : MetaM Json := do
   let mut skipped := #[]
   for t in targets do
     let info ← getConstInfo t
-    if !info.levelParams.isEmpty then
-      skipped := skipped.push (Json.mkObj [("name", toJson t.toString), ("reason", toJson "universe polymorphic")])
-      continue
+    -- A universe-polymorphic theorem is exported at its lowest universes
+    -- (every level parameter 0, `t@0@...`): an instance, which is all a
+    -- level-free export can state.
+    let us := info.levelParams.map fun _ => Level.zero
     try
-      let (k, st') ← (ensure t []).run st
+      let (k, st') ← (ensure t us).run st
       st := st'
       ok := ok.push (toJson k)
     catch e =>

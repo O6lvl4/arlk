@@ -43,6 +43,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Well-founded recursion (`termination_by`) | native (`decreasing x by W`); absorbed as the kernel terms Lean compiles it to |
 | Universe polymorphism | native; absorbed constants are instantiated per use |
 | `Init.Data.Nat.Lemmas` | 1564 of 1573 declarations check; two roots run out of budget |
+| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | 2181 of 2202 declarations check; six roots run out of budget; 119 theorems with string literals not exported yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 
 ## Rocq

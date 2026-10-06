@@ -108,6 +108,21 @@ else
   record "Lean Init.Data.Nat.Lemmas (known baseline)" FAIL "differs from the baseline, see $LOGS/lean-nat-lemmas.diff"
 fi
 
+# Lean's Init.Data.List.Lemmas (570 theorems at their lowest universes):
+# about 20 minutes here, so only with ARLK_FULL=1. Exactly the known
+# failures (Nat.Linear's two roots and four list lemmas out of budget, and
+# what depends on them) are allowed.
+if [ "${ARLK_FULL:-}" = 1 ]; then
+  log="$LOGS/lean-list-lemmas.log"
+  limit 7200 ./arlk check lib/core.arlk absorbed/lean/init_data_list_lemmas.arlk --keep-going >"$log" 2>&1
+  grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/lean-list-lemmas.failures"
+  if diff -u absorbed/lean/init_data_list_lemmas.expected-failures "$LOGS/lean-list-lemmas.failures" >"$LOGS/lean-list-lemmas.diff" && grep -q '^21 failed, 2202 declarations checked' "$log"; then
+    record "Lean Init.Data.List.Lemmas (known baseline)" pass "21 known failures, 2202 checked"
+  else
+    record "Lean Init.Data.List.Lemmas (known baseline)" FAIL "differs from the baseline, see $LOGS/lean-list-lemmas.diff"
+  fi
+fi
+
 # Lean's theorems on Rocq's numbers (examples/transport.arlk): checked, and
 # a broken translation or a false preservation lemma must be rejected.
 LIBS="lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk"

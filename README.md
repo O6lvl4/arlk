@@ -528,12 +528,14 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
 | Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~10.5 min |
+| Lean `Init.Data.List.Lemmas` (570 theorems at their lowest universes; `ARLK_FULL=1` in CI) | 2181 of 2202 (four list lemmas and `Nat.Linear`'s two roots run out of budget) | ~20 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
-| Agda `Arith` (naturals, lists, equality and their laws; from source) | 27, all of them | < 0.1 s |
-| Isabelle `Arith` (naturals, sequences, append, reverse; proofs replayed by `simp`) | 29, all of them | < 0.5 s |
+| Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
+| Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 | Metamath `set.mm` up to `unitssre` (line 150 000: predicate calculus, ZF, ordinals, the construction of ℚ⁺), not committed | 14 389 | ~7.5 min |
+| Metamath `iset.mm` (intuitionistic logic and set theory), the whole database, not committed | 18 661, all of them | absorb 89 s, check ~48 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
