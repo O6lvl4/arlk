@@ -81,6 +81,7 @@ must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set
 must_pass "HOL foundation" 60 ./arlk check lib/hol.arlk
 must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 must_pass "Isabelle absorption (proofs replayed by simp)" 600 tools/isabelle-export/check.sh ./arlk
+must_pass "language server" 300 python3 tools/lsp/smoke.py ./arlk
 
 # Rocq's Corelib.Init is not fully supported: exactly the four known
 # declarations fail (sig/sigT at Prop, see the README). Anything else is a

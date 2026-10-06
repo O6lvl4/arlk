@@ -1,0 +1,267 @@
+// A language server: `arlk lsp` speaks the Language Server Protocol on
+// standard input and output, so an editor shows Arlk's errors as you type
+// and a declaration's type on hover.
+//
+// On open, change and save, the document is checked with every
+// declaration kept going, and each failure becomes a diagnostic on its
+// line. Files the document needs are read from its first comment line of
+// the form `arlk check A.arlk B.arlk THIS.arlk` (the convention of the
+// examples and the library), relative to the workspace root; the last name
+// on that line is the document itself. Hover shows the type of the
+// constant under the cursor, as the checked document sees it.
+//
+// Nothing here decides what is true: it runs the same checker as
+// `arlk check` and reports what it says.
+
+import json
+import io
+import fs
+import self.syntax
+import self.kernel
+import self.kernel.{Env}
+import self.checker
+
+type LDoc = { text: String, env: Env }
+
+// ── Messages ────────────────────────────────────────────────────────
+
+fn escape(s: String) -> String = {
+  var out = ""
+  for c in string.chars(s) {
+    out = out + (if c == "\\" then "\\\\"
+      else if c == "\"" then "\\\""
+      else if c == "\n" then "\\n"
+      else if c == "\r" then "\\r"
+      else if c == "\t" then "\\t"
+      else c)
+  }
+  out
+}
+
+local fn quote(s: String) -> String = "\"" + escape(s) + "\""
+
+local effect fn send(body: String) -> Unit = {
+  let n = list.len(string.to_bytes(body))
+  io.print("Content-Length: ${int.to_string(n)}\r\n\r\n${body}")!
+}
+
+local effect fn respond(id: String, result: String) -> Unit = {
+  send("{\"jsonrpc\":\"2.0\",\"id\":${id},\"result\":${result}}")!
+}
+
+// The next message's body, or none at the end of the input.
+local effect fn receive() -> String? = {
+  var length = -1
+  var going = true
+  var ended = false
+  while going {
+    let line = string.trim(io.read_line()!)
+    if line == "" then {
+      going = false
+      if length < 0 then {
+        ended = true
+      } else ()
+    } else if string.starts_with(string.to_lower(line), "content-length:") then {
+      length = match int.parse(string.trim(string.drop(line, 15))) {
+        ok(v) => v,
+        err(_) => -1,
+      }
+    } else ()
+  }
+  if ended or length < 0 then ok(none) else ok(some(string.from_bytes(io.read_n_bytes(length))))
+}
+
+local fn field(v: Value, path: List[String]) -> Value? = {
+  var cur: Value? = some(v)
+  for k in path {
+    cur = match cur {
+      some(c) => match value.field(c, k) {
+        ok(x) => some(x),
+        err(_) => none,
+      },
+      none => none,
+    }
+  }
+  cur
+}
+
+local fn text_at(v: Value, path: List[String]) -> String = match field(v, path) {
+  some(x) => value.as_string(x) ?? "",
+  none => "",
+}
+
+local fn int_at(v: Value, path: List[String]) -> Int = match field(v, path) {
+  some(x) => value.as_int(x) ?? 0,
+  none => 0,
+}
+
+// ── Checking a document ─────────────────────────────────────────────
+
+// The files a document needs, from its `arlk check ...` comment line.
+fn prerequisites(text: String) -> List[String] = {
+  // The line may continue on the next comment lines after a `\`.
+  var words: List[String] = []
+  var state = 0
+  for line in string.split(text, "\n") {
+    let t = string.trim(line)
+    if state == 0 and string.starts_with(t, "//") and string.contains(t, "arlk check ") then {
+      words = string.split(string.drop(t, (string.index_of(t, "arlk check ") ?? 0) + 11), " ")
+      state = if string.ends_with(t, "\\") then 1 else 2
+    } else if state == 1 and string.starts_with(t, "//") then {
+      words = words + string.split(string.drop(t, 2), " ")
+      state = if string.ends_with(t, "\\") then 1 else 2
+    } else ()
+  }
+  let names = words |> list.filter((w) => string.ends_with(w, ".arlk"))
+  list.take(names, list.len(names) - 1)
+}
+
+// Each failure as (line, message), and the environment after checking.
+effect fn check_text(root: String, text: String) -> (List[(Int, String)], Env) = {
+  var kenv = kernel.empty()
+  var problems: List[(Int, String)] = []
+  for pre in prerequisites(text) {
+    let path = if string.starts_with(pre, "/") or root == "" then pre else root + "/" + pre
+    match fs.read_text(path) {
+      ok(src) => match syntax.parse(src) {
+        ok(ds) => {
+          for d in ds {
+            match checker.process(kenv, d) {
+              ok(_) => (),
+              err(e) => list.push(problems, (1, "in ${pre}:${int.to_string(d.line)}: ${e}")),
+            }
+          }
+        },
+        err(e) => list.push(problems, (1, "in ${pre}: ${e}")),
+      },
+      err(_) => list.push(problems, (1, "cannot read ${path} (named on the `arlk check` line)")),
+    }
+  }
+  match syntax.parse(text) {
+    err(e) => {
+      // Parse errors start with their line: `12: expected ...`.
+      let line = match int.parse(list.first(string.split(e, ":")) ?? "") {
+        ok(n) => n,
+        err(_) => 1,
+      }
+      list.push(problems, (line, e))
+    },
+    ok(ds) => {
+      for d in ds {
+        match checker.process(kenv, d) {
+          ok(_) => (),
+          err(e) => list.push(problems, (d.line, e)),
+        }
+      }
+    },
+  }
+  ok((problems, kenv))
+}
+
+local fn diagnostics(uri: String, problems: List[(Int, String)]) -> String = {
+  let items = problems |> list.map(((line, msg)) => {
+    let l = if line > 0 then line - 1 else 0
+    "{\"range\":{\"start\":{\"line\":${int.to_string(l)},\"character\":0},\"end\":{\"line\":${int.to_string(l)},\"character\":200}},\"severity\":1,\"source\":\"arlk\",\"message\":${quote(msg)}}"
+  })
+  "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/publishDiagnostics\",\"params\":{\"uri\":${quote(uri)},\"diagnostics\":[${list.join(items, ",")}]}}"
+}
+
+// The identifier at a position (line and character from zero).
+fn word_at(text: String, line: Int, ch: Int) -> String = {
+  let l = list.get(string.split(text, "\n"), line) ?? ""
+  let cs = string.chars(l)
+  let ident = (c: String) => string.is_alphanumeric(c) or c == "_" or c == "'" or c == "." or c == "@"
+  var start = ch
+  while start > 0 and ident(list.get(cs, start - 1) ?? "") {
+    start = start - 1
+  }
+  var stop = ch
+  while stop < list.len(cs) and ident(list.get(cs, stop) ?? "") {
+    stop = stop + 1
+  }
+  list.join(list.slice(cs, start, stop), "")
+}
+
+fn hover(d: LDoc, line: Int, ch: Int) -> String = {
+  let w = word_at(d.text, line, ch)
+  if w == "" then "null"
+  else match kernel.resolve_const(d.env, w) {
+    ok(q) => match map.get(d.env.types, q) {
+      some(ty) => "{\"contents\":{\"kind\":\"markdown\",\"value\":${quote("```\n" + q + ": " + kernel.show(d.env, [], ty) + "\n```")}}}",
+      none => "null",
+    },
+    err(_) => "null",
+  }
+}
+
+// ── The loop ────────────────────────────────────────────────────────
+
+effect fn serve() -> Unit = {
+  var docs: Map[String, LDoc] = [:]
+  var root = ""
+  var going = true
+  while going {
+    match receive()! {
+      none => {
+        going = false
+      },
+      some(body) => match json.parse(body) {
+        err(_) => (),
+        ok(msg) => {
+          let method = text_at(msg, ["method"])
+          let id = match field(msg, ["id"]) {
+            some(v) => value.stringify(v),
+            none => "",
+          }
+          if method == "initialize" then {
+            let uri = text_at(msg, ["params", "rootUri"])
+            root = if string.starts_with(uri, "file://") then string.drop(uri, 7) else uri
+            respond(id, "{\"capabilities\":{\"textDocumentSync\":1,\"hoverProvider\":true},\"serverInfo\":{\"name\":\"arlk\"}}")!
+          } else if method == "shutdown" then respond(id, "null")!
+          else if method == "exit" then {
+            going = false
+          } else if method == "textDocument/didOpen" or method == "textDocument/didChange" or method == "textDocument/didSave" then {
+            let uri = text_at(msg, ["params", "textDocument", "uri"])
+            let text = if method == "textDocument/didOpen" then text_at(msg, ["params", "textDocument", "text"])
+              else if method == "textDocument/didChange" then match field(msg, ["params", "contentChanges"]) {
+                some(cs) => match value.as_array(cs) {
+                  ok(arr) => match list.last(arr) {
+                    some(last) => text_at(last, ["text"]),
+                    none => "",
+                  },
+                  err(_) => "",
+                },
+                none => "",
+              }
+              else match map.get(docs, uri) {
+                some(d) => d.text,
+                none => "",
+              }
+            let (problems, kenv) = check_text(root, text)!
+            map.insert(docs, uri, LDoc { text: text, env: kenv })
+            send(diagnostics(uri, problems))!
+          } else if method == "textDocument/hover" then {
+            let uri = text_at(msg, ["params", "textDocument", "uri"])
+            let result = match map.get(docs, uri) {
+              some(d) => hover(d, int_at(msg, ["params", "position", "line"]), int_at(msg, ["params", "position", "character"])),
+              none => "null",
+            }
+            respond(id, result)!
+          } else if id != "" then send("{\"jsonrpc\":\"2.0\",\"id\":${id},\"error\":{\"code\":-32601,\"message\":${quote("not supported: " + method)}}}")!
+          else ()
+        },
+      },
+    }
+  }
+}
+
+test "a document's prerequisites come from its arlk check line, continued after \\" {
+  let text = "// Div.\n//\n//   arlk check lib/std/eq.arlk lib/std/nat.arlk \\\n//     lib/std/wf.arlk YOUR.arlk\n\nroom r\n"
+  assert_eq(prerequisites(text), ["lib/std/eq.arlk", "lib/std/nat.arlk", "lib/std/wf.arlk"])
+  assert_eq(prerequisites("room r\n"), [])
+}
+
+test "the word under the cursor" {
+  assert_eq(word_at("theorem t: Eq(Nat, add(x, y), z)", 0, 20), "add")
+  assert_eq(word_at("  nat.add_comm(a)", 0, 5), "nat.add_comm")
+}

@@ -671,6 +671,15 @@ loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](do
 arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 ```
 
+## Editors: `arlk lsp`
+
+`arlk lsp` is a language server (Language Server Protocol, on standard input and output). On open,
+change and save it checks the document with every declaration kept going and reports each failure
+on its line; hovering a name shows its type. The files a document needs come from its comment line
+`arlk check A.arlk B.arlk THIS.arlk` (the convention the examples and the library already follow),
+relative to the workspace root. It runs the same checker as `arlk check`
+([src/lsp.almd](src/lsp.almd); [tools/lsp/smoke.py](tools/lsp/smoke.py) drives a session in CI).
+
 ## Incremental checking
 
 `arlk session STEP_DIR...` checks a sequence of edits in one process. It reuses each declaration
