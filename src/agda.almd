@@ -16,7 +16,9 @@
 // to confirm that Agda accepts what was absorbed).
 //
 // The subset: `module M where`, `data` (parameters, indices, constructors),
-// `record` (`constructor`, `field`; `open R` for its projections),
+// `record` (`constructor`, `field`; `open R` for its projections;
+// `coinductive` ones become Arlk codata, and definitions by copatterns,
+// `head (f x) = ...; tail (f x) = f y`, corecursion by a state),
 // `infix`/`infixl`/`infixr`, type signatures and clauses by pattern
 // matching (constructor, variable, `_`, dot and absurd `()` patterns,
 // operators in patterns, `with e` and its `... | p = rhs` arms),
@@ -570,6 +572,134 @@ fn emit_fun(sc: AScope, name: String, ty: AExpr, clauses: List[(List[APat], AExp
   ok("def ${mangle(name)}${generics}${params}${arrow}${ret_s} =${body}")
 }
 
+// A coinductive record as Arlk codata.
+fn emit_codata(sc: AScope, d: AData) -> String = {
+  let cx = ACx { sc: { ...sc, own: d.name }, ren: [], bound: d.params |> list.map(((n, _, _)) => n) }
+  let no_names: List[String] = []
+  let params = if list.is_empty(d.params) then "" else "(" + list.join(d.params |> list.map(((n, t, _)) => mangle(n) + ": " + emit({ ...cx, bound: no_names }, t)), ", ") + ")"
+  let fields = match list.first(d.ctors) {
+    some(c) => c.args,
+    none => [],
+  }
+  "codata ${mangle(d.name)}${params}: ${emit(cx, d.arity)} = { " + list.join(fields |> list.map(((f, t, _)) => mangle(f) + ": " + emit(cx, t)), ", ") + " }"
+}
+
+// A definition by copatterns, `head (from n) = n; tail (from n) = from (suc n)`,
+// as corecursion: the seed is the one argument that the recursive calls
+// change (any, if none does), each field's clause becomes its step.
+fn emit_corec(sc: AScope, name: String, ty: AExpr, cps: List[(String, List[APat], AExpr)]) -> String! = {
+  let (bs, ret) = unpi(ty)
+  let (rname, _) = head_args(ret)
+  let d = match data_of(sc, rname) {
+    some(x) => ok(x),
+    none => err("${name}: defined by copatterns, so its type must be a coinductive record"),
+  }!
+  let fields = match list.first(d.ctors) {
+    some(c) => c.args,
+    none => [],
+  }
+  let imps = bs |> list.filter(((_, _, imp)) => imp)
+  let exps = bs |> list.filter(((_, _, imp)) => not imp)
+  // Parameter names: the first clause's variables.
+  let first_ps = match list.first(cps) {
+    some((_, ps, _)) => ps,
+    none => [],
+  }
+  guard list.len(first_ps) == list.len(exps) else err("${name}: a copattern clause names ${int.to_string(list.len(first_ps))} arguments for ${int.to_string(list.len(exps))}")
+  var names: List[String] = []
+  for (k, p) in list.enumerate(first_ps) {
+    match p {
+      PV(x) => list.push(names, x),
+      _ => list.push(names, "x" + int.to_string(k + 1)),
+    }
+  }
+  var inames: List[String] = []
+  for (k, b) in list.enumerate(imps) {
+    let (n, _, _) = b
+    list.push(inames, if n == "_" then "i" + int.to_string(k + 1) else n)
+  }
+  let cx0 = ACx { sc: sc, ren: [], bound: inames + names }
+  // Each field's clause, its variables renamed to the parameters.
+  var rhs_of: List[(String, AExpr, ACx)] = []
+  for (f, _, _) in fields {
+    let full = d.name + "." + f
+    let found = list.find(cps, ((p, _, _)) => p == full)
+    guard found != none else err("${name}: no copattern clause for ${f}")
+    match found {
+      some((_, ps, rhs)) => {
+        var ren: List[(String, String)] = []
+        for (p, n) in list.zip(ps, names) {
+          match p {
+            PV(x) => if x != n then list.push(ren, (x, mangle(n))) else (),
+            _ => (),
+          }
+        }
+        list.push(rhs_of, (f, rhs, { ...cx0, ren: ren }))
+      },
+      none => (),
+    }
+  }
+  // The recursive fields: `tail (g xs) = g ys`, one argument changing.
+  let rec_fields = fields |> list.filter(((_, t, _)) => head_args(t).0 == d.name)
+  var varying = -1
+  for (f, _, _) in rec_fields {
+    match list.find(rhs_of, ((g, _, _)) => g == f) {
+      some((_, rhs, cx)) => {
+        let (g, args) = head_args(rhs)
+        guard g == name and list.len(args) == list.len(names) else err("${name}: the clause for ${f} must call ${name} again (guarded corecursion by a state is supported)")
+        for (k, a) in list.enumerate(args) {
+          let same = match a {
+            EVar(v) => var_name(cx, v) == mangle(list.get(names, k) ?? ""),
+            _ => false,
+          }
+          if not same then {
+            guard varying < 0 or varying == k else err("${name}: more than one argument changes in its corecursive calls")
+            varying = k
+          } else ()
+        }
+      },
+      none => (),
+    }
+  }
+  let seed_k = if varying >= 0 then varying else 0
+  let path = mangle(d.name) + ".Path"
+  let has_seed = not list.is_empty(names)
+  let seed = if has_seed then mangle(list.get(names, seed_k) ?? "") else path + ".here"
+  let seed_ty = match list.get(exps, seed_k) {
+    some((_, t, _)) => if has_seed then emit(cx0, t) else path,
+    none => path,
+  }
+  let binder = if has_seed then seed else "st"
+  let lam = (body: String) => "(${binder}: ${seed_ty}) => " + body
+  var outs: List[String] = []
+  for (f, t, _) in fields {
+    if head_args(t).0 == d.name then () else match list.find(rhs_of, ((g, _, _)) => g == f) {
+      some((_, rhs, cx)) => list.push(outs, lam(emit(cx, rhs))),
+      none => (),
+    }
+  }
+  for (f, _, _) in rec_fields {
+    match list.find(rhs_of, ((g, _, _)) => g == f) {
+      some((_, rhs, cx)) => {
+        let (_, args) = head_args(rhs)
+        let next = if has_seed then emit(cx, list.get(args, seed_k) ?? EHole) else binder
+        list.push(outs, lam(next))
+      },
+      none => (),
+    }
+  }
+  let generics = if list.is_empty(imps) then "" else "[" + list.join(list.zip(inames, imps) |> list.map(((n, b)) => {
+    let (_, t, _) = b
+    mangle(n) + ": " + emit(cx0, t)
+  }), ", ") + "]"
+  let params = if list.is_empty(exps) then "" else "(" + list.join(list.zip(names, exps) |> list.map(((n, b)) => {
+    let (_, t, _) = b
+    mangle(n) + ": " + emit(cx0, t)
+  }), ", ") + ")"
+  let arrow = if list.is_empty(exps) and list.is_empty(imps) then ": " else " -> "
+  ok("def ${mangle(name)}${generics}${params}${arrow}${emit(cx0, ret)} =\n  ${mangle(d.name)}.corec(${list.join(outs, ", ")}, ${seed})")
+}
+
 local fn pat_vars(p: APat) -> List[String] = match p {
   PV(x) => [x],
   PC(_, ps) => ps |> list.flat_map((q) => pat_vars(q)),
@@ -738,6 +868,10 @@ fn absorb(src: String, file: String) -> String! = {
   var clauses: Map[String, List[(List[APat], AExpr)]] = [:]
   var order: List[String] = []
   var pending_with: (String, List[APat], AExpr, List[(APat, AExpr)])? = none
+  // Coinductive records, and definitions by copatterns: per function, its
+  // clauses as (projection, argument patterns, right-hand side).
+  var codatas: List[String] = []
+  var copats: Map[String, List[(String, List[APat], AExpr)]] = [:]
   for b in bl {
     let words = b |> list.map((t) => t.text)
     let head = at(words, 0)
@@ -777,16 +911,23 @@ fn absorb(src: String, file: String) -> String! = {
       }
       guard pending_with != none else err("${file}:${int.to_string(line)}: `...` without a `with` clause above")
     } else if head == "record" then {
-      let (d, projs) = parse_record(sc, b)!
+      let (d, projs, coinductive) = parse_record(sc, b)!
       sc = { ...sc, datas: (sc.datas |> list.filter((x) => x.name != d.name)) + [d] }
-      list.push(order, "data:" + d.name)
+      // A coinductive record becomes Arlk codata, whose declaration makes
+      // the projections; an inductive one, a type and a projection each.
+      list.push(order, (if coinductive then "codata:" else "data:") + d.name)
+      if coinductive then {
+        codatas = codatas + [d.name]
+      } else ()
       for (f, ty, cl) in projs {
-        list.push(pending, (f, ty))
         let (pbs, _) = unpi(ty)
         let pimps = pbs |> list.map(((_, _, imp)) => imp)
         sc = { ...sc, funs: sc.funs + [(f, pimps)] }
-        list.push(order, "fun:" + f)
-        clauses = map.set(clauses, f, [cl])
+        if not coinductive then {
+          list.push(pending, (f, ty))
+          list.push(order, "fun:" + f)
+          clauses = map.set(clauses, f, [cl])
+        } else ()
       }
     } else if head == "infix" or head == "infixl" or head == "infixr" then ()
     else if head == "data" then {
@@ -841,17 +982,30 @@ fn absorb(src: String, file: String) -> String! = {
         guard eq >= 0 or absurd else err("${file}:${int.to_string(line)}: cannot read this declaration (${head} ...)")
         let (lhs, _) = parse_expr(sc, lhs_words, 0)!
         let (rhs, _) = if eq >= 0 then parse_expr(sc, list.drop(words, eq + 1), 0)! else (EVar(ABSURD), 0)
-        let (f, args) = match lhs {
-          EApp(EVar(f), args) => (f, args),
-          EVar(f) => (f, []),
-          _ => ("", []),
-        }
+        let (f, args) = head_args(lhs)
         guard f != "" else err("${file}:${int.to_string(line)}: cannot read this clause's left-hand side")
-        var ps: List[APat] = []
-        for a in args {
-          list.push(ps, to_pat(sc, a)!)
+        // A copattern, `head (repeat x) = x`: a projection of a coinductive
+        // record applied to the function being defined.
+        let proj = match list.find(sc.opens, ((a, _)) => a == f) {
+          some((_, full)) => full,
+          none => f,
         }
-        clauses = map.set(clauses, f, (map.get(clauses, f) ?? []) + [(ps, rhs)])
+        let co = list.any(codatas, (r) => string.starts_with(proj, r + ".")) and list.len(args) == 1
+        if co then {
+          let (g, gargs) = head_args(list.first(args) ?? EHole)
+          guard g != "" else err("${file}:${int.to_string(line)}: a copattern applies a projection to the function defined")
+          var gps: List[APat] = []
+          for a in gargs {
+            list.push(gps, to_pat(sc, a)!)
+          }
+          copats = map.set(copats, g, (map.get(copats, g) ?? []) + [(proj, gps, rhs)])
+        } else {
+          var ps: List[APat] = []
+          for a in args {
+            list.push(ps, to_pat(sc, a)!)
+          }
+          clauses = map.set(clauses, f, (map.get(clauses, f) ?? []) + [(ps, rhs)])
+        }
       }
     }
   }
@@ -862,10 +1016,18 @@ fn absorb(src: String, file: String) -> String! = {
         some(d) => list.push(out, emit_data(sc, d)),
         none => (),
       }
+    } else if string.starts_with(item, "codata:") then {
+      match data_of(sc, string.drop(item, 7)) {
+        some(d) => list.push(out, emit_codata(sc, d)),
+        none => (),
+      }
     } else {
       let f = string.drop(item, 4)
       match list.find(pending, ((g, _)) => g == f) {
-        some((_, ty)) => list.push(out, emit_fun(sc, f, ty, map.get(clauses, f) ?? [])!),
+        some((_, ty)) => match map.get(copats, f) {
+          some(cps) => list.push(out, emit_corec(sc, f, ty, cps)!),
+          none => list.push(out, emit_fun(sc, f, ty, map.get(clauses, f) ?? [])!),
+        },
         none => (),
       }
     }
@@ -892,7 +1054,7 @@ local fn flush_with(mut clauses: Map[String, List[(List[APat], AExpr)]], w: (Str
 // (`R.f`, defined by a clause on the constructor). A field's type may
 // mention earlier fields; in the projection's type they become earlier
 // projections of the record.
-local fn parse_record(sc: AScope, b: List[ATok]) -> (AData, List[(String, AExpr, (List[APat], AExpr))])! = {
+local fn parse_record(sc: AScope, b: List[ATok]) -> (AData, List[(String, AExpr, (List[APat], AExpr))], Bool)! = {
   let words = b |> list.map((t) => t.text)
   let name = at(words, 1)
   let w = list.index_of(words, "where") ?? -1
@@ -913,12 +1075,16 @@ local fn parse_record(sc: AScope, b: List[ATok]) -> (AData, List[(String, AExpr,
   let (arity, _) = parse_expr(sc, list.slice(words, j + 1, w), 0)!
   let sc2 = { ...sc, datas: sc.datas |> list.map((d) => if d.name == name then { ...d, params: params } else d) }
   var cname = name + ".constructor"
+  var coinductive = false
   var fields: List[(String, AExpr, Bool)] = []
   for sub in blocks(list.drop(b, w + 1), ctor_col(b, w)) {
     let ws = sub |> list.map((t) => t.text)
     if at(ws, 0) == "constructor" then {
       cname = at(ws, 1)
-    } else if at(ws, 0) == "field" then {
+    } else if at(ws, 0) == "coinductive" then {
+      coinductive = true
+    } else if at(ws, 0) == "inductive" then ()
+    else if at(ws, 0) == "field" then {
       let rest = list.drop(sub, 1)
       let col = match list.first(rest) {
         some(t) => t.col,
@@ -954,7 +1120,7 @@ local fn parse_record(sc: AScope, b: List[ATok]) -> (AData, List[(String, AExpr,
     let pat = PC(cname, fnames |> list.map((g) => PV(g)))
     list.push(projs, (name + "." + f, pty, ([pat], EVar(f))))
   }
-  ok((d, projs))
+  ok((d, projs, coinductive))
 }
 
 // e with the variable x replaced by `by` (not under a binder for x).
@@ -1029,6 +1195,16 @@ test "records become a type with projections, and with becomes a match on the ca
   assert(string.contains(out, "def P.one[A: Type](r: P(A)) -> A = match r {"))
   assert(string.contains(out, "P.mk(P.two(p), P.one(p))"))
   assert(string.contains(out, "match f(b) {"))
+}
+
+test "a coinductive record becomes codata, and copatterns become corecursion" {
+  let src = "{-# OPTIONS --guardedness #-}\nmodule S where\n\ndata N : Set where\n  z : N\n  s : N → N\n\nrecord St (A : Set) : Set where\n  coinductive\n  field\n    hd : A\n    tl : St A\n\nopen St\n\nup : N → St N\nhd (up n) = n\ntl (up n) = up (s n)\n"
+  let out = match absorb(src, "S.agda") {
+    ok(o) => o,
+    err(e) => e,
+  }
+  assert(string.contains(out, "codata St(A: Type): Type = { hd: A, tl: St(A) }"))
+  assert(string.contains(out, "St.corec((n: N) => n, (n: N) => N.s(n), n)"))
 }
 
 test "Agda names become Arlk identifiers" {

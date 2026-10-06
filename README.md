@@ -480,10 +480,12 @@ $ ./arlk check absorbed/agda/arith.arlk
 ok: absorbed/agda/arith.arlk (27 declarations)
 ```
 
-[absorbed/agda](absorbed/agda) holds three modules, all accepted by Agda 2.8.0.2 and checked in full:
-`Arith` (naturals, lists, equality and their laws, 27 declarations), `Order` (`_≤_` as an indexed
-family, `≤-pred`, `¬s≤z ()`, 15) and `Records` (a record with projections, `open`, `filter` by
-`with`, 26).
+A `coinductive` record becomes Arlk `codata`, and a definition by copatterns (`head (from n) = n`,
+`tail (from n) = from (suc n)`) becomes corecursion with the changing argument as the seed.
+[absorbed/agda](absorbed/agda) holds four modules, all accepted by Agda 2.8.0.2 and checked in full:
+`Arith` (naturals, lists, equality and their laws), `Order` (`_≤_` as an indexed family, `≤-pred`,
+`¬s≤z ()`), `Records` (a record with projections, `open`, `filter` by `with`) and `Streams` (a
+coinductive record, `repeat`, `from` and `map` by copatterns, facts by computation).
 
 ### Isabelle/HOL
 

@@ -1,0 +1,28 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Streams (Streams.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Streams
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type eq(A: Type, x: A): A -> Type =
+  | refl: eq(A, x, x)
+
+codata Stream(A: Type): Type = { head: A, tail: Stream(A) }
+
+def repeat[A: Type](x: A) -> Stream(A) =
+  Stream.corec((x: A) => x, (x: A) => x, x)
+
+def from(n: ℕ) -> Stream(ℕ) =
+  Stream.corec((n: ℕ) => n, (n: ℕ) => ℕ.suc(n), n)
+
+def map[A: Type, B: Type](f: A -> B, s: Stream(A)) -> Stream(B) =
+  Stream.corec((s: Stream(A)) => f(Stream.head(s)), (s: Stream(A)) => Stream.tail(s), s)
+
+def third: eq(_, Stream.head(Stream.tail(Stream.tail(from(ℕ.zero)))), ℕ.suc(ℕ.suc(ℕ.zero))) = eq.refl
+
+def map_from: eq(_, Stream.head(Stream.tail(map(ℕ.suc, from(ℕ.zero)))), ℕ.suc(ℕ.suc(ℕ.zero))) = eq.refl
+
+def repeat_tail[A: Type](x: A) -> eq(_, Stream.head(Stream.tail(repeat(x))), x) = eq.refl
