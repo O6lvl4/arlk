@@ -1,0 +1,69 @@
+// Metamath's propositional calculus, read in Arlk's own logic.
+//
+// absorbed/metamath/set_prop.arlk is set.mm's propositional part, written
+// over set.mm's own symbols: wff, Prf, wn, wi and the axioms ax-mp, ax-1,
+// ax-2 and ax-3. This room gives each of them a meaning in Arlk's type
+// theory (a wff is a proposition, a proof of it is a proof of it, `wi` is
+// the function type; set.mm's Prf lands in Type, so a proof is boxed in
+// the record Box) and carries set.mm's theorems over:
+//
+//   - ax-mp, ax-1 and ax-2 are theorems here;
+//   - ax-3 (contraposition, (¬φ → ¬ψ) → (ψ → φ)) is classical, so it is
+//     proved from excluded middle, the one assumption of this room.
+//
+// The view is checked (every image against its symbol's translated type),
+// and every carried theorem is checked again here, so nothing about the
+// view or about Metamath is trusted.
+//
+//   arlk check absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk
+room mmlogic
+
+type False: Sort(0) =
+
+def Not(p: Sort(0)) -> Sort(0) = p -> False
+
+type Or(a: Sort(0), b: Sort(0)): Sort(0) =
+  | inl(x: a): Or(a, b)
+  | inr(y: b): Or(a, b)
+
+// set.mm is classical; here that is this one assumption.
+symbol em(p: Sort(0)) -> Or(p, Not(p))
+
+def imp(a: Sort(0), b: Sort(0)) -> Sort(0) = a -> b
+
+// A proof of p, as a value of Type (set.mm's Prf(p) is a Type).
+type Box(p: Sort(0)): Type = { proof: p }
+
+theorem absurd(p: Sort(0), f: False) -> p = False.rec((_: False) => p, f)
+
+theorem dne(p: Sort(0), h: Not(Not(p))) -> p =
+  Or.rec((_: Or(p, Not(p))) => p, (x: p) => x, (n: Not(p)) => absurd(p, h(n)), em(p))
+
+// ── The view ───────────────────────────────────────────────────────
+
+view mm_logic from setmm {
+  wff = Sort(0),
+  some_wff = False,
+  Prf = Box,
+  wn = Not,
+  wi = imp,
+  ax_mp = (ph: Sort(0), ps: Sort(0), min: Box(ph), maj: Box(ph -> ps)) => Box.mk(maj.proof(min.proof)),
+  ax_1 = (ph: Sort(0), ps: Sort(0)) => Box.mk((x: ph) => (y: ps) => x),
+  ax_2 = (ph: Sort(0), ps: Sort(0), ch: Sort(0)) => Box.mk((f: ph -> ps -> ch) => (g: ph -> ps) => (x: ph) => f(x, g(x))),
+  ax_3 = (ph: Sort(0), ps: Sort(0)) => Box.mk((f: Not(ph) -> Not(ps)) => (y: ps) => dne(ph, (n: Not(ph)) => f(n, y))),
+}
+
+// Theorems of set.mm, proved there from its axioms, carried over.
+translate mm_logic setmm.id
+translate mm_logic setmm.syl
+translate mm_logic setmm.con3
+translate mm_logic setmm.notnotr
+translate mm_logic setmm.peirce
+
+// ── Peirce's law, in Arlk's own terms ──────────────────────────────
+//
+// set.mm proves it from ax-1, ax-2, ax-3 and modus ponens; carried here it
+// is a statement about Arlk's propositions, resting only on `em`.
+theorem peirce_law(p: Sort(0), q: Sort(0)) -> ((p -> q) -> p) -> p = mm_logic.setmm.peirce(p, q).proof
+
+axioms peirce_law

@@ -658,6 +658,11 @@ axioms holtypes.em
   symbols: holtypes.funext, holtypes.propext, holtypes.epsilon, holtypes.epsilon_spec
 ```
 
+[examples/metamath_logic.arlk](examples/metamath_logic.arlk) does the same for Metamath: set.mm's
+propositional calculus (`wff`, `Prf`, `wn`, `wi`, ax-mp, ax-1, ax-2, ax-3) read as Arlk's propositions,
+with ax-3 proved from excluded middle. set.mm's proof of Peirce's law, carried over, becomes
+`theorem peirce_law(p, q) -> ((p -> q) -> p) -> p`, and `axioms peirce_law` lists `mmlogic.em` alone.
+
 Excluded middle in Arlk's own logic, proved by HOL's library and resting on exactly the axioms Lean
 assumes.
 

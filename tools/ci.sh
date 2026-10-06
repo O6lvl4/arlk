@@ -81,6 +81,21 @@ must_pass "Lean Nat.add_zero" 300 ./arlk check lib/core.arlk absorbed/lean/nat_a
 must_pass "Rocq Init.Peano" 300 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
 must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
 must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set_prop.arlk
+# set.mm's propositional calculus read in Arlk's own logic (a checked view):
+# Peirce's law, proved by set.mm, as a native theorem resting only on
+# excluded middle. A view that reads negation as the identity is rejected.
+log="$LOGS/metamath-logic.log"
+if limit 600 ./arlk check absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk >"$log" 2>&1 && grep -q '^  symbols: mmlogic.em$' "$log"; then
+  record "transport: Metamath logic into Arlk" pass "peirce_law rests on mmlogic.em alone"
+else
+  record "transport: Metamath logic into Arlk" FAIL "see $log"
+fi
+sed 's/^  wn = Not,$/  wn = (p: Sort(0)) => p,/' examples/metamath_logic.arlk >"$LOGS/metamath_logic-negation.arlk"
+if cmp -s examples/metamath_logic.arlk "$LOGS/metamath_logic-negation.arlk"; then
+  record "Metamath logic tampered: negation as identity" FAIL "the edit did not apply"
+else
+  must_reject "Metamath logic tampered: negation as identity" 600 "type mismatch" ./arlk check absorbed/metamath/set_prop.arlk "$LOGS/metamath_logic-negation.arlk"
+fi
 must_pass "HOL foundation" 60 ./arlk check lib/hol.arlk
 must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 must_pass "Isabelle absorption (proofs replayed by simp)" 600 tools/isabelle-export/check.sh ./arlk

@@ -105,4 +105,5 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Agda's `+-comm` to Arlk's `nat.add_comm` | [examples/agda_transport.arlk](../examples/agda_transport.arlk) |
 | HOL in Arlk's types (excluded middle carried by a view) | [examples/hol_types.arlk](../examples/hol_types.arlk) |
 | Isabelle's `add_comm` to Arlk's `nat.add_comm` | [examples/isabelle_transport.arlk](../examples/isabelle_transport.arlk) |
+| Metamath's propositional calculus in Arlk's logic (Peirce's law from set.mm, resting on excluded middle alone) | [examples/metamath_logic.arlk](../examples/metamath_logic.arlk) |
 | Metamath's arithmetic to the others | missing |
