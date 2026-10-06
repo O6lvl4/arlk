@@ -1817,3 +1817,44 @@ test "computes: eval keeps big literals whole" {
   assert(list.any(out, (l) => string.contains(l, "= 4294967297")))
   assert(list.any(out, (l) => string.contains(l, "= 8589934592")))
 }
+
+// ── `match f(x)` abstracts f(x) in the goal (Agda's `with`) ─────────
+
+let WITH = """
+room wi uses eq, logic, nat
+type B: Type = | yes | no
+def not(b: B) -> B = match b {
+  yes => B.no,
+  no => B.yes,
+}
+def even(n: Nat) -> B = match n {
+  zero => B.yes,
+  succ(k) => not(even(k)),
+}
+"""
+
+test "with: matching on a call refines the goal where it mentions the call" {
+  assert_eq(run_wf(WITH + """
+theorem nn_even(n: Nat) -> Eq(B, not(not(even(n))), even(n)) = match even(n) {
+  yes => Eq.refl,
+  no => Eq.refl,
+}
+theorem unrelated(n: Nat) -> Eq(Nat, n, n) = match even(n) {
+  yes => Eq.refl,
+  _ => Eq.refl,
+}
+""")!, none)
+}
+
+test "with: a wrong arm is still rejected" {
+  let src = WITH + """
+theorem wrong(n: Nat) -> Eq(B, not(even(n)), even(n)) = match even(n) {
+  yes => Eq.refl,
+  no => Eq.refl,
+}
+"""
+  assert(match run_wf(src)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}

@@ -51,3 +51,8 @@ def not(x1: Bool) -> Bool = match x1 {
 def evens: List(Bool) = filter(not, List.cons(Bool.true, List.cons(Bool.false, List.cons(Bool.false, List.nil))))
 
 def evens_ok: eq(_, evens, List.cons(Bool.false, List.cons(Bool.false, List.nil))) = eq.refl
+
+def not_not_with[A: Type](p: A -> Bool, x: A) -> eq(_, not(not(p(x))), p(x)) =  match p(x) {
+    true => eq.refl,
+    false => eq.refl,
+  }

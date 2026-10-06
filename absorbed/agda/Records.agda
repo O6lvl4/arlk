@@ -51,3 +51,10 @@ evens = filter not (true ∷ false ∷ false ∷ [])
 
 evens-ok : evens ≡ false ∷ false ∷ []
 evens-ok = refl
+
+-- `with` in a proof: the goal mentions `p x`, and each arm sees it replaced
+-- by the case it is in.
+not-not-with : {A : Set} (p : A → Bool) (x : A) → not (not (p x)) ≡ p x
+not-not-with p x with p x
+... | true  = refl
+... | false = refl

@@ -148,6 +148,19 @@ local fn replace(r: Raw, x: String, by: Raw) -> Raw = match r {
   other => other,
 }
 
+// r with each occurrence of the expression e replaced by `by` (a fresh
+// name), as Agda's `with` and Lean's `generalize` abstract it; not under a
+// binder that rebinds a name e mentions.
+local fn abstract_expr(r: Raw, e: Raw, mentions: List[String], by: Raw) -> Raw =
+  if r == e then by
+  else match r {
+    RApp(f, a) => RApp(abstract_expr(f, e, mentions, by), abstract_expr(a, e, mentions, by)),
+    RLam(y, ty, b) => RLam(y, abstract_expr(ty, e, mentions, by), if list.contains(mentions, y) then b else abstract_expr(b, e, mentions, by)),
+    RPi(y, ty, b) => RPi(y, abstract_expr(ty, e, mentions, by), if list.contains(mentions, y) then b else abstract_expr(b, e, mentions, by)),
+    RBracket(b) => RBracket(abstract_expr(b, e, mentions, by)),
+    other => other,
+  }
+
 // The constructor a name in an arm stands for: `succ` or `Nat.succ` both
 // name Nat.succ when Nat is matched.
 local fn ctor_of(t: Target, c: String) -> Ctor? =
@@ -632,7 +645,8 @@ local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> R
   },
   // `match f(a) { ... }`: on a value computed here, named by a fresh
   // variable. Its type is found from the head function's result type
-  // (`look("=f")`); the split cannot refine the result type by it.
+  // (`look("=f")`). Where the result type mentions f(a), it is abstracted
+  // (Agda's `with`), so each arm's goal has its constructor in its place.
   RMatch(e, arms) => {
     let (h, _) = raw_spine(e)
     let fname = match h {
@@ -652,7 +666,7 @@ local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> R
       none => "=" + fname,
     }
     let cx2 = { ...cx, heads: cx.heads + [(v, head)] }
-    let inner = matrix(cx2, [v], rows, look, ret)!
+    let inner = matrix(cx2, [v], rows, look, abstract_expr(ret, e, names_in(e), RName(v)))!
     ok(RApp(RLam(v, hole(), inner), recursive_calls(cx, e)!))
   },
   _ => recursive_calls(cx, body),

@@ -65,11 +65,11 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Dependent pattern matching on equality (`sym refl = refl`) | absorbed (index refinement in `match`) |
 | Absurd patterns `()` (also in a later argument), dependent matching on `≤`-like families | absorbed (impossible arms left out, checked by Arlk's match) |
 | Records (`constructor`, `field`, `open R`), projections | absorbed (a type with one constructor, a projection per field) |
-| `with` on a value in a function | absorbed (`match` on the call); `with` that must abstract the value in the goal of a proof is missing |
+| `with` on a value, in functions and in proofs whose goal mentions it | absorbed (`match` on the call, which abstracts the call where the goal mentions it); `with … | inspect`/`rewrite` are missing |
 | Coinductive records and definitions by copatterns (guarded corecursion by a state) | absorbed (Arlk `codata` and `corec`) |
 | Instance arguments, sized types, cubical features, `--without-K` | missing |
 | `absorbed/agda/Order.agda` (`≤`, `≤-pred`, `¬s≤z ()`) | 15 of 15 declarations check; Agda 2.8.0.2 accepts the source |
-| `absorbed/agda/Records.agda` (`Pair` with projections, `filter` by `with`) | 26 of 26 declarations check; Agda 2.8.0.2 accepts the source |
+| `absorbed/agda/Records.agda` (`Pair` with projections, `filter` by `with`, a proof by `with`) | 27 of 27 declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Streams.agda` (coinductive `Stream`, `repeat`/`from`/`map` by copatterns) | all declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Arith.agda` | 27 of 27 declarations check; Agda 2.8.0.2 accepts the source; its `+-comm` proves Arlk's `nat.add_comm` again ([examples/agda_transport.arlk](../examples/agda_transport.arlk)) |
 

@@ -185,7 +185,9 @@ Patterns nest (`succ(succ(m)) => m`), arms are tried in order, and an arm's body
 arm's own type as the motive (pattern-matrix compilation, as in Agda and Lean). Recursion stays
 structural on the fields the definition's match takes apart, so `le(m, n)` matching both arguments
 works, while `even` recursing two constructors deep is refused (it needs course-of-values
-recursion, not there yet). A parameter of an indexed family (`xs: Vec(A, n)`) can be matched when
+recursion, not there yet). A match on a call, `match even(n) { yes => ..., no => ... }`, splits on
+its value, and where the goal mentions `even(n)` each arm sees the case it is in instead, as Agda's
+`with` does: `not(not(even(n))) = even(n)` is proved by `Eq.refl` in both arms. A parameter of an indexed family (`xs: Vec(A, n)`) can be matched when
 its indices are parameters before it: the motive generalises them, and a recursive call passes the
 field's own index (`vmap(f, m, rest)`). Indices may also be constructor patterns over such
 parameters, as in Agda; a constructor whose indices clash with them needs no arm:
@@ -874,7 +876,7 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 2. **The rest of each library.** Lean: `Init` as a whole;
    `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
    (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
-   `with` that abstracts the goal in proofs, instance arguments. Isabelle: Isar with `have` steps,
+   `with … | inspect`, instance arguments. Isabelle: Isar with `have` steps,
    `⟹` premises, type classes, more of Main. Metamath: set.mm as a whole in CI.
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
    guarded corecursion that is not a state machine.
