@@ -25,10 +25,35 @@ local fn library_room(th: String) -> String = match th {
 
 // Where output goes: the library room (whose own prefix is dropped from
 // names, so Rocq's `Corelib.Init.Peano.plus_n_O` stays that), and the
-// names a binder must not shadow.
-type Out = { lib: String, reserved: Set[String] }
+// names a binder must not shadow, and the names that would mangle to the
+// same identifier as an earlier one (`GetElem?` and `GetElem!`), with the
+// primed identifier each gets instead.
+type Out = { lib: String, reserved: Set[String], renamed: Map[String, String] }
 
-local fn cname(o: Out, raw: String) -> String = mangle(string.strip_prefix(raw, o.lib + ".") ?? raw)
+local fn cname(o: Out, raw: String) -> String = match map.get(o.renamed, raw) {
+  some(n) => n,
+  none => mangle(string.strip_prefix(raw, o.lib + ".") ?? raw),
+}
+
+// Names whose identifiers clash with an earlier name's, primed apart.
+fn clashes(lib: String, raws: List[String]) -> Map[String, String] = {
+  var owner: Map[String, String] = [:]
+  var out: Map[String, String] = [:]
+  for raw in raws {
+    var m = mangle(string.strip_prefix(raw, lib + ".") ?? raw)
+    var moved = false
+    while (match map.get(owner, m) {
+      some(r) => r != raw,
+      none => false,
+    }) {
+      m = m + "'"
+      moved = true
+    }
+    map.insert(owner, m, raw)
+    if moved then map.insert(out, raw, m) else ()
+  }
+  out
+}
 
 // ── Names ───────────────────────────────────────────────────────────
 
@@ -273,6 +298,9 @@ local fn structure_of(c: String) -> String = {
   list.join([ty] + levels, "@")
 }
 
+// The Lean operations Arlk computes on literals, as Lean's kernel does.
+let LEAN_COMPUTES = [("Nat.add", "add"), ("Nat.sub", "sub"), ("Nat.mul", "mul"), ("Nat.div", "div"), ("Nat.mod", "mod"), ("Nat.gcd", "gcd"), ("Nat.pow", "pow"), ("Nat.shiftLeft", "shiftLeft"), ("Nat.shiftRight", "shiftRight"), ("Nat.beq", "beq"), ("Nat.ble", "ble")]
+
 fn absorb(src: String) -> String! = {
   let root = json.parse(src)!
   let th = match value.field(root, "theory") {
@@ -283,9 +311,10 @@ fn absorb(src: String) -> String! = {
   let lib = library_room(th)
   let decls = arr_of(get(root, "decls")!)!
   let named = decls |> list.filter((d) => (str_of(get(d, "kind") ?? value.null()) ?? "") != "rules")
-  let bare = Out { lib: lib, reserved: set.new() }
-  let names = named |> list.map((d) => cname(bare, str_of(get(d, "name")!)!))!
-  let o = Out { lib: lib, reserved: set.from_list(names) }
+  let raws = named |> list.map((d) => str_of(get(d, "name")!)!)!
+  let bare = Out { lib: lib, reserved: set.new(), renamed: clashes(lib, raws) }
+  let names = raws |> list.map((r) => cname(bare, r))
+  let o = Out { lib: lib, reserved: set.from_list(names), renamed: bare.renamed }
   let targets = match value.field(root, "targets") {
     ok(ts) => arr_of(ts)! |> list.map((t) => cname(o, str_of(t)!))!,
     err(_) => [cname(o, str_of(get(root, "target")!)!)],
@@ -297,6 +326,9 @@ fn absorb(src: String) -> String! = {
   var seen_zero = false
   var seen_succ = false
   var numerals = false
+  var seen_true = false
+  var seen_false = false
+  var computes_due: List[(String, String)] = []
   for d in decls {
     list.push(body, decl(o, d)!)
     let dname = str_of(get(d, "name") ?? value.null()) ?? ""
@@ -308,6 +340,31 @@ fn absorb(src: String) -> String! = {
     if th != "rocq" and seen_zero and seen_succ and not numerals then {
       list.push(body, "numerals Nat.zero, Nat.succ")
       numerals = true
+    } else ()
+    // Lean's kernel computes these on literals (its Nat extension); Arlk
+    // does the same once they are declared, after checking them on small
+    // literals. A test answers with Bool.true or Bool.false, so it waits
+    // for both.
+    if th != "rocq" then {
+      if dname == "Bool.true" then {
+        seen_true = true
+      } else if dname == "Bool.false" then {
+        seen_false = true
+      } else ()
+      match list.find(LEAN_COMPUTES, ((n, _)) => n == dname) {
+        some(c) => list.push(computes_due, c),
+        none => (),
+      }
+      if numerals then {
+        var waiting: List[(String, String)] = []
+        for (n, op) in computes_due {
+          if op == "beq" or op == "ble" then {
+            if seen_true and seen_false then list.push(body, "numerals Nat.zero computes { ${op}: ${cname(o, n)}, true: ${cname(o, "Bool.true")}, false: ${cname(o, "Bool.false")} }")
+            else list.push(waiting, (n, op))
+          } else list.push(body, "numerals Nat.zero computes { ${op}: ${cname(o, n)} }")
+        }
+        computes_due = waiting
+      } else ()
     } else ()
     if th != "rocq" then {
       match projection(d) {
@@ -356,8 +413,8 @@ test "binders drop hygiene and avoid capture" {
 }
 
 test "levels and numerals" {
-  assert_eq(level(Out { lib: "Init", reserved: set.new() }, 2), "core.l2")
-  assert_eq(level(Out { lib: "Init", reserved: set.new() }, 11), "core.ls(core.ls(core.l9))")
+  assert_eq(level(Out { lib: "Init", reserved: set.new(), renamed: [:] }, 2), "core.l2")
+  assert_eq(level(Out { lib: "Init", reserved: set.new(), renamed: [:] }, 11), "core.ls(core.ls(core.l9))")
   assert_eq(numeral(2), "Nat.succ(Nat.succ(Nat.zero))")
   assert(string.starts_with(numeral(10000), "Nat.add(Nat.mul(Nat.succ(Nat.succ(Nat.zero)), Nat.add(Nat.mul("))
 }
@@ -369,4 +426,11 @@ test "numerals: negative ones are rejected, the bounds hold" {
   assert(match absorb(doc("0")) { ok(t) => string.contains(t, "= \n  Nat.zero") or string.contains(t, "Nat.zero"), err(_) => false })
   assert(match absorb(doc("1")) { ok(t) => string.contains(t, "Nat.succ(Nat.zero)"), err(_) => false })
   assert(match absorb(doc("4096")) { ok(_) => true, err(_) => false })
+}
+
+test "names that mangle alike are primed apart" {
+  let m = clashes("Init", ["GetElem?.getElem?", "GetElem!.getElem!", "GetElem?.getElem?", "Nat.add"])
+  assert_eq(map.get(m, "GetElem!.getElem!"), some("GetElem_.getElem_'"))
+  assert_eq(map.get(m, "GetElem?.getElem?"), none)
+  assert_eq(map.get(m, "Nat.add"), none)
 }

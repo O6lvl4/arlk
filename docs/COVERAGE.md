@@ -31,6 +31,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
 | Coinductive types of record shape (`codata`: streams, infinite trees), corecursion, coinduction by bisimulation | native, defined from paths (adds no trust); coinduction from `funext` | `codata.almd`, `examples/std/stream.arlk` |
 | Numerals (`numerals Nat.zero, Nat.succ`: `1000000` as one constant unfolded lazily) | native, abbreviations (adds no trust) | `kernel.numeral_step` |
+| Arithmetic on literals (`numerals Nat.zero computes { add: Nat.add, ... }`), as Lean's kernel accelerates `Nat` | native, declared assumption checked on small literals; absorbed for Lean's `Nat` operations | `kernel.computed` |
 | Coinductive types with several constructors (colists), guarded corecursion by copatterns, setoid rewriting | missing | |
 
 ## Lean 4
@@ -43,8 +44,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Nested and mutual inductives | native; absorbed as Lean's kernel declares them (symbols and rules) |
 | Well-founded recursion (`termination_by`) | native (`decreasing x by W`); absorbed as the kernel terms Lean compiles it to |
 | Universe polymorphism | native; absorbed constants are instantiated per use |
-| `Init.Data.Nat.Lemmas` | 1564 of 1573 declarations check; two roots run out of budget |
-| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | 2221 of 2236 declarations check; four roots run out of budget; 119 theorems with string literals not exported yet |
+| `Init.Data.Nat.Lemmas` | 1572 of 1573 declarations check; one theorem runs out of budget |
+| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); 2612 of 2617 declarations check, two roots run out of budget |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 
 ## Rocq

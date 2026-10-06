@@ -86,6 +86,7 @@ irrelevant T  where x: A               values of T are all equal (definitional p
 type T(params) = | c(x: A) ...         an inductive type (see below); `type P = { x: A }` a record
 codata T(params) = { x: A, r: T(...) }  a coinductive type: infinite values, built by T.corec
 numerals zero, succ                    write n for succ(...succ(zero)) (n times); 1000000 costs no memory
+numerals zero computes { add: f, ... } compute f on two literals instead of unfolding it (an assumption)
 view V from S { sym = t, ... }         read room S here: each symbol of S as a term of this room
 translate V name                       carry name (from a room built on S) here along V, checked again
 view V from S via v1, v2               compose two views (S read in R by v1, R read here by v2), checked
@@ -210,6 +211,10 @@ As in Almide, `p.x` reads a field and `Point { x: a, y: b }` builds a value.
 that many times to `Nat.zero`. A literal is a single constant (`Nat.zero#1000000`) that the kernel
 unfolds one `succ` at a time, only as far as a reduction needs, so a big literal is as cheap as a
 small one. Absorbed Lean libraries declare it for `Nat`.
+`numerals Nat.zero computes { add: add, mul: mul, ble: ble, true: B.yes, false: B.no }` goes one step
+further, as Lean's kernel does: `mul(123456, 654321)` is answered by multiplying the numbers. That
+`mul` is multiplication is then an assumption: the declaration is checked on small literals, and
+`axioms` lists every theorem that relies on it.
 
 **Coinductive types.** `codata Stream(A: Type) = { head: A, tail: Stream(A) }` declares infinite
 values whose fields may be the type again (streams, infinite trees with several such fields). It is
@@ -534,8 +539,8 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
-| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1564 of 1573 (two roots run out of budget, in `Nat.Linear`'s reflection proofs) | ~10.5 min |
-| Lean `Init.Data.List.Lemmas` (570 theorems at their lowest universes; `ARLK_FULL=1` in CI) | 2221 of 2236 (`Nat.Linear`'s two roots and two list splitters run out of budget) | ~16 min |
+| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1572 of 1573 (one theorem of `Nat.Linear`'s reflection proofs runs out of budget) | ~5 min |
+| Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | 2612 of 2617 (two roots run out of budget) | ~13 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
@@ -866,7 +871,7 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 
 1. **Kernel hardening.** Confluence and termination checks for user rewrite rules, and checking
    subject reduction instead of trusting a rule's declared variable types.
-2. **The rest of each library.** Lean: string literals in the exporter, then `Init` as a whole;
+2. **The rest of each library.** Lean: `Init` as a whole;
    `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
    (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
    `with` that abstracts the goal in proofs, instance arguments. Isabelle: Isar with `have` steps,
@@ -874,8 +879,8 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
    guarded corecursion that is not a state machine.
 4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used
-   again, almide/almide#3434, fixed upstream and not yet released). Lean `Nat.Lemmas` takes about
-   10 minutes, `List.Lemmas` about 16.
+   again, almide/almide#3434). Lean `Nat.Lemmas` takes about 5 minutes (10.5 before Arlk computed Lean's `Nat` operations on
+   literals), `List.Lemmas` about 13.
 5. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 

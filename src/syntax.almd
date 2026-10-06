@@ -81,6 +81,9 @@ type Decl =
   // `numerals zero, succ`: number literals `n` stand for succ applied n
   // times to zero.
   | DNumerals(String, String)
+  // `numerals zero computes { add: f, ..., true: t, false: e }`: the kernel
+  // computes f on two literals (an assumption that f is that operation).
+  | DComputes(String, List[(String, String)])
 
 // `type Vec[u](A: Type(u)): (n: Nat) -> Type(u) = | nil: ... | cons(...): ...`
 // `params` are fixed across the family, `arity` is the rest of its type
@@ -702,6 +705,26 @@ local fn decl(ts: List[Token], p: Int) -> (Decl, Int)! = {
     },
     "numerals" => {
       let (zero, p1) = ident(ts, p + 1)!
+      guard not is_word(ts, p1, "computes") else {
+        var q = expect(ts, p1 + 1, "{")!
+        var fields: List[(String, String)] = []
+        var going = not is_sym(ts, q, "}")
+        while going {
+          let (op, q1) = ident(ts, q)!
+          let q2 = expect(ts, q1, ":")!
+          let (c, q3) = ident(ts, q2)!
+          list.push(fields, (op, c))
+          if is_sym(ts, q3, ",") then {
+            q = q3 + 1
+            going = not is_sym(ts, q, "}")
+          } else {
+            q = q3
+            going = false
+          }
+        }
+        let q4 = expect(ts, q, "}")!
+        ok((DComputes(zero, fields), q4))
+      }
       let p2 = expect(ts, p1, ",")!
       let (succ, p3) = ident(ts, p2)!
       ok((DNumerals(zero, succ), p3))

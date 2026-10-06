@@ -140,7 +140,14 @@ partial def exportExpr (fvs : Array Expr) (e : Expr) : M Json := do
       let _ ← ensure ``Nat.add []
       let _ ← ensure ``Nat.mul []
     return Json.mkObj [("n", toJson n)]
-  | .lit (.strVal _) => throwError "string literals are not supported yet"
+  | .lit (.strVal str) =>
+    -- A string literal is exported as `String.mk` of its characters,
+    -- `[Char.ofNat c1, ...]`, which is the string it denotes.
+    let char := mkConst ``Char
+    let chars := str.toList.foldr
+      (fun c acc => mkApp3 (mkConst ``List.cons [Level.zero]) char (mkApp (mkConst ``Char.ofNat) (mkRawNatLit c.toNat)) acc)
+      (mkApp (mkConst ``List.nil [Level.zero]) char)
+    exportExpr fvs (mkApp (mkConst ``String.mk) chars)
   | .proj s i x =>
     let t ← whnf (← inferType x)
     let some info := getStructureInfo? (← getEnv) s

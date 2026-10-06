@@ -79,6 +79,9 @@ type Env = {
   // The literal `n` is the constant `zero#n`, which stands for succ
   // applied n times to zero (see `numeral`).
   numerals: Map[String, (String, Term)],
+  // operations computed on literals (`numerals zero computes { add: f }`),
+  // by constant: declared assumptions that f agrees with the operation
+  computes: Map[String, Compute],
   room: String,
   order: List[String],
 }
@@ -111,6 +114,11 @@ type View = {
 // the declaration as listed by `axioms`.
 type StructEta = { ty: String, nparams: Int, projs: List[String], decl: Rule }
 
+// An operation computed on the literals of `zero`: `op` names it (add,
+// sub, mul, div, mod, gcd, pow, shiftLeft, shiftRight, beq, ble); a test
+// (beq, ble) answers with the constants `yes` or `no`.
+type Compute = { zero: String, op: String, yes: String, no: String }
+
 type IndInfo = { params: Int, indices: Int, ctors: List[String], fields: List[String], nested: List[Term] }
 
 // A typing context: innermost binder first.
@@ -131,6 +139,7 @@ fn empty() -> Env = Env {
   structs: [:],
   views: [:],
   numerals: [:],
+  computes: [:],
   room: "main",
   order: [],
 }
@@ -204,6 +213,135 @@ local fn literal_value(env: Env, zero: String, x: Term) -> Int? = match x {
 local fn numeral_step(env: Env, zero: String, n: Int) -> Term = match map.get(env.numerals, zero) {
   some((succ, _)) => if n == 0 then Const(zero, []) else App(Const(succ, []), Const(zero + "#" + int.to_string(n - 1), [])),
   none => Const(zero + "#" + int.to_string(n), []),
+}
+
+// ── Computing on literals ───────────────────────────────────────────
+//
+// `numerals Nat.zero computes { add: Nat.add, ... }` lets the kernel answer
+// Nat.add(m, n) for two literals by adding the numbers, instead of
+// unfolding Nat.add m or n times (Lean's kernel does the same for Nat).
+// It is an assumption: that each constant computes the operation it is
+// declared for. The declaration is checked on small numbers by unfolding
+// (checker, DComputes), and `axioms` lists every use.
+
+let COMPUTE_LIMIT = 4611686018427387904
+
+let COMPUTE_OPS = ["add", "sub", "mul", "div", "mod", "gcd", "pow", "shiftLeft", "shiftRight", "beq", "ble"]
+
+fn is_test_op(op: String) -> Bool = op == "beq" or op == "ble"
+
+local fn gcd_of(a: Int, b: Int) -> Int = {
+  var x = a
+  var y = b
+  while y != 0 {
+    let r = x % y
+    x = y
+    y = r
+  }
+  x
+}
+
+// 2^n, or none past the limit.
+local fn pow_of(a: Int, n: Int) -> Int? = {
+  var acc = 1
+  var i = 0
+  var fits = true
+  while fits and i < n {
+    if a != 0 and acc > COMPUTE_LIMIT / a then {
+      fits = false
+    } else {
+      acc = acc * a
+    }
+    i = i + 1
+  }
+  if fits then some(acc) else none
+}
+
+// What op gives on m and n (a test: 1 for true, 0 for false), or none when
+// the result would pass COMPUTE_LIMIT; it is then left to unfolding.
+fn compute_op(op: String, m: Int, n: Int) -> Int? =
+  if m > COMPUTE_LIMIT or n > COMPUTE_LIMIT then none
+  else if op == "add" then (if m <= COMPUTE_LIMIT - n then some(m + n) else none)
+  else if op == "sub" then some(if m > n then m - n else 0)
+  else if op == "mul" then (if m == 0 or n <= COMPUTE_LIMIT / m then some(m * n) else none)
+  else if op == "div" then some(if n == 0 then 0 else m / n)
+  else if op == "mod" then some(if n == 0 then m else m % n)
+  else if op == "gcd" then some(gcd_of(m, n))
+  else if op == "pow" then pow_of(m, n)
+  else if op == "shiftLeft" then match pow_of(2, n) {
+    some(p) => if m == 0 or p <= COMPUTE_LIMIT / m then some(m * p) else none,
+    none => if m == 0 then some(0) else none,
+  }
+  else if op == "shiftRight" then match pow_of(2, n) {
+    some(p) => some(m / p),
+    none => some(0),
+  }
+  else if op == "beq" then some(if m == n then 1 else 0)
+  else if op == "ble" then some(if m <= n then 1 else 0)
+  else none
+
+// The literal n of the numerals built from zero.
+fn literal(zero: String, n: Int) -> Term = if n == 0 then Const(zero, []) else Const(zero + "#" + int.to_string(n), [])
+
+// t as a number of the numerals built from zero, reducing it as far as its
+// head shows: zero, a literal, or succ of one. None when it is not one.
+local fn number_of(env: Env, ctx: Ctx, zero: String, succ: String, t: Term, mut b: Budget) -> Int? = {
+  var cur = t
+  var acc = 0
+  var going = true
+  var out: Int? = none
+  while going {
+    // A literal is read as it is: reducing it would unfold one succ.
+    let w = if is_literal(env, cur) then cur else reduce(env, ctx, cur, true, b)
+    match w {
+      Const(c, _) => {
+        out = if c == zero then some(acc) else match numeral(env, c) {
+          some((z, n)) => if z == zero then some(acc + n) else none,
+          none => none,
+        }
+        going = false
+      },
+      App(f, x) => match f {
+        Const(s, _) => if s == succ and spend(b) then {
+          acc = acc + 1
+          cur = x
+        } else {
+          going = false
+        },
+        _ => {
+          going = false
+        },
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  out
+}
+
+// c applied to two literals, computed, when c is declared to compute.
+local fn computed(env: Env, ctx: Ctx, c: String, args: List[Term], mut b: Budget) -> Term? = match map.get(env.computes, c) {
+  none => none,
+  some(cp) => match map.get(env.numerals, cp.zero) {
+    none => none,
+    some((succ, _)) => match list.get(args, 0) {
+      none => none,
+      some(x) => match list.get(args, 1) {
+        none => none,
+        some(y) => if list.len(args) != 2 then none else match number_of(env, ctx, cp.zero, succ, x, b) {
+          none => none,
+          some(m) => match number_of(env, ctx, cp.zero, succ, y, b) {
+            none => none,
+            some(n) => match compute_op(cp.op, m, n) {
+              none => none,
+              some(r) => some(if is_test_op(cp.op) then Const(if r == 1 then cp.yes else cp.no, []) else literal(cp.zero, r)),
+            },
+          },
+        },
+      },
+    },
+  },
 }
 
 local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
@@ -370,7 +508,12 @@ local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) ->
             going = false
           },
         },
-        Const(c, ls) => match (if delta then unfold(env, c, ls) else none) {
+        Const(c, ls) => match (if delta and map.contains(env.computes, c) then computed(env, ctx, c, args, b) else none) {
+          // An operation on two literals, computed (Lean's Nat acceleration).
+          some(r) => {
+            cur = r
+          },
+          none => match (if delta then unfold(env, c, ls) else none) {
           some(body) => {
             cur = apply(body, args)
           },
@@ -389,6 +532,7 @@ local fn reduce_loop(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) ->
                 going = false
               },
             },
+          },
           },
         },
         other => {
@@ -548,6 +692,11 @@ local fn struct_params(env: Env, ctx: Ctx, si: StructEta, ty: Term, mut b: Budge
 // Full normal form, for `eval`.
 fn nf(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term =
   if not enter(b) then t
+  // A literal is normal: unfolding it would only spell out its succs.
+  else if is_literal(env, t) then {
+    leave(b)
+    t
+  }
   else {
     let w = whnf(env, ctx, t, b)
     let r = match w {
@@ -565,12 +714,21 @@ fn nf(env: Env, ctx: Ctx, t: Term, mut b: Budget) -> Term =
         for a in args {
           list.push(out, nf(env, ctx, a, b))
         }
-        apply(h, out)
+        // succ of a literal is the next literal.
+        fold_numerals(env, apply(h, out))
       },
     }
     leave(b)
     r
   }
+
+local fn is_literal(env: Env, t: Term) -> Bool = match t {
+  Const(c, _) => match numeral(env, c) {
+    some(_) => true,
+    none => false,
+  },
+  _ => false,
+}
 
 // ── Conversion ──────────────────────────────────────────────────────
 
@@ -591,6 +749,21 @@ fn unfold_head(env: Env, t: Term) -> Term = {
       none => t,
     },
     _ => t,
+  }
+}
+
+// One step of lazy unfolding: t's head computed on literals when it is
+// declared to compute (`numerals zero computes`), otherwise its definition
+// unfolded; then reduced without unfolding further.
+fn step_head(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term = {
+  let (h, args) = spine(t)
+  let r = match h {
+    Const(c, _) => if map.contains(env.computes, c) then computed(env, ctx, c, args, bu) else none,
+    _ => none,
+  }
+  match r {
+    some(v) => whnf_core(env, ctx, v, bu),
+    none => whnf_core(env, ctx, unfold_head(env, t), bu),
   }
 }
 
@@ -817,17 +990,17 @@ local fn unfold_step(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Op
   else match def_height(env, a) {
     some(ha) => match def_height(env, b) {
       some(hb) =>
-        if ha > hb then some((whnf_core(env, ctx, unfold_head(env, a), bu), b))
-        else if hb > ha then some((a, whnf_core(env, ctx, unfold_head(env, b), bu)))
+        if ha > hb then some((step_head(env, ctx, a, bu), b))
+        else if hb > ha then some((a, step_head(env, ctx, b, bu)))
         else {
-          let ua = whnf_core(env, ctx, unfold_head(env, a), bu)
-          let ub = whnf_core(env, ctx, unfold_head(env, b), bu)
+          let ua = step_head(env, ctx, a, bu)
+          let ub = step_head(env, ctx, b, bu)
           some((ua, ub))
         },
-      none => some((whnf_core(env, ctx, unfold_head(env, a), bu), b)),
+      none => some((step_head(env, ctx, a, bu), b)),
     },
     none => match def_height(env, b) {
-      some(_) => some((a, whnf_core(env, ctx, unfold_head(env, b), bu))),
+      some(_) => some((a, step_head(env, ctx, b, bu))),
       none => none,
     },
   }

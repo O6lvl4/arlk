@@ -82,6 +82,7 @@ type Change =
   | AddIrrelevant(Rule)
   | AddStruct(String, StructEta)
   | AddNumerals(String, String, Term)
+  | AddComputes(List[(String, kernel.Compute)])
   | NoChange
 
 local fn declare(env: Env, sig: Sig, kind: String, ty: Term, body: Term?) -> Change! = {
@@ -125,6 +126,11 @@ local fn commit(mut env: Env, c: Change) -> Unit = match c {
   AddIrrelevant(r) => list.push(env.irrelevants, r),
   AddStruct(c, si) => map.insert(env.structs, c, si),
   AddNumerals(z, sc, ty) => map.insert(env.numerals, z, (sc, ty)),
+  AddComputes(cs) => {
+    for (c, cp) in cs {
+      map.insert(env.computes, c, cp)
+    }
+  },
   NoChange => (),
 }
 
@@ -2000,6 +2006,72 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     ok((AddNumerals(z, sc, zty), ["✓ numerals: 0, 1, 2, ... stand for ${z}, ${sc}(${z}), ..."]))
   },
   DMutualDefs(_) => err("mutually recursive definitions are processed by `process`"),
+  DComputes(zero_name, fields) => computes(env, zero_name, fields),
+}
+
+// What an operation answers with: zero's type, or for a test the type of
+// the true and false constants.
+local fn op_result(env: Env, zero_name: String, op: String, zty: Term, yes: String, no: String) -> Term! = {
+  if kernel.is_test_op(op) then {
+    guard yes != "" and no != "" else err("numerals ${zero_name} computes: ${op} answers with a boolean; give `true: T, false: F` in the same declaration")
+    let bty = map.get(env.types, yes) ?? type0()
+    var bu = budget()
+    guard conv(env, [], map.get(env.types, no) ?? type0(), bty, bu) else err("numerals ${zero_name} computes: ${yes} and ${no} must have the same type")
+    ok(bty)
+  } else ok(zty)
+}
+
+// `numerals zero computes { add: f, ... }`: each f must have the type of its
+// operation, and is unfolded on small literals to see that it computes it.
+// That check is evidence, not proof: the declaration is an assumption,
+// listed by `axioms` (docs/TRUST.md).
+local fn computes(env: Env, zero_name: String, fields: List[(String, String)]) -> (Change, List[String])! = {
+  let z = resolve_const(env, zero_name)!
+  let succ = match map.get(env.numerals, z) {
+    some((sc, _)) => sc,
+    none => "",
+  }
+  guard succ != "" else err("numerals ${zero_name} computes: declare its numerals first (`numerals ${zero_name}, SUCC`)")
+  let zty = kernel.numeral_type(env, z)
+  let consts = (name: String) => list.find(fields, ((f, _)) => f == name)
+  let yes = match consts("true") {
+    some((_, c)) => resolve_const(env, c)!,
+    none => "",
+  }
+  let no = match consts("false") {
+    some((_, c)) => resolve_const(env, c)!,
+    none => "",
+  }
+  var bu = budget()
+  var out: List[(String, kernel.Compute)] = []
+  for (op, cname) in fields {
+    if op == "true" or op == "false" then () else {
+      guard list.contains(kernel.COMPUTE_OPS, op) else err("numerals ${zero_name} computes: unknown operation ${op} (one of ${list.join(kernel.COMPUTE_OPS, ", ")}, with `true` and `false` for beq and ble)")
+      let c = resolve_const(env, cname)!
+      guard not map.contains(env.computes, c) else err("numerals ${zero_name} computes: ${c} is already computed")
+      guard list.is_empty(map.get(env.lparams, c) ?? []) else err("numerals ${zero_name} computes: ${c} has universe parameters")
+      let cty = map.get(env.types, c) ?? type0()
+      // A helper, not a let-bound block: a guard in such a block is lifted
+      // into a function that does not return a result (almide/almide#3451).
+      let result = op_result(env, zero_name, op, zty, yes, no)!
+      let want = Pi("_", zty, Pi("_", zty, result))
+      guard conv(env, [], cty, want, bu) else err("numerals ${zero_name} computes: ${op}: ${c} must be a ${show(env, [], want)}, but it is a ${show(env, [], cty)}")
+      // Unfold c on small literals and compare with the operation.
+      for m in [0, 1, 2, 3, 7] {
+        for n in [0, 1, 2, 5] {
+          let r = kernel.compute_op(op, m, n) ?? 0
+          let expected = if kernel.is_test_op(op) then Const(if r == 1 then yes else no, []) else kernel.literal(z, r)
+          var cb = budget()
+          let call = App(App(Const(c, []), kernel.literal(z, m)), kernel.literal(z, n))
+          guard conv(env, [], call, expected, cb) else err("numerals ${zero_name} computes: ${op}: ${c}(${int.to_string(m)}, ${int.to_string(n)}) does not reduce to ${show(env, [], expected)}, so ${c} is not ${op}")
+        }
+      }
+      list.push(out, (c, kernel.Compute { zero: z, op: op, yes: yes, no: no }))
+    }
+  }
+  guard not list.is_empty(out) else err("numerals ${zero_name} computes: no operation given")
+  let names = out |> list.map(((c, cp)) => "${cp.op} (${c})")
+  ok((AddComputes(out), ["✓ numerals ${z} computes ${list.join(names, ", ")}: assumed, checked on small literals"]))
 }
 
 // Surface syntax that uses implicit arguments, inferred universe levels or
@@ -2302,7 +2374,9 @@ local fn report_axioms(env: Env, q: String) -> List[String] = {
     else own_rules |> list.enumerate |> list.map(((i, r)) =>
       (if i == 0 then "  rules:   " else "           ") + "[${r.id}] ${r.text}")
   let lemmas = if list.is_empty(d.lemmas) then [] else ["  through: ${list.join(d.lemmas, ", ")}"]
-  header + syms + types + rules + lemmas
+  let computed = (d.symbols + d.lemmas) |> list.filter((c) => map.contains(env.computes, c))
+  let comp = if list.is_empty(computed) then [] else ["  computed on literals: ${list.join(computed, ", ")} (numerals ... computes)"]
+  header + syms + types + rules + comp + lemmas
 }
 
 // Was c generated by a `type` declaration (its type former, a

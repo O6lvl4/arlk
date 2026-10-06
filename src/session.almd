@@ -36,7 +36,7 @@ import hash
 import self.syntax
 import self.syntax.{Located, Decl}
 import self.kernel
-import self.kernel.{Env, Entry, Rule, Rw, View, IndInfo, StructEta}
+import self.kernel.{Env, Entry, Rule, Rw, View, IndInfo, StructEta, Compute}
 import self.term.{Term, consts}
 import self.pretty
 import self.checker
@@ -50,6 +50,7 @@ type Delta = {
   inductives: List[(String, IndInfo)],
   structs: List[(String, StructEta)],
   numerals: List[(String, (String, Term))],
+  computes: List[(String, Compute)],
   rooms: List[(String, List[String])],
   room: String,
 }
@@ -141,10 +142,10 @@ effect fn units_of(files: List[String]) -> List[Unit_] = {
 // ── What a declaration added ────────────────────────────────────────
 
 // Where the environment stood before a declaration (not a copy of it).
-type Mark = { order: Int, rules: Int, irrelevants: Int, room: String, seen: List[String], views: List[String], inductives: Int, structs: List[String], numerals: List[String] }
+type Mark = { order: Int, rules: Int, irrelevants: Int, room: String, seen: List[String], views: List[String], inductives: Int, structs: List[String], numerals: List[String], computes: List[String] }
 
 local fn mark_of(env: Env) -> Mark =
-  Mark { order: list.len(env.order), rules: list.len(env.rules), irrelevants: list.len(env.irrelevants), room: env.room, seen: map.get(env.rooms, env.room) ?? [], views: map.keys(env.views), inductives: map.len(env.inductives), structs: map.keys(env.structs), numerals: map.keys(env.numerals) }
+  Mark { order: list.len(env.order), rules: list.len(env.rules), irrelevants: list.len(env.irrelevants), room: env.room, seen: map.get(env.rooms, env.room) ?? [], views: map.keys(env.views), inductives: map.len(env.inductives), structs: map.keys(env.structs), numerals: map.keys(env.numerals), computes: map.keys(env.computes) }
 
 // `mut`, though nothing is changed: a plain parameter is copied here, and
 // copying the environment for every declaration made a step quadratic.
@@ -197,6 +198,12 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
   for (k, v) in map.entries(after.numerals) {
     if not list.contains(before.numerals, k) then list.push(numerals, (k, v)) else ()
   }
+  var computes: List[(String, Compute)] = []
+  if map.len(after.computes) != list.len(before.computes) then {
+    for (k, v) in map.entries(after.computes) {
+      if not list.contains(before.computes, k) then list.push(computes, (k, v)) else ()
+    }
+  } else ()
   match d {
     DRoom(name, _) => match map.get(after.rooms, name) {
       some(seen) => list.push(rooms, (name, seen)),
@@ -210,7 +217,7 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
       if not list.contains(before.views, k) then list.push(views, (k, v)) else ()
     }
   } else ()
-  Delta { names: names, rules: rules, irrelevants: irr, views: views, inductives: inductives, structs: structs, numerals: numerals, rooms: rooms, room: after.room }
+  Delta { names: names, rules: rules, irrelevants: irr, views: views, inductives: inductives, structs: structs, numerals: numerals, computes: computes, rooms: rooms, room: after.room }
 }
 
 // Copy a declaration's additions from the environment it was checked in;
@@ -261,6 +268,9 @@ local fn replay(mut env: Env, from: Env, dl: Delta) -> Unit = {
   }
   for (k, v) in dl.numerals {
     map.insert(env.numerals, k, v)
+  }
+  for (k, v) in dl.computes {
+    map.insert(env.computes, k, v)
   }
   for (k, seen) in dl.rooms {
     map.insert(env.rooms, k, seen)

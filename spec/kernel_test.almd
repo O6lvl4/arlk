@@ -1747,3 +1747,73 @@ test "numerals: a false equation, a succ of the wrong type, and a number without
     })
   }
 }
+
+// ── Computing on literals: `numerals zero computes { ... }` ─────────
+
+let COMPUTE = NUMS + """
+type B: Type = | yes | no
+def mul(m: Nat, n: Nat) -> Nat = match m {
+  zero => Nat.zero,
+  succ(k) => add(n, mul(k, n)),
+}
+def ble(m: Nat, n: Nat) -> B = match m {
+  zero => B.yes,
+  succ(k) => match n {
+    zero => B.no,
+    succ(j) => ble(k, j),
+  },
+}
+"""
+
+let COMPUTING = COMPUTE + "numerals Nat.zero computes { add: add, mul: mul, ble: ble, true: B.yes, false: B.no }\n"
+
+test "computes: declared operations answer on big literals at once" {
+  assert_eq(run_wf(COMPUTING + """
+theorem product: Eq(Nat, mul(123456, 654321), 80779853376) = Eq.refl
+theorem order: Eq(B, ble(1000000, 999999), B.no) = Eq.refl
+theorem nested: Eq(Nat, add(mul(1000, 1000), 1), 1000001) = Eq.refl
+theorem symbolic(n: Nat) -> Eq(Nat, add(2, n), Nat.succ(Nat.succ(n))) = Eq.refl
+def size: Nat = 4294967296
+theorem through_defs: Eq(B, ble(Nat.succ(55296), size), B.yes) = Eq.refl
+""")!, none)
+}
+
+test "computes: a wrong operation, a wrong type, a test without booleans and a false equation are rejected" {
+  let cases = [
+    (COMPUTE + "numerals Nat.zero computes { mul: add }\n", "is not mul"),
+    (COMPUTE + "numerals Nat.zero computes { add: pred2 }\n", "must be a"),
+    (COMPUTE + "numerals Nat.zero computes { frob: add }\n", "unknown operation"),
+    (COMPUTE + "numerals Nat.zero computes { ble: ble }\n", "give `true: T, false: F`"),
+    (COMPUTE + "numerals Nat.zero computes { ble: ble, true: B.no, false: B.yes }\n", "is not ble"),
+    (COMPUTING + "theorem wrong: Eq(Nat, mul(1000, 1000), 1000001) = Eq.refl\n", "mismatch"),
+    (COMPUTING + "numerals Nat.zero computes { add: add }\n", "already computed"),
+    ("room nc uses eq, logic, nat\nnumerals Nat.zero computes { add: add }\n", "declare its numerals first"),
+  ]
+  for (src, want) in cases {
+    assert(match run_wf(src)! {
+      some(e) => string.contains(e, want),
+      none => false,
+    })
+  }
+}
+
+test "computes: axioms lists the operations a theorem was computed with" {
+  let std = ["lib/std/eq.arlk", "lib/std/logic.arlk", "lib/std/nat.arlk", "lib/std/wf.arlk"] |> list.map((f) => fs.read_text(f) ?? "")
+  let src = list.join(std, "\n") + "\n" + COMPUTING + "theorem product: Eq(Nat, mul(1000, 1000), 1000000) = Eq.refl\naxioms product\n"
+  let out = match syntax.parse(src) {
+    ok(ds) => checker.check_all(kernel.empty(), ds).output,
+    err(e) => [e],
+  }
+  assert(list.any(out, (l) => string.contains(l, "computed on literals: nm.mul")))
+}
+
+test "computes: eval keeps big literals whole" {
+  let std = ["lib/std/eq.arlk", "lib/std/logic.arlk", "lib/std/nat.arlk"] |> list.map((f) => fs.read_text(f) ?? "")
+  let src = list.join(std, "\n") + "\n" + COMPUTING + "def size: Nat = 4294967296\neval Nat.succ(size)\neval mul(size, 2)\n"
+  let out = match syntax.parse(src) {
+    ok(ds) => checker.check_all(kernel.empty(), ds).output,
+    err(e) => [e],
+  }
+  assert(list.any(out, (l) => string.contains(l, "= 4294967297")))
+  assert(list.any(out, (l) => string.contains(l, "= 8589934592")))
+}

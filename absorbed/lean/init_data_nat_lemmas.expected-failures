@@ -1,9 +1,1 @@
-absorbed/lean/init_data_nat_lemmas.arlk:2703: out of budget: reduction did not finish
-absorbed/lean/init_data_nat_lemmas.arlk:2705: unknown name Nat.Linear.Expr.denote_toPoly_go
-absorbed/lean/init_data_nat_lemmas.arlk:2725: unknown name Nat.Linear.Expr.denote_toPoly
-absorbed/lean/init_data_nat_lemmas.arlk:2743: out of budget: reduction did not finish
-absorbed/lean/init_data_nat_lemmas.arlk:2745: unknown name Nat.Linear.Poly.isNum_._sparseCasesOn_1.else_eq@1@0
-absorbed/lean/init_data_nat_lemmas.arlk:2747: unknown name _private.Init.Data.Nat.Linear.0.Nat.Linear.Poly.isZero.match_1.eq_2@1
-absorbed/lean/init_data_nat_lemmas.arlk:2749: unknown name Nat.Linear.Poly.of_isZero
-absorbed/lean/init_data_nat_lemmas.arlk:2751: unknown name Nat.Linear.ExprCnstr.denote_toNormPoly
-absorbed/lean/init_data_nat_lemmas.arlk:2755: unknown name Nat.Linear.ExprCnstr.eq_true_of_isValid
+absorbed/lean/init_data_nat_lemmas.arlk:2765: out of budget: reduction did not finish

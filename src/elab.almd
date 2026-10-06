@@ -492,17 +492,17 @@ local fn unfold_step(env: Env, mut st: ElabState, ctx: Ctx, x: Term, y: Term) ->
   else match def_height(env, x) {
     some(hx) => match def_height(env, y) {
       some(hy) =>
-        if hx > hy then some((whnf_core(env, ctx, unfold_head(env, x), st.bu), y))
-        else if hy > hx then some((x, whnf_core(env, ctx, unfold_head(env, y), st.bu)))
+        if hx > hy then some((kernel.step_head(env, ctx, x, st.bu), y))
+        else if hy > hx then some((x, kernel.step_head(env, ctx, y, st.bu)))
         else {
-          let ux = whnf_core(env, ctx, unfold_head(env, x), st.bu)
-          let uy = whnf_core(env, ctx, unfold_head(env, y), st.bu)
+          let ux = kernel.step_head(env, ctx, x, st.bu)
+          let uy = kernel.step_head(env, ctx, y, st.bu)
           some((ux, uy))
         },
-      none => some((whnf_core(env, ctx, unfold_head(env, x), st.bu), y)),
+      none => some((kernel.step_head(env, ctx, x, st.bu), y)),
     },
     none => match def_height(env, y) {
-      some(_) => some((x, whnf_core(env, ctx, unfold_head(env, y), st.bu))),
+      some(_) => some((x, kernel.step_head(env, ctx, y, st.bu))),
       none => none,
     },
   }

@@ -98,29 +98,28 @@ else
   record "Rocq Corelib.Init (known baseline)" FAIL "differs from the baseline, see $LOGS/rocq-init.diff"
 fi
 
-# Lean's Init.Data.Nat.Lemmas: 1564 of 1573 declarations check. Exactly
-# the known failures (two roots in Nat.Linear's reflection proofs, out of
-# budget; the rest depend on them) are allowed.
+# Lean's Init.Data.Nat.Lemmas: 1572 of 1573 declarations check. Exactly
+# the known failure (one theorem of Nat.Linear's reflection proofs, out of
+# budget) is allowed.
 log="$LOGS/lean-nat-lemmas.log"
 # About 10 minutes here; a shared CI runner has needed over 40.
 limit 3600 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
 grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/lean-nat-lemmas.failures"
-if diff -u absorbed/lean/init_data_nat_lemmas.expected-failures "$LOGS/lean-nat-lemmas.failures" >"$LOGS/lean-nat-lemmas.diff" && grep -q '^9 failed, 1564 declarations checked' "$log"; then
-  record "Lean Init.Data.Nat.Lemmas (known baseline)" pass "9 known failures, 1564 checked"
+if diff -u absorbed/lean/init_data_nat_lemmas.expected-failures "$LOGS/lean-nat-lemmas.failures" >"$LOGS/lean-nat-lemmas.diff" && grep -q '^1 failed, 1572 declarations checked' "$log"; then
+  record "Lean Init.Data.Nat.Lemmas (known baseline)" pass "1 known failure, 1572 checked"
 else
   record "Lean Init.Data.Nat.Lemmas (known baseline)" FAIL "differs from the baseline, see $LOGS/lean-nat-lemmas.diff"
 fi
 
-# Lean's Init.Data.List.Lemmas (570 theorems at their lowest universes):
-# about 16 minutes here, so only with ARLK_FULL=1. Exactly the known
-# failures (Nat.Linear's two roots and two list splitters out of budget,
-# and what depends on them) are allowed.
+# Lean's Init.Data.List.Lemmas (688 theorems at their lowest universes):
+# about 13 minutes here, so only with ARLK_FULL=1. Exactly the known
+# failures (two roots out of budget, and what depends on them) are allowed.
 if [ "${ARLK_FULL:-}" = 1 ]; then
   log="$LOGS/lean-list-lemmas.log"
   limit 7200 ./arlk check lib/core.arlk absorbed/lean/init_data_list_lemmas.arlk --keep-going >"$log" 2>&1
   grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/lean-list-lemmas.failures"
-  if diff -u absorbed/lean/init_data_list_lemmas.expected-failures "$LOGS/lean-list-lemmas.failures" >"$LOGS/lean-list-lemmas.diff" && grep -q '^15 failed, 2221 declarations checked' "$log"; then
-    record "Lean Init.Data.List.Lemmas (known baseline)" pass "15 known failures, 2221 checked"
+  if diff -u absorbed/lean/init_data_list_lemmas.expected-failures "$LOGS/lean-list-lemmas.failures" >"$LOGS/lean-list-lemmas.diff" && grep -q '^5 failed, 2612 declarations checked' "$log"; then
+    record "Lean Init.Data.List.Lemmas (known baseline)" pass "5 known failures, 2612 checked"
   else
     record "Lean Init.Data.List.Lemmas (known baseline)" FAIL "differs from the baseline, see $LOGS/lean-list-lemmas.diff"
   fi
