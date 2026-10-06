@@ -782,16 +782,26 @@ def vhead_or[u, A: Type(u)](d: A, n: Nat, xs: Vec(A, n)) -> A = match xs {
   assert_eq(run(src), none)
 }
 
-test "an index that is not a parameter needs unification, which is refused" {
-  let src = NATS + """
+test "an index that is a constructor pattern is unified by cases; any other term is refused" {
+  let vec = NATS + """
 type Vec[u](A: Type(u)): (n: Nat) -> Type(u) =
   | vnil: Vec(A, Nat.zero)
   | vcons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
+"""
+  assert_eq(run(vec + """
 def vhead[u, A: Type(u)](n: Nat, xs: Vec(A, Nat.succ(n))) -> A = match xs {
   vcons(m, x, rest) => x,
 }
-"""
-  assert(rejects_with(src, "indices must be distinct parameters"))
+"""), none)
+  assert(rejects_with(vec + """
+def double(n: Nat) -> Nat = match n {
+  zero => Nat.zero,
+  succ(k) => Nat.succ(Nat.succ(double(k))),
+}
+def vhead[u, A: Type(u)](n: Nat, xs: Vec(A, double(n))) -> A = match xs {
+  vcons(m, x, rest) => x,
+}
+""", "a constructor applied to such parameters"))
 }
 
 // ── Proof search (#14) ──────────────────────────────────────────────
@@ -1605,4 +1615,54 @@ test "quotients: a function that does not respect the relation cannot be lifted,
     some(e) => string.contains(e, "mismatch"),
     none => false,
   })
+}
+
+// ── Index patterns: unification by cases, absurd arms left out ─────
+
+let IXP = """
+room ixp uses eq, logic, nat
+type Lte: (m: Nat, n: Nat) -> Sort(0) =
+  | z_le(n: Nat): Lte(Nat.zero, n)
+  | s_le(m: Nat, n: Nat, h: Lte(m, n)): Lte(Nat.succ(m), Nat.succ(n))
+type Vec(A: Type): (n: Nat) -> Type =
+  | nil: Vec(A, Nat.zero)
+  | cons(n: Nat, x: A, xs: Vec(A, n)): Vec(A, Nat.succ(n))
+"""
+
+test "a match whose indices are constructor patterns leaves out the clashing constructors" {
+  assert_eq(run_wf(IXP + "\n" + """
+theorem le_pred(m: Nat, n: Nat, h: Lte(Nat.succ(m), Nat.succ(n))) -> Lte(m, n) = match h {
+  s_le(a, b, p) => p,
+}
+theorem not_succ_le_zero(m: Nat, h: Lte(Nat.succ(m), Nat.zero)) -> False = match h {
+}
+def tail(A: Type, n: Nat, v: Vec(A, Nat.succ(n))) -> Vec(A, n) = match v {
+  cons(_, x, xs) => xs,
+}
+def head(A: Type, n: Nat, v: Vec(A, Nat.succ(n))) -> A = match v {
+  cons(k, x, xs) => x,
+}
+theorem head_computes: Eq(Nat, head(Nat, Nat.zero, Vec.cons(Nat.zero, Nat.succ(Nat.zero), Vec.nil)), Nat.succ(Nat.zero)) = Eq.refl
+theorem not_succ_le_self(n: Nat, h: Lte(Nat.succ(n), n)) -> False = match n {
+  zero => match h {
+  },
+  succ(k) => not_succ_le_self(k, le_pred(Nat.succ(k), k, h)),
+}
+""")!, none)
+}
+
+test "index patterns: an impossible arm, a wrong body, non-linear and variable-against-constructor indices are rejected" {
+  let cases = [
+    ("theorem t(m: Nat, h: Lte(Nat.succ(m), Nat.zero)) -> False = match h {\n  z_le(n) => h,\n}\n", "is impossible"),
+    ("theorem t(m: Nat, n: Nat, h: Lte(Nat.succ(m), Nat.succ(n))) -> Lte(Nat.succ(m), n) = match h {\n  s_le(a, b, p) => p,\n}\n", "mismatch"),
+    ("theorem t(m: Nat, h: Lte(Nat.succ(m), Nat.succ(m))) -> Lte(m, m) = match h {\n  s_le(a, b, p) => p,\n}\n", "non-linear"),
+    ("theorem t(m: Nat, n: Nat, h: Lte(m, Nat.succ(n))) -> Lte(m, Nat.succ(n)) = match h {\n  s_le(a, b, p) => h,\n}\n", "cannot be unified by cases"),
+    ("theorem t(m: Nat, n: Nat, h: Lte(Nat.succ(m), Nat.succ(n))) -> Lte(m, n) = match h {\n}\n", "no arm for"),
+  ]
+  for (src, want) in cases {
+    assert(match run_wf(IXP + "\n" + src)! {
+      some(e) => string.contains(e, want),
+      none => false,
+    })
+  }
 }

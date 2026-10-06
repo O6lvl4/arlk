@@ -23,6 +23,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Structure η for absorbed structures (`structure S = S.mk(...)`) | absorbed (Lean), declared assumption | `kernel.struct_expand` |
 | Rewrite rules (λΠ modulo rewriting) | native, assumptions listed by `axioms` | `kernel.rewrite` |
 | Structural recursion by `match` (nested patterns, inner matches, matches on a call's value) | native | `patterns.almd` |
+| Dependent pattern matching on indexed families: constructor patterns in indices (unification by cases), impossible arms left out, `match h { }` | native, compiled to recursors (adds no trust) | `patterns.invert` |
 | Well-founded recursion (`decreasing x by W`), `fix` and its unfolding law | native, from `Acc` (adds no trust) | `checker.add_wf_def`, `lib/std/wf.arlk` |
 | Rewriting tactic (`by simp`, `by induction x simp`) | native, produces checked terms | `simp.almd` |
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
@@ -58,7 +59,9 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 |---|---|
 | `data` with parameters and indices, pattern matching by clauses, implicit arguments, mixfix operators | absorbed from source (`arlk absorb-agda`), and native |
 | Dependent pattern matching on equality (`sym refl = refl`) | absorbed (index refinement in `match`) |
-| Absurd patterns, `with`, records, instance arguments, sized types, cubical features, `--without-K` | missing |
+| Absurd patterns `()` (also in a later argument), dependent matching on `≤`-like families | absorbed (impossible arms left out, checked by Arlk's match) |
+| `with`, records, instance arguments, sized types, cubical features, `--without-K` | missing |
+| `absorbed/agda/Order.agda` (`≤`, `≤-pred`, `¬s≤z ()`) | 15 of 15 declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Arith.agda` | 27 of 27 declarations check; Agda 2.8.0.2 accepts the source; its `+-comm` proves Arlk's `nat.add_comm` again ([examples/agda_transport.arlk](../examples/agda_transport.arlk)) |
 
 ## Isabelle/HOL
@@ -78,7 +81,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 |---|---|
 | Syntax axioms as constructors, `$p` proofs as terms, `$d` conditions as `Apart` facts | absorbed (`arlk absorb-mm`) |
 | `set.mm` | the propositional part (1818) in CI; up to `unitssre` (14 389) checked; the whole database is absorbed (794 MB of Arlk) and being checked |
-| `iset.mm` | not tried yet |
+| `iset.mm` (intuitionistic) | the whole database: 18 661 declarations check, none fail (absorb 89 s, check 48 min; not in CI) |
 
 ## Between systems
 

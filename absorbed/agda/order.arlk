@@ -1,0 +1,37 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Order (Order.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Order
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type Bot: Type =
+
+type le: ℕ -> ℕ -> Type =
+  | zlen(n: ℕ): le(ℕ.zero, n)
+  | sles(m: ℕ, n: ℕ, x3: le(m, n)): le(ℕ.suc(m), ℕ.suc(n))
+
+def le_pred[m: ℕ, n: ℕ](x3: le(ℕ.suc(m), ℕ.suc(n))) -> le(m, n) = match x3 {
+  sles(x1', x2, p) => p,
+}
+
+def notslez[m: ℕ](x2: le(ℕ.suc(m), ℕ.zero)) -> Bot = match x2 {
+}
+
+def le_refl(n: ℕ) -> le(n, n) = match n {
+  zero => le.zlen(_),
+  suc(n') => le.sles(_, _, le_refl(n')),
+}
+
+def le_step[m: ℕ, n: ℕ](x3: le(m, n)) -> le(m, ℕ.suc(n)) = match x3 {
+  zlen(x1) => le.zlen(_),
+  sles(x1', x2, p) => le.sles(_, _, le_step(p)),
+}
+
+def notsleself(n: ℕ, x2: le(ℕ.suc(n), n)) -> Bot = match n {
+  zero => match x2 {
+  },
+  suc(n') => notsleself(n', le_pred(x2)),
+}

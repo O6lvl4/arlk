@@ -32,6 +32,16 @@
 // when its indices are parameters before it: the motive abstracts them,
 // and a recursive call may pass the field's own index there.
 //
+// Its indices may also be constructor patterns over such parameters
+// (`h: Le(succ(m), succ(n))`, Agda's unification by cases). The motive
+// inverts them (small inversion): by cases on each index, it is the
+// definition's type where the pattern's constructors are, with the
+// pattern's parameters taken from the constructor's fields, and `R -> R`
+// anywhere else. A constructor whose indices clash with the patterns gets
+// the identity as its arm, so its arm is left out (Agda's absurd pattern;
+// `match h { }` when every constructor clashes). Inner matches on a later
+// parameter of an indexed family work the same way.
+//
 // The result still has holes (`_`) for binder types; the elaborator fills
 // them from the recursor's type, and the kernel checks the outcome, so
 // nothing here is trusted.
@@ -44,7 +54,9 @@ import self.syntax.{Raw, Arm, Sub}
 // any) each argument belongs to, for matches on it.
 // `kinds`: per argument, which definition of a nested group recursion on
 // it goes to (0 the type's own, k its k-th nested occurrence, -1 none).
-type Ctor = { name: String, nargs: Int, recs: List[Int], heads: List[String], kinds: List[Int] }
+// `idx`: the constructor's indices, over `%p<i>` (the type's parameters)
+// and `%f<j>` (its own fields).
+type Ctor = { name: String, nargs: Int, recs: List[Int], heads: List[String], kinds: List[Int], idx: List[Raw] }
 type Target = { rec: String, indices: Int, ctors: List[Ctor] }
 
 type Def = { name: String, implicits: Int, params: List[(String, Raw)], ret: Raw }
@@ -171,24 +183,58 @@ fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) 
     none => RType,
   })
   let idx_args = list.drop(targs, list.len(targs) - t.indices)
+  let before = list.take(pnames, k)
+  let taken0 = pnames + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s)))))
+  // An index is either a distinct parameter before the matched one (the
+  // motive abstracts it) or a pattern: constructors applied to further
+  // parameters (`Le(succ(m), succ(n))`). The motive inverts a pattern by
+  // cases on its own variable: at the pattern's constructors it is the
+  // definition's type, with the pattern's parameters taken from the
+  // constructor's fields; anywhere else it is `R -> R`, so an arm for a
+  // constructor whose indices clash with the pattern is the identity
+  // (Agda's absurd pattern, written by leaving the arm out).
+  let simple = list.all(idx_args, (a) => match a {
+    RName(x) => list.contains(before, x),
+    _ => false,
+  }) and list.len(list.unique(idx_args |> list.map((a) => raw_key(a)))) == list.len(idx_args)
   var index_params: List[String] = []
-  for a in idx_args {
-    list.push(index_params, index_param(a, list.take(pnames, k), index_params, scrut)!)
+  var inverted: List[(String, Raw)] = []
+  var pvars: List[String] = []
+  for (j, a) in list.enumerate(idx_args) {
+    if simple then list.push(index_params, index_param(a, before, index_params, scrut)!)
+    else {
+      let v = fresh("i" + int.to_string(j + 1), taken0 + index_params)
+      list.push(index_params, v)
+      list.push(inverted, (v, a))
+      for x in pattern_vars(a, before, look) {
+        guard not list.contains(pvars, x) else err("match on ${scrut}: ${x} occurs twice in its type's indices (non-linear index patterns are not supported)")
+        list.push(pvars, x)
+      }
+    }
   }
-  let motive = lams(index_params, RLam(scrut, hole(), pis(others, d.ret)))
+  let whole = pis(others, d.ret)
+  let motive = lams(index_params, RLam(scrut, hole(), invert(inverted, whole, whole, before, look, taken0 + index_params)!))
   // Each arm is a row with one column, the matched parameter.
   let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
   let cx = Comp { d: d, k: k, index_params: index_params, vars: [], ihs: [], heads: [], kind: kind, siblings: siblings, fkinds: [], others: [] }
   var minors: List[Raw] = []
   for ci in t.ctors {
     let taken = pnames + other_names + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s)))))
-    let fields = field_names(rows, 0, ci, taken)
+    let named = field_names(rows, 0, ci, taken)
+    // Against index patterns: the constructor's fields that the patterns'
+    // parameters meet take those parameters' names (unless the arm names
+    // them), so the arm reads as written; a clash makes the arm absurd.
+    let (fields, clash) = if list.is_empty(inverted) then (named, false) else unify_indices(idx_args, ci, named, rows, targs, list.len(targs) - t.indices, pvars, look, scrut)!
     var ihs: List[(Int, String)] = []
     for i in ci.recs {
       let v = list.get(fields, i) ?? ""
       list.push(ihs, (i, fresh("ih_" + v, taken + fields + (ihs |> list.map(((_, n)) => n)))))
     }
     let rows2 = specialise(rows, 0, ci, fields, scrut, t)!
+    if clash then {
+      guard list.all(arms, (a) => a.ctor == "_" or ctor_of(t, a.ctor) != some(ci)) else err("the arm for ${ci.name} in the match on ${scrut} is impossible: its indices clash with ${scrut}'s; leave it out")
+      list.push(minors, lams(fields + (ihs |> list.map(((_, n)) => n)), RLam("absurd", hole(), RName("absurd"))))
+    } else {
     guard not list.is_empty(rows2) else err("the match on ${scrut} has no arm for ${ci.name}")
     let built = raw_apply(RName(ci.name), fields |> list.map((f) => RName(f)))
     let others2 = others |> list.map(((x, ty)) => (x, if t.indices == 0 then replace(ty, scrut, built) else ty))
@@ -200,9 +246,161 @@ fn compile_in(d: Def, scrut: String, arms: List[Arm], t: Target, look: (String) 
     let ret = if t.indices == 0 then replace(d.ret, scrut, raw_apply(RName(ci.name), fields |> list.map((f) => RName(f)))) else d.ret
     let body = matrix(cx2, fields, rows2, look, ret)!
     list.push(minors, lams(fields + (ihs |> list.map(((_, n)) => n)) + other_names, body))
+    }
   }
-  let call = raw_apply(RName(t.rec), [motive] + minors + (index_params |> list.map((x) => RName(x))) + [RName(scrut)])
+  let call = raw_apply(RName(t.rec), [motive] + minors + idx_args + [RName(scrut)])
   ok(raw_apply(call, other_names |> list.map((x) => RName(x))))
+}
+
+// ── Index patterns ──────────────────────────────────────────────────
+
+local fn raw_key(r: Raw) -> String = match r {
+  RName(x) => x,
+  RApp(f, a) => raw_key(f) + "(" + raw_key(a) + ")",
+  RExplicit(x, _) => x,
+  RInst(x, _) => x,
+  _ => "?",
+}
+
+local fn raw_head_name(r: Raw) -> String = {
+  let (h, _) = raw_spine(r)
+  match h {
+    RName(x) => x,
+    RExplicit(x, _) => x,
+    RInst(x, _) => x,
+    _ => "",
+  }
+}
+
+// The constructor a pattern's head names, with the type it builds.
+local fn pattern_ctor(r: Raw, look: (String) -> Target?) -> (Target, Ctor)? = {
+  let name = raw_head_name(r)
+  if name == "" then none else match look("#" + name) {
+    some(t) => match ctor_of(t, name) {
+      some(c) => some((t, c)),
+      none => match list.find(t.ctors, (c) => c.name == name) {
+        some(c) => some((t, c)),
+        none => none,
+      },
+    },
+    none => none,
+  }
+}
+
+// The parameters an index pattern binds.
+local fn pattern_vars(r: Raw, before: List[String], look: (String) -> Target?) -> List[String] = match pattern_ctor(r, look) {
+  some(_) => {
+    let (_, args) = raw_spine(r)
+    args |> list.flat_map((a) => pattern_vars(a, before, look))
+  },
+  none => match r {
+    RName(x) => if list.contains(before, x) then [x] else [],
+    _ => [],
+  },
+}
+
+// The motive's body under index patterns: `pats` pairs each pattern with
+// the variable the motive binds for it; `whole` is the definition's type
+// after the matched parameter, `r` that type with the parameters solved so
+// far.
+local fn invert(pats: List[(String, Raw)], r: Raw, whole: Raw, before: List[String], look: (String) -> Target?, taken: List[String]) -> Raw! = match pats {
+  [] => ok(r),
+  [(v, a), ..rest] => match pattern_ctor(a, look) {
+    some((ty, cj)) => {
+      guard ty.indices == 0 else err("an index pattern's constructor ${cj.name} belongs to an indexed family, which is not supported")
+      let (_, args) = raw_spine(a)
+      guard list.len(args) == cj.nargs else err("${cj.name} in an index pattern takes ${int.to_string(cj.nargs)} arguments")
+      var minors: List[Raw] = []
+      for c in ty.ctors {
+        var fs: List[String] = []
+        for _ in list.range(0, c.nargs) {
+          list.push(fs, fresh("v" + int.to_string(list.len(fs) + 1), taken + fs))
+        }
+        var ihs: List[String] = []
+        for _ in c.recs {
+          list.push(ihs, fresh("w", taken + fs + ihs))
+        }
+        let taken2 = taken + fs + ihs
+        // Breadth first: every index's outermost constructor is looked at
+        // before any argument, so a clash anywhere at that depth makes
+        // the type `R -> R` without waiting on a deeper variable.
+        let body = if c.name == cj.name then invert(rest + list.zip(fs, args), r, whole, before, look, taken2)! else RPi("_", whole, whole)
+        list.push(minors, lams(fs + ihs, body))
+      }
+      let motive = RLam("_", hole(), RApp(RSort, RName("_")))
+      ok(raw_apply(RName(ty.rec), [motive] + minors + [RName(v)]))
+    },
+    none => match a {
+      RName(x) => if list.contains(before, x) then
+        invert(rest |> list.map(((w, p)) => (w, replace(p, x, RName(v)))), replace(r, x, RName(v)), whole, before, look, taken)
+        else err("index pattern ${x}: write a parameter before the matched one, or a constructor"),
+      _ => err("an index must be a parameter before the matched one or a constructor applied to such parameters"),
+    },
+  },
+}
+
+// A constructor against the index patterns: its fields (renamed after the
+// parameters they meet, where the arm does not name them) and whether its
+// indices clash with the patterns.
+local fn unify_indices(idx_args: List[Raw], ci: Ctor, named: List[String], rows: List[(List[Sub], Raw)], targs: List[Raw], np: Int, pvars: List[String], look: (String) -> Target?, scrut: String) -> (List[String], Bool)! = {
+  var cidx: List[Raw] = []
+  for c in ci.idx {
+    var r = c
+    for (i, a) in list.enumerate(list.take(targs, np)) {
+      r = replace(r, "%p" + int.to_string(i), a)
+    }
+    for (j, f) in list.enumerate(named) {
+      r = replace(r, "%f" + int.to_string(j), RName("%f" + int.to_string(j)))
+    }
+    list.push(cidx, r)
+  }
+  var renames: List[(Int, String)] = []
+  var clash = false
+  var problem = ""
+  var queue: List[(Raw, Raw)] = list.zip(idx_args, cidx)
+  while not list.is_empty(queue) and clash == false and problem == "" {
+    let (a, c) = list.first(queue) ?? (RType, RType)
+    queue = list.drop(queue, 1)
+    match pattern_ctor(a, look) {
+      some((_, ca)) => {
+        let cn = raw_head_name(c)
+        if string.starts_with(cn, "%f") or cn == "" then {
+          problem = "match on ${scrut}: ${ci.name}'s index is a variable where ${scrut}'s is a constructor, so the indices cannot be unified by cases"
+        } else match pattern_ctor(c, look) {
+          some((_, cc)) => if cc.name != ca.name then {
+            clash = true
+          } else {
+            let (_, aargs) = raw_spine(a)
+            let (_, cargs) = raw_spine(c)
+            queue = queue + list.zip(aargs, cargs)
+          },
+          none => {
+            problem = "match on ${scrut}: ${ci.name}'s index ${raw_key(c)} is not a constructor pattern"
+          },
+        }
+      },
+      none => match (a, c) {
+        (RName(x), RName(f)) => if list.contains(pvars, x) and string.starts_with(f, "%f") then {
+          match int.parse(string.drop(f, 2)) {
+            ok(j) => list.push(renames, (j, x)),
+            err(_) => (),
+          }
+        } else (),
+        _ => (),
+      },
+    }
+  }
+  guard problem == "" else err(problem)
+  var fields: List[String] = []
+  for (j, f) in list.enumerate(named) {
+    let auto = string.starts_with(f, "_")
+    let to = match list.find(renames, ((i, _)) => i == j) {
+      some((_, x)) => if auto and not list.contains(fields, x) then x else f,
+      none => f,
+    }
+    list.push(fields, to)
+  }
+  ok((fields, clash))
 }
 
 local fn index_param(a: Raw, before: List[String], seen: List[String], scrut: String) -> String! = {
@@ -346,13 +544,54 @@ local fn split_on(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], co
     some(x) => ok(x),
     none => err("cannot match on ${v}: its type is not an inductive type"),
   }!
-  guard t.indices == 0 else err("an inner match on ${v}, of an indexed family, is not supported yet")
+  // An indexed family: the indices are read from v's type, which is known
+  // when v is a parameter after the matched one (its type refined so far).
+  let vty = match list.find(cx.others, ((x, _)) => x == v) {
+    some((_, ty)) => some(ty),
+    none => none,
+  }
+  guard t.indices == 0 or vty != none else err("an inner match on ${v}, of an indexed family, is supported only on a parameter after the matched one")
+  let (_, vargs) = raw_spine(vty ?? RType)
+  let idx_args = if t.indices == 0 then [] else list.drop(vargs, list.len(vargs) - t.indices)
   let taken = cols + names_in(ret) + (rows |> list.flat_map(((subs, b)) => names_in(b) + (subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars + (cx.ihs |> list.map(((_, n)) => n))
   let gen = cx.others |> list.filter(((x, ty)) => x != v and list.contains(names_in(ty), v))
+  // Index patterns, inverted by the motive as at the top level; any
+  // variable in scope may occur in them.
+  let scope = (cx.d.params |> list.map(((x, _)) => x)) + cx.vars + cols
+  var index_vars: List[String] = []
+  var inverted: List[(String, Raw)] = []
+  var pvars: List[String] = []
+  for (j, a) in list.enumerate(idx_args) {
+    let w = fresh("i" + int.to_string(j + 1), taken + index_vars)
+    list.push(index_vars, w)
+    list.push(inverted, (w, a))
+    for x in pattern_vars(a, scope, look) {
+      guard not list.contains(pvars, x) else err("match on ${v}: ${x} occurs twice in its type's indices (non-linear index patterns are not supported)")
+      list.push(pvars, x)
+    }
+  }
+  let whole = pis(gen, ret)
+  let motive = if t.indices == 0 then RLam(v, hole(), whole)
+    else lams(index_vars, RLam(v, hole(), invert(inverted, whole, whole, scope, look, taken + index_vars)!))
   var minors: List[Raw] = []
   for ci in t.ctors {
-    let fields = field_names(rows, col, ci, taken)
+    let named = field_names(rows, col, ci, taken)
+    let (fields, clash) = if t.indices == 0 then (named, false) else unify_indices(idx_args, ci, named, rows, vargs, list.len(vargs) - t.indices, pvars, look, v)!
     let rows2 = specialise(rows, col, ci, fields, v, t)!
+    if clash then {
+      guard not list.any(rows, ((subs, _)) => match sub_at(subs, col) {
+        SCon(c, _) => match ctor_of(t, c) {
+          some(cj) => cj.name == ci.name,
+          none => false,
+        },
+        SName(_) => false,
+      }) else err("the arm for ${ci.name} in the match on ${v} is impossible: its indices clash with ${v}'s; leave it out")
+      var unused0: List[String] = []
+      for _ in ci.recs {
+        list.push(unused0, fresh("_ih", taken + fields + unused0))
+      }
+      list.push(minors, lams(fields + unused0, RLam("absurd", hole(), RName("absurd"))))
+    } else {
     guard not list.is_empty(rows2) else err("the match on ${v} has no arm for ${ci.name}")
     // Induction hypotheses of an inner split are not recursion on the
     // definition: they are bound and left unused.
@@ -367,17 +606,22 @@ local fn split_on(cx: Comp, cols: List[String], rows: List[(List[Sub], Raw)], co
     let ret2 = replace(ret, v, built)
     let body = matrix(cx2, cols2, rows2, look, ret2)!
     list.push(minors, lams(fields + unused + (gen |> list.map(((x, _)) => x)), body))
+    }
   }
   // The parameters after the matched one whose types mention v are
   // generalised (and passed back in), so the split refines their types.
-  let call = raw_apply(RName(t.rec), [RLam(v, hole(), pis(gen, ret))] + minors + [RName(v)])
+  let call = raw_apply(RName(t.rec), [motive] + minors + idx_args + [RName(v)])
   ok(raw_apply(call, gen |> list.map(((x, _)) => RName(x))))
 }
 
 // An arm's body: itself a match on a variable in scope, or a term whose
 // recursive calls become induction hypotheses.
 local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> Raw! = match body {
-  RMatch(RName(v), arms) => {
+  RMatch(RName(v), arms) => if list.is_empty(arms) then {
+    // `match v { }`: every constructor is impossible. (Tested here, not
+    // by an `[]` pattern nested in the variant: almide/almide#3413.)
+    split_on(cx, [v], [], 0, look, ret)
+  } else {
     let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], a.body))
     matrix(cx, [v], rows, look, ret)
   },

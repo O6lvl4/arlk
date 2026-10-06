@@ -184,8 +184,20 @@ structural on the fields the definition's match takes apart, so `le(m, n)` match
 works, while `even` recursing two constructors deep is refused (it needs course-of-values
 recursion, not there yet). A parameter of an indexed family (`xs: Vec(A, n)`) can be matched when
 its indices are parameters before it: the motive generalises them, and a recursive call passes the
-field's own index (`vmap(f, m, rest)`). Indices that are not variables would need Agda-style
-unification of indices; that is refused with a message for now.
+field's own index (`vmap(f, m, rest)`). Indices may also be constructor patterns over such
+parameters, as in Agda; a constructor whose indices clash with them needs no arm:
+
+```
+def tail(A: Type, n: Nat, v: Vec(A, Nat.succ(n))) -> Vec(A, n) = match v {
+  cons(_, x, xs) => xs,                  // nil is impossible: its index is zero
+}
+theorem not_succ_le_zero(m: Nat, h: Le(Nat.succ(m), Nat.zero)) -> False = match h {
+}
+```
+
+The motive inverts the index patterns by cases (small inversion), so this adds nothing to the
+kernel. A constructor whose index is a variable where the pattern has a constructor, or a variable
+that occurs twice in the patterns, is refused with a message (it would need equations).
 
 **Records.** `type Point = { x: Nat, y: Nat }` is a type with one constructor `Point.mk` and a
 projection per field, defined by a match; a field's type may mention earlier fields

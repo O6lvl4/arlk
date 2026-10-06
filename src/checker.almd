@@ -823,7 +823,7 @@ local fn nested_target(env: Env, q: String, kind: Int) -> patterns.Target! = {
       list.push(heads, result_head(dom) ?? "")
       i = i + 1
     }
-    list.push(ctors, patterns.Ctor { name: c, nargs: list.len(doms), recs: recs, heads: heads, kinds: kinds })
+    list.push(ctors, patterns.Ctor { name: c, nargs: list.len(doms), recs: recs, heads: heads, kinds: kinds, idx: [] })
   }
   ok(patterns.Target { rec: if kind == 0 then q + ".rec" else q + ".rec_" + int.to_string(kind), indices: 0, ctors: ctors })
 }
@@ -2070,7 +2070,16 @@ local fn match_target(env: Env, dom: Raw) -> patterns.Target! = {
 // An inductive type by its name as written (or its full name), as the
 // match compiler needs it.
 local fn target_named(env: Env, name: String) -> patterns.Target? =
-  if string.starts_with(name, "=") then {
+  if string.starts_with(name, "#") then {
+    // `#c`: the type constructor c builds.
+    match resolve_const(env, string.drop(name, 1)) {
+      ok(c) => match result_head(map.get(env.types, c) ?? type0()) {
+        some(t) => if map.contains(env.inductives, t) and list.contains((map.get(env.inductives, t) ?? IndInfo { params: 0, indices: 0, ctors: [], fields: [], nested: [] }).ctors, c) then target_type(env, t) else none,
+        none => none,
+      },
+      err(_) => none,
+    }
+  } else if string.starts_with(name, "=") then {
     // `=f`: the type a call of f returns.
     match resolve_const(env, string.drop(name, 1)) {
       ok(f) => match result_head(map.get(env.types, f) ?? type0()) {
@@ -2103,7 +2112,7 @@ local fn target_type(env: Env, name: String) -> patterns.Target? = {
           list.push(kinds, if h == some(q) and not nested then 0 else -1)
           list.push(heads, h ?? "")
         }
-        list.push(ctors, patterns.Ctor { name: c, nargs: list.len(own), recs: recs, heads: heads, kinds: kinds })
+        list.push(ctors, patterns.Ctor { name: c, nargs: list.len(own), recs: recs, heads: heads, kinds: kinds, idx: ctor_indices(cty, info.params, info.indices) })
       }
       // A nested type is split by `T.cases` (no recursion); recursion goes
       // through a group of functions, one per type (`nested_defs`).
@@ -2118,6 +2127,28 @@ local fn raw_head(r: Raw) -> (Raw, Int) = match r {
     (h, n + 1)
   },
   other => (other, 0),
+}
+
+// A constructor's indices, over `%p<i>` for the type's parameters and
+// `%f<j>` for the constructor's own fields.
+local fn ctor_indices(cty: Term, nparams: Int, nindices: Int) -> List[Raw] = {
+  var names: List[String] = []
+  var t = cty
+  var going = true
+  while going {
+    match t {
+      Pi(_, _, b) => {
+        let i = list.len(names)
+        names = [if i < nparams then "%p" + int.to_string(i) else "%f" + int.to_string(i - nparams)] + names
+        t = b
+      },
+      _ => {
+        going = false
+      },
+    }
+  }
+  let (_, args) = spine(t)
+  list.drop(args, list.len(args) - nindices) |> list.map((a) => term_raw(a, names))
 }
 
 local fn pi_domains(t: Term) -> List[Term] = match t {

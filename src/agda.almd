@@ -143,7 +143,7 @@ local fn char_name(c: String) -> String = match c {
   "+" => "plus",
   "*" => "times",
   "≡" => "eq",
-  "≤" => "le",
+  "≤" => "le", "⊥" => "Bot", "⊤" => "Top",
   "<" => "lt",
   ">" => "gt",
   "≥" => "ge",
@@ -499,7 +499,7 @@ fn emit_fun(sc: AScope, name: String, ty: AExpr, clauses: List[(List[APat], AExp
     let candidate = if n != "_" then n
       else if imp then "i" + int.to_string(list.len(names) + 1)
       else match list.get(first_pats, ei) {
-        some(PV(v)) => v,
+        some(PV(v)) => if v == ABSURD then "x" + int.to_string(list.len(names) + 1) else v,
         _ => "x" + int.to_string(list.len(names) + 1),
       }
     let unique = if list.contains(names, candidate) then candidate + "'" + int.to_string(list.len(names)) else candidate
@@ -562,8 +562,11 @@ local fn case_tree(sc: AScope, cols: List[String], rows: List[(List[APat], AExpr
     PC(_, _) => true,
     _ => false,
   }), true)
+  // An absurd clause with nothing left to split: the column of its `()`
+  // has no constructor that fits, which Arlk's empty match checks.
+  let absurd_at = list.index_of(ps |> list.map((p) => p == PV(ABSURD)), true)
   match split {
-    none => {
+    none => if absurd_at != none then ok(" match ${list.get(cols, absurd_at ?? 0) ?? ""} {\n${string.drop(indent, 2)}}") else {
       var ren2 = ren
       for (p, c) in list.zip(ps, cols) {
         match p {
@@ -574,7 +577,7 @@ local fn case_tree(sc: AScope, cols: List[String], rows: List[(List[APat], AExpr
         }
       }
       ok(" " + emit(ACx { sc: sc, ren: ren2, bound: [] }, rhs))
-    },
+    }
     some(j) => {
       let col = list.get(cols, j) ?? ""
       let d = match list.get(ps, j) {
@@ -616,15 +619,17 @@ local fn case_tree(sc: AScope, cols: List[String], rows: List[(List[APat], AExpr
           let after = list.drop(qs, j + 1)
           match list.get(qs, j) {
             some(PC(c2, ss)) => if c2 == c.name then list.push(rows2, (before + expand_implicit(c, ss) + after, body, rn)) else (),
-            some(PV(x)) => list.push(rows2, (before + list.repeat(PW, n) + after, body, [(x, col)] + rn)),
+            some(PV(x)) => if x == ABSURD then () else list.push(rows2, (before + list.repeat(PW, n) + after, body, [(x, col)] + rn)),
             _ => list.push(rows2, (before + list.repeat(PW, n) + after, body, rn)),
           }
         }
         let cols2 = list.take(cols, j) + fields + list.drop(cols, j + 1)
-        guard not list.is_empty(rows2) else err("no clause for ${c.name} (absurd patterns are not supported)")
-        let inner = case_tree(sc, cols2, rows2, taken2, indent + "  ")!
-        let args = if n == 0 then "" else "(" + list.join(fields, ", ") + ")"
-        list.push(arms, "${indent}${mangle(c.name)}${args} =>${inner},")
+        // No clause for c: left out, for Arlk to find impossible (or not).
+        if not list.is_empty(rows2) then {
+          let inner = case_tree(sc, cols2, rows2, taken2, indent + "  ")!
+          let args = if n == 0 then "" else "(" + list.join(fields, ", ") + ")"
+          list.push(arms, "${indent}${mangle(c.name)}${args} =>${inner},")
+        } else ()
       }
       ok(" match ${col} {\n" + list.join(arms, "\n") + "\n" + string.drop(indent, 2) + "}")
     },
@@ -645,8 +650,11 @@ local fn expand_implicit(c: ACtor, ss: List[APat]) -> List[APat] = {
   out
 }
 
+let ABSURD = "%absurd"
+
 fn to_pat(sc: AScope, e: AExpr) -> APat! = match e {
   EHole => ok(PW),
+  EVar("%absurd") => ok(PV(ABSURD)),
   EVar(x) => if ctor_of(sc, x) != none then ok(PC(x, [])) else if string.starts_with(x, ".") then ok(PW) else ok(PV(x)),
   EApp(EVar(c), args) => {
     guard ctor_of(sc, c) != none else err("${c} in a pattern is not a constructor")
@@ -724,9 +732,23 @@ fn absorb(src: String, file: String) -> String! = {
           list.push(order, "fun:" + f)
         }
       } else {
-        guard eq >= 0 else err("${file}:${int.to_string(line)}: cannot read this declaration (${head} ...)")
-        let (lhs, _) = parse_expr(sc, list.take(words, eq), 0)!
-        let (rhs, _) = parse_expr(sc, list.drop(words, eq + 1), 0)!
+        // An absurd clause, `f ()`: no right-hand side; `()` names an
+        // argument whose type has no constructor that fits.
+        var lhs_words: List[String] = []
+        var absurd = false
+        for w in (if eq >= 0 then list.take(words, eq) else words) {
+          if w == ")" and list.last(lhs_words) == some("(") then {
+            let _ = list.pop(lhs_words)
+            list.push(lhs_words, ABSURD)
+            absurd = true
+          } else if w == "()" then {
+            list.push(lhs_words, ABSURD)
+            absurd = true
+          } else list.push(lhs_words, w)
+        }
+        guard eq >= 0 or absurd else err("${file}:${int.to_string(line)}: cannot read this declaration (${head} ...)")
+        let (lhs, _) = parse_expr(sc, lhs_words, 0)!
+        let (rhs, _) = if eq >= 0 then parse_expr(sc, list.drop(words, eq + 1), 0)! else (EVar(ABSURD), 0)
         let (f, args) = match lhs {
           EApp(EVar(f), args) => (f, args),
           EVar(f) => (f, []),

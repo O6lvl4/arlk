@@ -679,7 +679,8 @@ fn infer(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, Ter
   RType => ok((type0(), Sort(LSucc(LSucc(LZero))))),
   RSort => err("Sort needs a level: Sort(0) is Prop, Sort(1) is Type"),
   RApp(RSort, l) => {
-    let lv = level_of(sc.lv, l)!
+    // `Sort(_)`: a level left to unification.
+    let lv = if l == RName("_") then new_level(st) else level_of(sc.lv, l)!
     ok((Sort(lv), Sort(LSucc(lv))))
   },
   RApp(RType, l) => {

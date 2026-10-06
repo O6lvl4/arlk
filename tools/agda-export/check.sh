@@ -31,6 +31,10 @@ sed 's/^+-assoc (suc a) b c = cong suc (+-assoc a b c)/+-assoc (suc a) b c = con
 sed -i.bak 's/^module Arith/module Bad/' "$work/Bad.agda"
 (cd "$work" && "$arlk" absorb-agda Bad.agda -o Bad.arlk >/dev/null)
 if "$arlk" check "$work/Bad.arlk" >"$work/bad.log" 2>&1; then echo "FAIL  a wrong Agda proof was accepted"; fails=1; elif grep -q "type mismatch" "$work/bad.log"; then echo "pass  a wrong Agda proof is rejected"; else echo "FAIL  a wrong Agda proof is rejected for another reason"; fails=1; fi
+# An absurd pattern where the case is possible: `≤-pred ()` claims no
+# constructor fits `suc m ≤ suc n`, but s≤s does; the kernel side refuses.
+sed 's/^≤-pred (s≤s p) = p/≤-pred ()/; s/^module Order/module BadOrder/' absorbed/agda/Order.agda >"$work/BadOrder.agda"
+if (cd "$work" && "$arlk" absorb-agda BadOrder.agda -o BadOrder.arlk >/dev/null) && "$arlk" check "$work/BadOrder.arlk" >"$work/badorder.log" 2>&1; then echo "FAIL  a wrong absurd pattern was accepted"; fails=1; elif grep -q "no arm for" "$work/badorder.log"; then echo "pass  a wrong absurd pattern is rejected"; else echo "FAIL  a wrong absurd pattern failed for another reason"; tail -2 "$work/badorder.log"; fails=1; fi
 # The transport: Agda's +-comm proves nat.add_comm, with nothing assumed.
 if "$arlk" check absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk >"$work/tr.log" 2>&1 && grep -q "symbols: (none)" "$work/tr.log"; then echo "pass  transport from Agda, no symbols"; else echo "FAIL  transport from Agda (see $work/tr.log)"; fails=1; fi
 exit $fails
