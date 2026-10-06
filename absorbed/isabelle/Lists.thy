@@ -54,4 +54,24 @@ lemma rev_cong: "xs = ys \<Longrightarrow> rev xs = rev ys"
 lemma length_snoc: "xs = ys @ [a] \<Longrightarrow> length xs = Suc (length ys)"
   by simp
 
+lemma total_rev_rev: "total (rev (rev xs)) = total xs"
+proof -
+  have "rev (rev xs) = xs" by simp
+  then show ?thesis by simp
+qed
+
+lemma itrev_twice: "itrev (itrev xs []) [] = xs"
+proof -
+  have "itrev (itrev xs []) [] = rev (itrev xs [])" by simp
+  also have "... = rev (rev xs)" by simp
+  also have "... = xs" by simp
+  finally show ?thesis .
+qed
+
+lemma double_total: "double (total xs) = total xs + total xs"
+proof -
+  have step: "double n = n + n" for n by (induction n) auto
+  show ?thesis by (simp add: step)
+qed
+
 end

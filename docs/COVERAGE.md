@@ -84,7 +84,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Type inference for a lemma's variables | by unification, as Isabelle |
 | Isar proofs of the shape `proof (induction x) case ... show ?case by simp ... qed`, `arbitrary:` | replayed by Arlk's simp |
 | Equational premises (`xs = ys ⟹ rev xs = rev ys`) | absorbed as hypotheses that simp rewrites with |
-| Isar with intermediate `have` steps, other premises, type classes, locales, the rest of Main | missing |
+| Isar `proof - have ... show ?thesis ... qed`, labelled steps, `have ... for x`, calculational chains (`also have "... = c"`, `finally`) | absorbed: each step a theorem of its own replayed by simp, the statement by simp with the steps |
+| Isar steps inside induction cases, other premises, type classes, locales, the rest of Main | missing |
 | `absorbed/isabelle/Arith.thy`, `absorbed/isabelle/Lists.thy` | all declarations check; Isabelle2025-2 accepts the sources |
 | HOL's inference rules (HOL Light, HOL4, ...) | absorbed from OpenTheory articles into `lib/hol.arlk`'s encoding: the base library, 91 193 declarations |
 

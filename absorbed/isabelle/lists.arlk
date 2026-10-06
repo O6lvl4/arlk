@@ -49,3 +49,27 @@ theorem rev_cong[a: Type](xs: list(a), ys: list(a), h1: Eq(_, xs, ys)) -> Eq(_, 
 
 theorem length_snoc[a': Type](xs: list(a'), ys: list(a'), a: a', h1: Eq(_, xs, append(ys, list.Cons(a, list.nil)))) -> Eq(_, length(xs), nat.Suc(length(ys))) =
   by simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.length_append)
+
+theorem total_rev_rev_step1[a: Type](xs: list(a)) -> Eq(_, rev(rev(xs)), xs) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident)
+
+theorem total_rev_rev(xs: list(nat)) -> Eq(_, total(rev(rev(xs))), total(xs)) =
+  by simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, total_append, total_rev_rev_step1)
+
+theorem itrev_twice_step1[a: Type](xs: list(a)) -> Eq(_, itrev(itrev(xs, list.nil), list.nil), rev(itrev(xs, list.nil))) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, itrev_rev)
+
+theorem itrev_twice_step2[a: Type](xs: list(a)) -> Eq(_, rev(itrev(xs, list.nil)), rev(rev(xs))) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, itrev_rev)
+
+theorem itrev_twice_step3[a: Type](xs: list(a)) -> Eq(_, rev(rev(xs)), xs) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident)
+
+theorem itrev_twice[a: Type](xs: list(a)) -> Eq(_, itrev(itrev(xs, list.nil), list.nil), xs) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, itrev_rev, itrev_twice_step1, itrev_twice_step2, itrev_twice_step3)
+
+theorem double_total_step1(n: nat) -> Eq(_, double(n), plus(n, n)) =
+  by induction n simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc)
+
+theorem double_total(xs: list(nat)) -> Eq(_, double(total(xs)), plus(total(xs), total(xs))) =
+  by simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, double_total_step1)

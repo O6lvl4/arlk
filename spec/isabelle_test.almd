@@ -37,3 +37,17 @@ test "a premise `a = b ⟹` becomes a hypothesis that simp rewrites with" {
     err(e) => assert(string.contains(e, "a premise must be an equation")),
   }
 }
+
+test "Isar steps: each `have` is a theorem, `...` is the previous right-hand side, labels resolve" {
+  let src = "theory I imports Main begin\nlemma c: \"rev (rev (rev xs)) = rev xs\"\nproof -\n  have \"rev (rev (rev xs)) = rev xs\" by simp\n  also have \"... = rev xs\" by simp\n  finally show ?thesis .\nqed\nlemma d: \"rev (rev xs) = xs\"\nproof -\n  have h: \"rev (rev ys) = ys\" for ys by simp\n  show ?thesis by (simp add: h)\nqed\nend\n"
+  match isabelle.absorb(src, "I.thy") {
+    ok(text) => {
+      assert(string.contains(text, "theorem c_step1[a: Type](xs: list(a)) -> Eq(_, rev(rev(rev(xs))), rev(xs)) ="))
+      assert(string.contains(text, "theorem c_step2[a: Type](xs: list(a)) -> Eq(_, rev(xs), rev(xs)) ="))
+      assert(string.contains(text, "c_step1, c_step2)"))
+      assert(string.contains(text, "theorem d_step1[a: Type](ys: list(a)) -> Eq(_, rev(rev(ys)), ys) ="))
+      assert(not string.contains(text, ", h)"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}

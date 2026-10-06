@@ -516,7 +516,10 @@ auto` becomes `by induction xs simp(...)` with the lemmas marked `[simp]` so far
 Isabelle. `arbitrary:` needs nothing more (the variables after the induction variable are
 generalised in its hypothesis), an equational premise (`xs = ys ⟹ ...`) becomes a hypothesis that
 simp rewrites with, and a structured Isar proof (`proof (induction xs) case Nil ...
-next ... qed`) is replayed the same way, from its induction and the lemmas it adds. A method that Arlk's `simp`
+next ... qed`) is replayed the same way, from its induction and the lemmas it adds. In
+`proof - ... qed`, each `have` (labelled or not, with `for x` to generalise) is a theorem of its
+own proved by its method, a chain `also have "... = c"` reads `...` as the previous step's
+right-hand side, and `show ?thesis` is simp with every step. A method that Arlk's `simp`
 cannot replay is a failed check, so a false lemma cannot get through, and nothing of Isabelle is
 trusted. Equality is Arlk's native one (lib/std/eq.arlk), not lib/hol.arlk's encoding: the HOL
 room reads OpenTheory articles (proofs in HOL's own rules), this one reads Isabelle source (proofs
@@ -876,8 +879,8 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 2. **The rest of each library.** Lean: `Init` as a whole;
    `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
    (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
-   `with … | inspect`, instance arguments. Isabelle: Isar with `have` steps,
-   `⟹` premises, type classes, more of Main. Metamath: set.mm as a whole in CI.
+   `with … | inspect`, instance arguments. Isabelle: Isar steps inside induction cases,
+   premises other than equations, type classes, more of Main. Metamath: set.mm as a whole in CI.
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
    guarded corecursion that is not a state machine.
 4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used

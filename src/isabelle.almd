@@ -508,29 +508,17 @@ local fn run(st0: IState, ts: List[ITok], from: Int, file: String) -> IState! = 
       let stale = heads |> list.filter(((m, hs, rs)) => string.starts_with(m, "isabelle.Main.") and (list.contains(hs, name) or list.contains(rs, name))) |> list.map(((m, _, _)) => m)
       simps = simps |> list.filter((n) => not list.contains(stale, n))
     } else if cmd == "lemma" or cmd == "theorem" or cmd == "corollary" then {
-      let th = lemma(bw, body, unnamed, line)!
+      let th0 = lemma(bw, body, unnamed, line)!
       if at(bw, 0) == ":" or (list.first(body) ?? t).quoted then {
         unnamed = unnamed + 1
       } else ()
-      // Only the [simp] lemmas about functions the statement can reach.
-      // A usable lemma's right-hand side may bring more functions in.
-      var reach = reachable(fun_names(th.lhs, sigs) + fun_names(th.rhs, sigs) + (th.prems |> list.flat_map(((a, b)) => fun_names(a, sigs) + fun_names(b, sigs))), calls)
-      var usable: List[String] = []
-      var grew = true
-      while grew {
-        let now = simps |> list.filter((n) => match list.find(heads, ((m, _, _)) => m == n) {
-          some((_, hs, _)) => list.all(hs, (h) => list.contains(reach, h)),
-          none => true,
-        })
-        grew = list.len(now) > list.len(usable)
-        usable = now
-        let more = now |> list.flat_map((n) => match list.find(heads, ((m, _, _)) => m == n) {
-          some((_, _, rs)) => rs,
-          none => [],
-        })
-        reach = reachable(reach + more, calls)
+      // `proof - have ... show ?thesis ... qed`: each step is proved on its
+      // own and rewrites in the steps after it.
+      let (steps, th) = isar_steps(th0, body, line)!
+      for h in steps {
+        list.push(out, emit_theorem(sc, sigs, type_names, h, usable_simps(h, sigs, simps, heads, calls))!)
       }
-      list.push(out, emit_theorem(sc, sigs, type_names, th, usable)!)
+      list.push(out, emit_theorem(sc, sigs, type_names, th, usable_simps(th, sigs, simps, heads, calls))!)
       heads = [(th.name, fun_names(th.lhs, sigs), fun_names(th.rhs, sigs))] + heads
       if list.contains(bw, "simp") and list.index_of(bw, "simp") ?? 99 < (list.index_of(bw, ":") ?? 0) then list.push(simps, th.name) else ()
     } else if cmd == "declare" then {
@@ -616,6 +604,97 @@ local fn ctor_of(ts: List[ITok], self_ty: AExpr) -> ACtor! = {
 }
 
 // `lemma name [simp]: "l = r" by (induction n) auto`
+// Only the [simp] lemmas about functions the statement can reach. A usable
+// lemma's right-hand side may bring more functions in.
+local fn usable_simps(th: IThm, sigs: List[(String, AExpr)], simps: List[String], heads: List[(String, List[String], List[String])], calls: List[(String, List[String])]) -> List[String] = {
+  var reach = reachable(fun_names(th.lhs, sigs) + fun_names(th.rhs, sigs) + (th.prems |> list.flat_map(((a, b)) => fun_names(a, sigs) + fun_names(b, sigs))), calls)
+  var usable: List[String] = []
+  var grew = true
+  while grew {
+    let now = simps |> list.filter((n) => match list.find(heads, ((m, _, _)) => m == n) {
+      some((_, hs, _)) => list.all(hs, (h) => list.contains(reach, h)),
+      none => true,
+    })
+    grew = list.len(now) > list.len(usable)
+    usable = now
+    let more = now |> list.flat_map((n) => match list.find(heads, ((m, _, _)) => m == n) {
+      some((_, _, rs)) => rs,
+      none => [],
+    })
+    reach = reachable(reach + more, calls)
+  }
+  usable
+}
+
+// Words that end an Isar step's proof method.
+let ISAR_STOPS = ["have", "also", "moreover", "finally", "ultimately", "show", "thus", "hence", "then", "qed", "next", "from", "with", "using", "case"]
+
+// The right-hand side of `a = b`, as written: after its first `=` outside
+// brackets.
+local fn rhs_text(text: String) -> String = {
+  let cs = string.chars(text)
+  var depth = 0
+  var at_eq = -1
+  for (k, c) in list.enumerate(cs) {
+    if c == "(" or c == "[" then {
+      depth = depth + 1
+    } else if c == ")" or c == "]" then {
+      depth = depth - 1
+    } else if c == "=" and depth == 0 and at_eq < 0 and (list.get(cs, k + 1) ?? "") != "=" and (list.get(cs, k - 1) ?? "") != "=" then {
+      at_eq = k
+    } else ()
+  }
+  if at_eq < 0 then text else string.trim(list.join(list.drop(cs, at_eq + 1), ""))
+}
+
+// The steps of `proof - ... qed` (Isar without induction): each `have "s"
+// by m` becomes a theorem of its own, proved by m, and the main statement
+// is then proved by simp with every step. `also have "... = c"` reads `...`
+// as the previous step's right-hand side, so a chain a = b, b = c rewrites
+// a to c. Nothing is taken on trust: every step is replayed by simp.
+local fn isar_steps(th: IThm, body: List[ITok], line: Int) -> (List[IThm], IThm)! = {
+  let ws = body |> list.map((x) => x.text)
+  let open_at = list.index_of(ws, "proof") ?? -1
+  if open_at < 0 or at(ws, open_at + 1) != "-" then ok(([], th))
+  else {
+    var steps: List[IThm] = []
+    var labels: List[(String, String)] = []
+    var prev_rhs = ""
+    var k = open_at + 2
+    while k < list.len(body) {
+      if at(ws, k) == "have" then {
+        let label = if at(ws, k + 2) == ":" and not ((list.get(body, k + 1) ?? ITok { text: "", quoted: false, line: line }).quoted) then at(ws, k + 1) else ""
+        let name = th.name + "_step" + int.to_string(list.len(steps) + 1)
+        if label != "" then list.push(labels, (label, name)) else ()
+        var q = k + 1
+        while q < list.len(body) and not ((list.get(body, q) ?? ITok { text: "", quoted: false, line: line }).quoted) {
+          q = q + 1
+        }
+        let stmt = list.get(body, q) ?? ITok { text: "", quoted: true, line: line }
+        let written = string.trim(stmt.text)
+        let text = if string.starts_with(written, "...") then "(" + prev_rhs + ")" + string.drop(written, 3) else written
+        prev_rhs = rhs_text(text)
+        var e = q + 1
+        while e < list.len(body) and not list.contains(ISAR_STOPS, at(ws, e)) {
+          e = e + 1
+        }
+        let toks = [ITok { text: name, quoted: false, line: stmt.line }, ITok { text: ":", quoted: false, line: stmt.line }, ITok { text: text, quoted: true, line: stmt.line }] + list.slice(body, q + 1, e)
+        let step = lemma(toks |> list.map((x) => x.text), toks, 0, stmt.line)!
+        list.push(steps, step)
+        k = e
+      } else {
+        k = k + 1
+      }
+    }
+    let names = steps |> list.map((h) => h.name)
+    let add = th.add |> list.map((a) => match list.find(labels, ((l, _)) => l == a) {
+      some((_, n)) => n,
+      none => a,
+    })
+    ok((steps, { ...th, induct: "", add: list.unique(add + names) }))
+  }
+}
+
 local fn lemma(bw: List[String], body: List[ITok], unnamed: Int, line: Int) -> IThm! = {
   let stmt_at = match list.index_of(body |> list.map((t) => t.quoted), true) {
     some(k) => ok(k),
