@@ -1517,6 +1517,24 @@ test "a declared structure has eta: its recursor computes on a variable" {
   assert(rejects_with(STRUCT_BASE + "\n" + STRUCT_USE, "mismatch"))
 }
 
+// A definition by cases (Lean's casesOn, a matcher) unfolds to the
+// constructor of the projections, which is the value again: eta after the
+// definition is unfolded, under a binder.
+let STRUCT_CASES = """
+def P.cases(C: P -> Type, p: P, m: (x: N, y: N) -> C(P.mk(x, y))) -> C(p) = P.rec(C, m, p)
+def rebuild(p: P) -> P = P.cases((q: P) => P, p, (x: N, y: N) => P.mk(x, y))
+theorem rebuild_id(p: P) -> Eq(P, rebuild(p), p) = Eq.refl
+theorem rebuild_fun: Eq(P -> P, (p: P) => rebuild(p), (p: P) => p) = Eq.refl
+"""
+
+test "structure eta applies after definitions are unfolded" {
+  assert_eq(run(STRUCT_BASE + "\nstructure P = P.mk(P.fst, P.snd)\n" + STRUCT_CASES), none)
+  // Without the structure declaration there is no eta, and swapping the
+  // fields is not the identity.
+  assert(rejects_with(STRUCT_BASE + "\n" + STRUCT_CASES, "mismatch"))
+  assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst, P.snd)\n" + "def swap(p: P) -> P = P.rec((q: P) => P, (x: N, y: N) => P.mk(y, x), p)\ntheorem bad(p: P) -> Eq(P, swap(p), p) = Eq.refl\n", "mismatch"))
+}
+
 test "a structure declaration is checked against its projections" {
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.snd, P.fst)\n", "does not compute to field"))
   assert(rejects_with(STRUCT_BASE + "\nstructure P = P.mk(P.fst)\n", "must build"))

@@ -136,7 +136,8 @@ fi
 # More of Lean's Init, each module whole (every theorem it states and
 # everything they use), each checking without a failure.
 for m in init_simplemmas init_proplemmas init_data_bool init_data_sum_lemmas init_data_option_lemmas \
-         init_data_int_lemmas init_data_int_order init_data_nat_dvd init_data_nat_gcd; do
+         init_data_int_lemmas init_data_int_order init_data_nat_dvd init_data_nat_gcd \
+         init_data_prod init_data_char_lemmas; do
   must_pass "Lean module $m" 1200 ./arlk check lib/core.arlk "absorbed/lean/$m.arlk"
 done
 

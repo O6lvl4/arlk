@@ -824,7 +824,11 @@ local fn conv_whnf(env: Env, ctx: Ctx, wa0: Term, wb0: Term, mut bu: Budget) -> 
           wb = ub
         },
         none => {
-          answer = not bu.exhausted and conv_spines(env, ctx, wa, wb, bu)
+          // Record and structure eta on the unfolded forms too (`conv`
+          // tries them only before unfolding): `S.casesOn(x, mk)` unfolds
+          // to `S.mk(x.1, x.2)`, which is x.
+          answer = not bu.exhausted and (conv_spines(env, ctx, wa, wb, bu)
+            or ((wa != wa0 or wb != wb0) and (record_eta(env, ctx, wa, wb, bu) or record_eta(env, ctx, wb, wa, bu))))
           going = false
         },
       },

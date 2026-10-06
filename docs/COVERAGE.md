@@ -46,8 +46,8 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Universe polymorphism | native; absorbed constants are instantiated per use |
 | `Init.Data.Nat.Lemmas` | 1572 of 1573 declarations check; one theorem runs out of budget |
 | `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); 2612 of 2617 declarations check, two roots run out of budget |
-| `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd` | each module whole (1722 theorems): every declaration checks |
-| `Init.Data.Fin.Lemmas`, `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic`, `Init.Data.Char.Lemmas`, `Init.Data.Prod`, `Init.Core` | mostly: failures from structure eta through `UInt32`/`BitVec`/`Fin`, eta under binders, Lean's nested `Syntax` recursors, and out-of-budget roots |
+| `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas` | each module whole (1762 theorems): every declaration checks |
+| `Init.Data.Fin.Lemmas` (2283 of 2290), `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic`, `Init.Core` (1339 of 1346) | mostly: failures from Lean's nested `Syntax` recursors and out-of-budget roots |
 | `Init.Data.String.Lemmas` | not exported: its proofs project out of `Exists` (a non-structure), which the exporter does not translate yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 
