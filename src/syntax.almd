@@ -947,15 +947,37 @@ local fn def_at(ds: List[Located], i: Int) -> Option[(String, List[String])] = m
 
 // The names a term mentions that it does not bind itself (binders,
 // pattern variables): what may refer to other declarations.
-local fn free_names(r: Raw, bound: List[String]) -> List[String] = match r {
-  RName(x) => if list.contains(bound, x) then [] else [x],
-  RInst(x, _) => if list.contains(bound, x) then [] else [x],
-  RApp(f, a) => free_names(f, bound) + free_names(a, bound),
-  RLam(x, ty, b) => free_names(ty, bound) + free_names(b, [x] + bound),
-  RPi(x, ty, b) => free_names(ty, bound) + free_names(b, [x] + bound),
-  RBracket(b) => free_names(b, bound),
-  RMatch(sc, arms) => free_names(sc, bound) + (arms |> list.flat_map((a) => free_names(a.body, (a.subs |> list.flat_map((t) => sub_vars(t))) + bound))),
-  _ => [],
+local fn free_names(r: Raw, bound: List[String]) -> List[String] = {
+  // Pushed into one list, not joined with `+` at every node: an absorbed
+  // Metamath proof is a term with hundreds of thousands of nodes.
+  var out: List[String] = []
+  collect_free(r, bound, out)
+  out
+}
+
+local fn collect_free(r: Raw, bound: List[String], mut out: List[String]) -> Unit = match r {
+  RName(x) => if list.contains(bound, x) then () else list.push(out, x),
+  RInst(x, _) => if list.contains(bound, x) then () else list.push(out, x),
+  RApp(f, a) => {
+    collect_free(f, bound, out)
+    collect_free(a, bound, out)
+  },
+  RLam(x, ty, b) => {
+    collect_free(ty, bound, out)
+    collect_free(b, [x] + bound, out)
+  },
+  RPi(x, ty, b) => {
+    collect_free(ty, bound, out)
+    collect_free(b, [x] + bound, out)
+  },
+  RBracket(b) => collect_free(b, bound, out),
+  RMatch(sc, arms) => {
+    collect_free(sc, bound, out)
+    for a in arms {
+      collect_free(a.body, (a.subs |> list.flat_map((t) => sub_vars(t))) + bound, out)
+    }
+  },
+  _ => (),
 }
 
 local fn sub_vars(s: Sub) -> List[String] = match s {
