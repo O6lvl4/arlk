@@ -479,10 +479,18 @@ family, `≤-pred`, `¬s≤z ()`, 15) and `Records` (a record with projections, 
 
 `arlk absorb-isabelle` ([src/isabelle.almd](src/isabelle.almd)) reads an Isabelle theory's source,
 in a subset (`datatype` with type variables, `fun`/`primrec`/`definition` by equations,
-`lemma`s stating equations, `[simp]`, `declare`), and writes Arlk types, definitions and theorems.
+`lemma`s stating equations, `[simp]`, `declare`, Main's `nat` and `'a list` with `0`, `Suc`,
+numerals, `+`, `*`, `#`, `@`, `[a, b]`, `rev`, `length`, `map`), and writes Arlk types, definitions
+and theorems; the variables' types are found by unification, as Isabelle does. Main's fragment is
+itself absorbed from Isabelle equations into [lib/isabelle_main.arlk](lib/isabelle_main.arlk)
+(`arlk absorb-isabelle --main`), with the `[simp]` lemmas of Main that proofs rely on, each proved
+by Arlk's simp; a theory's own function of the same name shadows Main's.
 A lemma's proof is its Isabelle proof method replayed by Arlk's own `simp`: `by (induction xs)
 auto` becomes `by induction xs simp(...)` with the lemmas marked `[simp]` so far and those given by
-`simp add:`; every function's equations are used, as in Isabelle. A method that Arlk's `simp`
+`simp add:` (Main's `add.commute` included); every function's equations are used, as in
+Isabelle. `arbitrary:` needs nothing more (the variables after the induction variable are
+generalised in its hypothesis), and a structured Isar proof (`proof (induction xs) case Nil ...
+next ... qed`) is replayed the same way, from its induction and the lemmas it adds. A method that Arlk's `simp`
 cannot replay is a failed check, so a false lemma cannot get through, and nothing of Isabelle is
 trusted. Equality is Arlk's native one (lib/std/eq.arlk), not lib/hol.arlk's encoding: the HOL
 room reads OpenTheory articles (proofs in HOL's own rules), this one reads Isabelle source (proofs
@@ -491,11 +499,15 @@ Isabelle on the theory when it is installed, regenerates the translation, checks
 that a false lemma is rejected.
 
 ```
-$ ./arlk absorb-isabelle absorbed/isabelle/Arith.thy -o absorbed/isabelle/arith.arlk
-$ ./arlk check lib/std/eq.arlk absorbed/isabelle/arith.arlk
-✓ theorem isabelle.Arith.rev_rev: (a: Type, xs: seq(a)) -> eq.Eq[1](seq(a), rev(rev(xs)), xs)
-ok: lib/std/eq.arlk absorbed/isabelle/arith.arlk (29 declarations)
+$ ./arlk absorb-isabelle absorbed/isabelle/Lists.thy -o absorbed/isabelle/lists.arlk
+$ ./arlk check lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk
+✓ theorem isabelle.Lists.total_rev: (xs: isabelle.Main.list(isabelle.Main.nat)) -> eq.Eq[1](isabelle.Main.nat, total(isabelle.Main.rev(isabelle.Main.nat, xs)), total(xs))
+ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 declarations)
 ```
+
+[absorbed/isabelle](absorbed/isabelle) holds `Arith` (its own naturals and sequences) and `Lists`
+(Main's lists and numbers, `itrev` by generalised induction, `total_rev` by an Isar proof with
+`add.commute`); Isabelle2025-2 accepts both, and both check in full.
 
 ### Results
 

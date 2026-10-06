@@ -1,0 +1,27 @@
+// Isabelle absorption: the text it writes.
+import self.isabelle
+
+test "a lemma's proof method becomes simp, after induction if asked" {
+  let src = "theory T imports Main begin\ndatatype n = Z | S n\ndatatype ('a, 'b) pair = P 'a 'b\nfun fst :: \"('a, 'b) pair ⇒ 'a\" where\n  \"fst (P x y) = x\"\nfun d :: \"n ⇒ n\" where\n  \"d Z = Z\"\n| \"d (S m) = S (S (d m))\"\nlemma d_Z [simp]: \"d Z = Z\"\n  by simp\nlemma l: \"d (d m) = d (d m)\"\n  by (induction m) auto\nend\n"
+  match isabelle.absorb(src, "T.thy") {
+    ok(text) => {
+      assert(string.contains(text, "theorem d_Z: Eq(_, d(n.Z), n.Z) =\n  by simp"))
+      assert(string.contains(text, "theorem l(m: n) -> Eq(_, d(d(m)), d(d(m))) =\n  by induction m simp(d_Z)"))
+      assert(string.contains(text, "def fst[a: Type, b: Type](x3: pair(a, b)) -> a = match x3 {"))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}
+
+test "Main's syntax: infix operators, numerals, list literals, and types by unification" {
+  let src = "theory L imports Main begin\nfun total :: \"nat list ⇒ nat\" where\n  \"total [] = 0\"\n| \"total (x # xs) = x + total xs\"\nlemma t: \"total (xs @ [2]) = total xs + 2\" by (induction xs) auto\nlemma r: \"rev [a, b] = [b, a]\" by simp\nend\n"
+  match isabelle.absorb(src, "L.thy") {
+    ok(text) => {
+      assert(string.contains(text, "room isabelle.L uses eq, isabelle.Main"))
+      assert(string.contains(text, "Cons(x, xs) => plus(x, total(xs)),"))
+      assert(string.contains(text, "theorem t(xs: list(nat)) -> Eq(_, total(append(xs, list.Cons(nat.Suc(nat.Suc(nat.zero)), list.nil))), plus(total(xs), nat.Suc(nat.Suc(nat.zero)))) ="))
+      assert(string.contains(text, "theorem r[a': Type](a: a', b: a') -> Eq(_, rev(list.Cons(a, list.Cons(b, list.nil))), list.Cons(b, list.Cons(a, list.nil))) ="))
+    },
+    err(e) => assert_eq(e, ""),
+  }
+}

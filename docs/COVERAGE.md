@@ -74,8 +74,11 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | `datatype`, `fun`/`primrec`/`definition` by equations | absorbed from source (`arlk absorb-isabelle`) |
 | Proof methods `simp`, `auto`, `(induction x)`, `simp add:` | replayed by Arlk's `simp`, so a false lemma cannot pass |
 | `[simp]` sets, `declare` | absorbed |
-| Isar structured proofs, `⟹` premises, type classes, locales, Main's types | missing |
-| `absorbed/isabelle/Arith.thy` | 29 of 29 declarations check; Isabelle2025-2 accepts the source |
+| Main's `nat` and `'a list` (`0`, `Suc`, numerals, `+`, `*`, `#`, `@`, `[a, b]`, `rev`, `length`, `map`) and their `[simp]` lemmas | absorbed into `lib/isabelle_main.arlk` (defined by Isabelle's equations, lemmas proved by Arlk's simp) |
+| Type inference for a lemma's variables | by unification, as Isabelle |
+| Isar proofs of the shape `proof (induction x) case ... show ?case by simp ... qed`, `arbitrary:` | replayed by Arlk's simp |
+| Isar with intermediate `have` steps, `⟹` premises, type classes, locales, the rest of Main | missing |
+| `absorbed/isabelle/Arith.thy`, `absorbed/isabelle/Lists.thy` | all declarations check; Isabelle2025-2 accepts the sources |
 | HOL's inference rules (HOL Light, HOL4, ...) | absorbed from OpenTheory articles into `lib/hol.arlk`'s encoding: the base library, 91 193 declarations |
 
 ## Metamath

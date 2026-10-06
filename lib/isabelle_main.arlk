@@ -1,0 +1,85 @@
+// Main's fragment for theories absorbed from Isabelle, written by
+// `arlk absorb-isabelle --main`: nat and lists with Isabelle's defining
+// equations, and Main's [simp] lemmas that proofs rely on, each proved
+// by Arlk's simp. Nothing here is assumed.
+room isabelle.Main uses eq
+
+type list(a: Type): Type =
+  | nil: list(a)
+  | Cons(x1: a, x2: list(a)): list(a)
+
+type nat: Type =
+  | zero: nat
+  | Suc(x1: nat): nat
+
+def plus(x1: nat, n: nat) -> nat = match x1 {
+  zero => n,
+  Suc(m) => nat.Suc(plus(m, n)),
+}
+
+def times(x1: nat, n: nat) -> nat = match x1 {
+  zero => nat.zero,
+  Suc(m) => plus(n, times(m, n)),
+}
+
+def append[a: Type](x2: list(a), ys: list(a)) -> list(a) = match x2 {
+  nil => ys,
+  Cons(x, xs) => list.Cons(x, append(xs, ys)),
+}
+
+def rev[a: Type](x2: list(a)) -> list(a) = match x2 {
+  nil => list.nil,
+  Cons(x, xs) => append(rev(xs), list.Cons(x, list.nil)),
+}
+
+def length[a: Type](x2: list(a)) -> nat = match x2 {
+  nil => nat.zero,
+  Cons(x, xs) => nat.Suc(length(xs)),
+}
+
+def map[a: Type, b: Type](f: a -> b, x4: list(a)) -> list(b) = match x4 {
+  nil => list.nil,
+  Cons(x, xs) => list.Cons(f(x), map(f, xs)),
+}
+
+theorem add_0_right(m: nat) -> Eq(_, plus(m, nat.zero), m) =
+  by induction m simp
+
+theorem add_Suc_right(m: nat, n: nat) -> Eq(_, plus(m, nat.Suc(n)), nat.Suc(plus(m, n))) =
+  by induction m simp(add_0_right)
+
+theorem add_assoc(a: nat, b: nat, c: nat) -> Eq(_, plus(plus(a, b), c), plus(a, plus(b, c))) =
+  by induction a simp(add_0_right, add_Suc_right)
+
+theorem mult_0_right(m: nat) -> Eq(_, times(m, nat.zero), nat.zero) =
+  by induction m simp(add_0_right, add_Suc_right, add_assoc)
+
+theorem append_Nil2[a: Type](xs: list(a)) -> Eq(_, append(xs, list.nil), xs) =
+  by induction xs simp
+
+theorem append_assoc[a: Type](xs: list(a), ys: list(a), zs: list(a)) -> Eq(_, append(append(xs, ys), zs), append(xs, append(ys, zs))) =
+  by induction xs simp(append_Nil2)
+
+theorem length_append[a: Type](xs: list(a), ys: list(a)) -> Eq(_, length(append(xs, ys)), plus(length(xs), length(ys))) =
+  by induction xs simp(add_0_right, add_Suc_right, add_assoc, append_Nil2, append_assoc)
+
+theorem rev_append[a: Type](xs: list(a), ys: list(a)) -> Eq(_, rev(append(xs, ys)), append(rev(ys), rev(xs))) =
+  by induction xs simp(append_Nil2, append_assoc)
+
+theorem rev_rev_ident[a: Type](xs: list(a)) -> Eq(_, rev(rev(xs)), xs) =
+  by induction xs simp(append_Nil2, append_assoc, rev_append)
+
+theorem map_append[a: Type, b: Type](f: a -> b, xs: list(a), ys: list(a)) -> Eq(_, map(f, append(xs, ys)), append(map(f, xs), map(f, ys))) =
+  by induction xs simp(append_Nil2, append_assoc)
+
+theorem length_map[a: Type, b: Type](f: a -> b, xs: list(a)) -> Eq(_, length(map(f, xs)), length(xs)) =
+  by induction xs simp
+
+theorem length_rev[a: Type](xs: list(a)) -> Eq(_, length(rev(xs)), length(xs)) =
+  by induction xs simp(add_0_right, add_Suc_right, add_assoc, append_Nil2, append_assoc, length_append, rev_append, rev_rev_ident)
+
+theorem rev_map[a: Type, b: Type](f: a -> b, xs: list(a)) -> Eq(_, rev(map(f, xs)), map(f, rev(xs))) =
+  by induction xs simp(append_Nil2, append_assoc, rev_append, rev_rev_ident, map_append)
+
+theorem add_commute(m: nat, n: nat) -> Eq(_, plus(m, n), plus(n, m)) =
+  by induction m simp(add_0_right, add_Suc_right, add_assoc)

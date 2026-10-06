@@ -1,8 +1,9 @@
 // Absorbed from Isabelle by `arlk absorb-isabelle`: theory Arith (Arith.thy).
 // Isabelle is not needed to check it: the types and functions are
 // ordinary Arlk declarations, and each lemma's proof method is replayed
-// by Arlk's `simp`, checked by the kernel.
-room isabelle.Arith uses eq
+// by Arlk's `simp`, checked by the kernel. Main's fragment is
+// lib/isabelle_main.arlk.
+room isabelle.Arith uses eq, isabelle.Main
 
 type num: Type =
   | Z: num
@@ -45,16 +46,16 @@ def len[a: Type](x2: seq(a)) -> num = match x2 {
 }
 
 theorem app_Nil[a: Type](xs: seq(a)) -> Eq(_, app(xs, seq.Nil), xs) =
-  by induction xs simp(add_Z, add_S)
+  by induction xs simp
 
 theorem app_assoc[a: Type](xs: seq(a), ys: seq(a), zs: seq(a)) -> Eq(_, app(app(xs, ys), zs), app(xs, app(ys, zs))) =
-  by induction xs simp(add_Z, add_S, app_Nil)
+  by induction xs simp(app_Nil)
 
 theorem rev_app[a: Type](xs: seq(a), ys: seq(a)) -> Eq(_, rev(app(xs, ys)), app(rev(ys), rev(xs))) =
-  by induction xs simp(add_Z, add_S, app_Nil, app_assoc)
+  by induction xs simp(app_Nil, app_assoc)
 
 theorem rev_rev[a: Type](xs: seq(a)) -> Eq(_, rev(rev(xs)), xs) =
-  by induction xs simp(add_Z, add_S, app_Nil, app_assoc, rev_app)
+  by induction xs simp(app_Nil, app_assoc, rev_app)
 
 theorem len_app[a: Type](xs: seq(a), ys: seq(a)) -> Eq(_, len(app(xs, ys)), add(len(xs), len(ys))) =
-  by induction xs simp(add_Z, add_S, app_Nil, app_assoc, rev_app)
+  by induction xs simp(add_Z, add_S, app_Nil, app_assoc)

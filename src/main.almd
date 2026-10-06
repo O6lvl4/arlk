@@ -36,6 +36,7 @@ let USAGE = """
     arlk absorb-mm DB.mm [--upto LABEL] [-o OUT]
   arlk absorb-agda FILE.agda [-o OUT]
   arlk absorb-isabelle FILE.thy [-o OUT]
+  arlk absorb-isabelle --main [-o OUT]     Main's fragment (lib/isabelle_main.arlk)
   arlk lsp                                    serve the Language Server Protocol on stdin/stdout
                                          turn a Metamath database (up to LABEL) into Arlk source
     arlk bundle CLAIM FILE.arlk... [-o DIR]
@@ -76,6 +77,7 @@ effect fn main() -> Unit = {
     some("absorb-almide") if not list.is_empty(files) => run_absorb_almide(list.first(files) ?? "", flag(args, "-o"), flag(args, "--verify"))!,
     some("absorb-hol") if not list.is_empty(files) => run_absorb_hol(files, flag(args, "-o"))!,
     some("lsp") => lsp.serve()!,
+    some("absorb-isabelle") if list.contains(args, "--main") => run_isabelle_main(flag(args, "-o"))!,
     some("absorb-isabelle") if not list.is_empty(files) => run_absorb_isabelle(list.first(files) ?? "", flag(args, "-o"))!,
     some("absorb-agda") if not list.is_empty(files) => run_absorb_agda(list.first(files) ?? "", flag(args, "-o"))!,
     some("absorb-mm") if not list.is_empty(files) => run_absorb_mm(list.first(files) ?? "", upto ?? "", flag(args, "-o"))!,
@@ -234,6 +236,22 @@ effect fn run_absorb_isabelle(path: String, out: String?) -> Unit = {
   match isabelle.absorb(src, path) {
     err(e) => {
       println("✗ ${path}: ${e}")
+      process.exit(1)
+    },
+    ok(text) => match out {
+      some(o) => {
+        fs.write(o, text) |> result.map_err((e) => "writing ${o}: ${e}")!
+        println("wrote ${o}")
+      },
+      none => println(text),
+    },
+  }
+}
+
+effect fn run_isabelle_main(out: String?) -> Unit = {
+  match isabelle.main_room() {
+    err(e) => {
+      println("✗ Main: ${e}")
       process.exit(1)
     },
     ok(text) => match out {

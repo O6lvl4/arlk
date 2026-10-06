@@ -1,0 +1,45 @@
+// Absorbed from Isabelle by `arlk absorb-isabelle`: theory Lists (Lists.thy).
+// Isabelle is not needed to check it: the types and functions are
+// ordinary Arlk declarations, and each lemma's proof method is replayed
+// by Arlk's `simp`, checked by the kernel. Main's fragment is
+// lib/isabelle_main.arlk.
+room isabelle.Lists uses eq, isabelle.Main
+
+def itrev[a: Type](x2: list(a), ys: list(a)) -> list(a) = match x2 {
+  nil => ys,
+  Cons(x, xs) => itrev(xs, list.Cons(x, ys)),
+}
+
+theorem itrev_rev[a: Type](xs: list(a), ys: list(a)) -> Eq(_, itrev(xs, ys), append(rev(xs), ys)) =
+  by induction xs simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident)
+
+theorem itrev_Nil[a: Type](xs: list(a)) -> Eq(_, itrev(xs, list.nil), rev(xs)) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, itrev_rev)
+
+def total(x1: list(nat)) -> nat = match x1 {
+  nil => nat.zero,
+  Cons(x, xs) => plus(x, total(xs)),
+}
+
+theorem total_append(xs: list(nat), ys: list(nat)) -> Eq(_, total(append(xs, ys)), plus(total(xs), total(ys))) =
+  by induction xs simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, isabelle.Main.append_Nil2, isabelle.Main.append_assoc)
+
+theorem total_rev(xs: list(nat)) -> Eq(_, total(rev(xs)), total(xs)) =
+  by induction xs simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc, isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident, total_append, isabelle.Main.add_commute)
+
+def double(x1: nat) -> nat = match x1 {
+  zero => nat.zero,
+  Suc(n) => nat.Suc(nat.Suc(double(n))),
+}
+
+theorem double_add(n: nat) -> Eq(_, double(n), plus(n, n)) =
+  by induction n simp(isabelle.Main.add_0_right, isabelle.Main.add_Suc_right, isabelle.Main.add_assoc)
+
+theorem length_three[a': Type](a: a', b: a', c: a') -> Eq(_, length(list.Cons(a, list.Cons(b, list.Cons(c, list.nil)))), nat.Suc(nat.Suc(nat.Suc(nat.zero)))) =
+  by simp
+
+theorem rev_two[a': Type](a: a', b: a') -> Eq(_, rev(list.Cons(a, list.Cons(b, list.nil))), list.Cons(b, list.Cons(a, list.nil))) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.rev_append, isabelle.Main.rev_rev_ident)
+
+theorem map_double(xs: list(nat), ys: list(nat)) -> Eq(_, map(double, append(xs, ys)), append(map(double, xs), map(double, ys))) =
+  by simp(isabelle.Main.append_Nil2, isabelle.Main.append_assoc, isabelle.Main.map_append)

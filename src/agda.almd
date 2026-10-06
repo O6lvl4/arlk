@@ -174,6 +174,7 @@ local fn char_name(c: String) -> String = match c {
   "₉" => "9",
   "-" => "_",
   "," => "pair",
+  "#" => "Cons",
   "." => ".",
   "[" => "nil",
   "]" => "",
@@ -181,7 +182,7 @@ local fn char_name(c: String) -> String = match c {
 }
 
 // An Agda name as an Arlk identifier: `_+_` → `plus`, `+-comm` → `plus_comm`.
-fn mangle(name: String) -> String = {
+fn mangle(name: String) -> String = if name == "0" then "zero" else {
   let core = if string.len(name) > 2 and string.starts_with(name, "_") and string.ends_with(name, "_") then string.slice(name, 1, string.len(name) - 1) else name
   let s = list.join(string.chars(core) |> list.map((c) => char_name(c)), "")
   let s2 = if s == "" or s == "_" then "x" else if string.is_digit(string.take(s, 1)) or string.starts_with(s, "_") then "a" + s else s

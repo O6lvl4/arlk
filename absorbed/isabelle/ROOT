@@ -1,3 +1,4 @@
 session Arith = HOL +
   theories
     Arith
+    Lists

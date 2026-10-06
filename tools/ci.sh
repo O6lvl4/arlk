@@ -99,7 +99,8 @@ fi
 # the known failures (two roots in Nat.Linear's reflection proofs, out of
 # budget; the rest depend on them) are allowed.
 log="$LOGS/lean-nat-lemmas.log"
-limit 2400 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
+# About 10 minutes here; a shared CI runner has needed over 40.
+limit 3600 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
 grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/lean-nat-lemmas.failures"
 if diff -u absorbed/lean/init_data_nat_lemmas.expected-failures "$LOGS/lean-nat-lemmas.failures" >"$LOGS/lean-nat-lemmas.diff" && grep -q '^9 failed, 1564 declarations checked' "$log"; then
   record "Lean Init.Data.Nat.Lemmas (known baseline)" pass "9 known failures, 1564 checked"

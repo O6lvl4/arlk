@@ -1,7 +1,8 @@
 // Transport from Isabelle: a lemma absorbed from an Isabelle theory, its
 // proof replayed by Arlk's simp, used for Arlk's own naturals.
 //
-//   arlk check lib/std/eq.arlk lib/std/nat.arlk absorbed/isabelle/arith.arlk examples/isabelle_transport.arlk
+//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/isabelle_main.arlk absorbed/isabelle/arith.arlk \
+//     examples/isabelle_transport.arlk
 //
 // absorbed/isabelle/arith.arlk is `arlk absorb-isabelle absorbed/isabelle/Arith.thy`.
 // Isabelle's `num` and nat.Nat are isomorphic, the isomorphism carries
