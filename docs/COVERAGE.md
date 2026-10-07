@@ -24,7 +24,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Rewrite rules (λΠ modulo rewriting) | native, assumptions listed by `axioms` | `kernel.rewrite` |
 | Structural recursion by `match` (nested patterns, inner matches, matches on a call's value) | native | `patterns.almd` |
 | Dependent pattern matching on indexed families: constructor patterns in indices (unification by cases), impossible arms left out, `match h { }` | native, compiled to recursors (adds no trust) | `patterns.invert` |
-| Well-founded recursion (`decreasing x by W`), `fix` and its unfolding law | native, from `Acc` (adds no trust) | `checker.add_wf_def`, `lib/std/wf.arlk` |
+| Well-founded recursion (`decreasing x by W`), `fix` and its unfolding law; course-of-values recursion (calls on deeper subterms) through it | native, from `Acc` (adds no trust) | `checker.add_wf_def`, `lib/std/wf.arlk` |
 | Rewriting tactic (`by simp`, `by induction x simp`) | native, produces checked terms | `simp.almd` |
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
 | Views and translations between theories | native | `checker.add_view`, `translate` |

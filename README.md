@@ -338,8 +338,10 @@ proof that its n is smaller, and a call without one is rejected. The definition 
 unfolding law `div.unfold` is proved for it. The accessibility proofs build `Acc.intro` without
 looking at the proofs of `<` they are given, so closed calls compute in the kernel: `div(7, 2) = 3`
 and `gcd(12, 8) = 4` are checked by `Eq.refl`, and so is a merge sort on a list. Theorems can be
-`decreasing` too (well-founded induction). A `match` may split the value of a call (`match
-le_dec(m, n) { ... }`). See [examples/std/wf.arlk](examples/std/wf.arlk).
+`decreasing` too (well-founded induction). A call two or more constructors down
+(course-of-values recursion, `even(n + 2) = even(n)`) is the same thing with `lt_wf`, the proof
+being `k < k + 2`; `even.unfold` gives its equation for every n. A `match` may split the value of a
+call (`match le_dec(m, n) { ... }`). See [examples/std/wf.arlk](examples/std/wf.arlk).
 
 Next on this road: unification of indices and course-of-values recursion in `match`, nested types,
 and reading Lean and Rocq libraries directly into these native features instead of through the

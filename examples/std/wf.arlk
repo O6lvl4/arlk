@@ -128,7 +128,25 @@ def msort(xs: List(Nat)) -> List(Nat) decreasing xs by measure_wf((l: List(Nat))
 theorem sorted: Eq(List(Nat), msort(List.cons(n3, List.cons(n1, List.cons(n2, List.cons(Nat.zero, List.nil))))),
   List.cons(Nat.zero, List.cons(n1, List.cons(n2, List.cons(n3, List.nil))))) = Eq.refl
 
+// Course-of-values recursion: a call on a value two constructors down
+// (Lean's structural recursion through `below`, Agda's and Rocq's nested
+// patterns) is well-founded recursion on <, with k < k + 2 as the proof.
+def even(n: Nat) -> Bool decreasing n by lt_wf = match n {
+  zero => Bool.tt,
+  succ(m) => match m {
+    zero => Bool.ff,
+    succ(k) => even(k, Le.step(Nat.succ(k), Le.refl)),
+  },
+}
+
+theorem even_eight: Eq(Bool, even(n8), Bool.tt) = Eq.refl
+theorem even_seven: Eq(Bool, even(n7), Bool.ff) = Eq.refl
+
+// Its defining equation, for every k.
+theorem even_succ_succ(k: Nat) -> Eq(Bool, even(Nat.succ(Nat.succ(k))), even(k)) = even.unfold(Nat.succ(Nat.succ(k)))
+
 // Nothing assumed: the proofs rest on the inductive types alone.
 axioms gcd
 axioms msort
 axioms mod_lt
+axioms even_succ_succ

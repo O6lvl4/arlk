@@ -1473,6 +1473,35 @@ test "a recursive call must prove that it decreases" {
   })
 }
 
+let WF_EVEN = "\n" + """
+room wft uses eq, logic, nat, wf
+def even(n: Nat) -> Nat decreasing n by lt_wf = match n {
+  zero => Nat.succ(Nat.zero),
+  succ(m) => match m {
+    zero => Nat.zero,
+    succ(k) => even(k, Le.step(Nat.succ(k), Le.refl)),
+  },
+}
+def four: Nat = Nat.succ(Nat.succ(Nat.succ(Nat.succ(Nat.zero))))
+"""
+
+test "course-of-values recursion goes through well-founded recursion" {
+  assert_eq(run_wf(WF_EVEN + """
+theorem even_four: Eq(Nat, even(four), Nat.succ(Nat.zero)) = Eq.refl
+theorem even_ss(k: Nat) -> Eq(Nat, even(Nat.succ(Nat.succ(k))), even(k)) = even.unfold(Nat.succ(Nat.succ(k)))
+""")!, none)
+  // The proof is checked against the call's own argument: k + 1 is not below k + 2 by it.
+  let wrong_call = "room wft uses eq, logic, nat, wf\ndef f(n: Nat) -> Nat decreasing n by lt_wf = match n {\n  zero => Nat.zero,\n  succ(m) => match m {\n    zero => Nat.zero,\n    succ(k) => f(Nat.succ(k), Le.step(Nat.succ(k), Le.refl)),\n  },\n}\n"
+  assert(match run_wf(wrong_call)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+  assert(match run_wf(WF_EVEN + "theorem bad: Eq(Nat, even(Nat.succ(four)), Nat.succ(Nat.zero)) = Eq.refl\n")! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}
+
 test "a match on a call splits its value, and inner splits refine later parameters" {
   assert_eq(run_wf("""
 room wft uses eq, logic, nat, wf
