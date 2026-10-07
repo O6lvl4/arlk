@@ -2,7 +2,7 @@
 // with Lean's four primitives, and function extensionality proved from
 // them.
 //
-//   arlk check lib/std/eq.arlk lib/quot.arlk YOUR.arlk
+//   arlk qed lib/std/eq.arlk lib/quot.arlk YOUR.arlk
 //
 // Unlike the standard library (lib/std), this room assumes: `Quot`,
 // `Quot.mk`, `Quot.lift`, `Quot.ind` and `Quot.sound` are symbols, and

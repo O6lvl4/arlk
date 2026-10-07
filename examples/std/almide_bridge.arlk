@@ -2,7 +2,7 @@
 // proof share one List: the library's lemmas apply to the model directly,
 // and the model's reverse is checked to be the native rev.
 //
-//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk \
+//   arlk qed lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk \
 //     examples/std/reverse.arlk examples/almide/reverse.arlk examples/std/almide_bridge.arlk
 //
 // No bridge function is needed: almide_reverse.reverse is defined over

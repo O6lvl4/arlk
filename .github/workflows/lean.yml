@@ -77,7 +77,7 @@ jobs:
 
       - name: Check ${{ matrix.module }}
         run: |
-          status=0; ./arlk check lib/core.arlk module.arlk > check.log 2>&1 || status=$?
+          status=0; ./arlk qed lib/core.arlk module.arlk > check.log 2>&1 || status=$?
           tail -1 check.log | cut -c1-300
           if grep -q '^✗' check.log; then grep '^✗' check.log | cut -c1-300 | head; exit 1; fi
           grep -q '^ok: ' check.log && exit $status

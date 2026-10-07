@@ -5,7 +5,7 @@
 // use both: Lean's recursor builds a function into Rocq's numbers, and
 // Lean's theorem `Nat.add_comm` becomes a statement about Rocq's equality.
 //
-//   arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
+//   arlk qed lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
 //              absorbed/rocq/init_peano.arlk examples/bridge.arlk
 
 room bridge uses Init, Corelib

@@ -1,6 +1,8 @@
-# Arlk (アルク)
+# Arlk
 
-A proof language and checker written in [Almide](https://github.com/almide/almide).
+**Every prover's mathematics. One kernel. Trust in none of them.**
+
+A proof language and checker written from zero in [Almide](https://github.com/almide/almide).
 Write proofs in programmer-friendly syntax, recheck selected libraries from other provers,
 and carry results between theories through checked views, with their assumptions visible.
 
@@ -11,7 +13,7 @@ From the repository root, build the checker and run a self-contained proof:
 
 ```sh
 almide build src/main.almd -o arlk
-./arlk check examples/logic.arlk
+./arlk qed examples/logic.arlk
 ```
 
 Then try an equation chain from [examples/calc.arlk](examples/calc.arlk):
@@ -30,13 +32,15 @@ axioms rotate
 Run the checked-in file with the standard-library files it uses, in order:
 
 ```sh
-./arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk examples/calc.arlk
+./arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk examples/calc.arlk
 ```
 
 The proof changes `(a + b) + c` into `(b + c) + a`, using associativity and commutativity.
 Each `calc` step becomes a proof term checked by the kernel. `axioms rotate` reports its
 dependencies; this example uses native inductive types and proved lemmas, with no
 hand-declared symbols or rewrite rules. No external prover is needed for these examples.
+`arlk qed` exits 0 only when everything that was to be shown is shown; `arlk qed` is
+kept as an alias.
 
 ## What can I do with it?
 

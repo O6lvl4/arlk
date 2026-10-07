@@ -1,7 +1,7 @@
 // Streams, a coinductive type: defined from its paths, built by
 // corecursion, and equal when bisimilar.
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
 //     examples/std/stream.arlk
 //
 // `codata` declares no symbol: Stream(A) is what each path down its tails

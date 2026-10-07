@@ -3,7 +3,7 @@
 //
 // The output is ordinary Arlk text: every absorbed declaration, in a room
 // of its own (`Init` for Lean, `Corelib` for Rocq), on top of the shared
-// foundation in lib/core.arlk. Checking it needs only `arlk check`, and
+// foundation in lib/core.arlk. Checking it needs only `arlk qed`, and
 // neither prover is involved. The kernel re-checks every proof, but the
 // symbols and rules emitted here are assumptions of that check: their
 // faithfulness to the source logic is this translator's responsibility
@@ -391,7 +391,7 @@ fn absorb(src: String) -> String! = {
   }
   let header = """
     // Absorbed from ${prover} by `arlk absorb`: ${what}.
-    // Check it with `arlk check lib/core.arlk <this file>`;
+    // Check it with `arlk qed lib/core.arlk <this file>`;
     // ${prover} is not needed to check it. The check is relative to the symbols
     // and rules below (see `axioms`), which encode ${prover}'s theory.
     """

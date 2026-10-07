@@ -16,7 +16,7 @@
 // correspondence is proved, not assumed, so `axioms` lists only what the
 // two absorbed libraries already assume.
 //
-//   arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
+//   arlk qed lib/core.arlk absorbed/lean/init_data_nat_basic.arlk \
 //              absorbed/rocq/init_peano.arlk examples/transport.arlk
 
 room transport uses Init, Corelib

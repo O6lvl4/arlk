@@ -2,7 +2,7 @@
 // every number occurs in it as often as in the input. Equality, naturals,
 // lists, Bool and the evidence types come from the shared library.
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 
 room sorting uses eq, logic, nat, almide, list
 

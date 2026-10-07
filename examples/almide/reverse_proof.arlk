@@ -16,7 +16,7 @@
 // work (docs/ALMIDE_SUBSET.md). Lengths are natural numbers (Nat below), not
 // machine integers.
 //
-//   arlk check lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
+//   arlk qed lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
 
 room reverse_proof uses almide, almide_reverse
 

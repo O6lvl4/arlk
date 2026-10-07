@@ -15,7 +15,7 @@
 // and every carried theorem is checked again here, so nothing about the
 // view or about Metamath is trusted.
 //
-//   arlk check absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk
+//   arlk qed absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk
 room mmlogic
 
 type False: Sort(0) =

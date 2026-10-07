@@ -1,7 +1,7 @@
 // Two ways to reverse a list, and the proof that both keep its length,
 // on the shared native library (no local equality or list lemmas).
 //
-//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/reverse.arlk
+//   arlk qed lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/reverse.arlk
 //
 // What is proved: for every finite list (of anything, so in particular of
 // Peano naturals), each reverse returns a list of the same length. This is

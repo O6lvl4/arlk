@@ -2,7 +2,7 @@
 // with length and the laws of append. There is one List: a proof about a
 // modeled Almide program and a native proof use the same type.
 //
-//   arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
+//   arlk qed lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
 //
 // append (Almide's `xs + ys`) is defined in lib/almide.arlk; everything
 // here is proved by induction from the inductive types alone.

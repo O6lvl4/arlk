@@ -3,7 +3,7 @@
 // relation (Lean's `termination_by`, Rocq's `Program Fixpoint`, Agda's
 // sized or accessibility-based recursion).
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk \
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk \
 //     lib/almide.arlk lib/std/list.arlk examples/std/wf.arlk
 //
 // `decreasing x by W` names the parameter and the proof W that its

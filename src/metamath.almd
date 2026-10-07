@@ -810,7 +810,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
   let scope = if upto == "" then "the whole database" else "the database up to ${upto}"
   let header = """
     // Absorbed from Metamath by `arlk absorb-mm`: ${scope}
-    // (${int.to_string(count)} theorems). Check it with `arlk check <this file>`;
+    // (${int.to_string(count)} theorems). Check it with `arlk qed <this file>`;
     // no Metamath verifier is needed. The check is relative to the axioms and
     // syntax facts below (see `axioms`).
     """

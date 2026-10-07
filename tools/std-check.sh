@@ -31,99 +31,99 @@ mutate() { # name source sed-expression -> $work/name.arlk
 EQ=lib/std/eq.arlk; LOGIC=lib/std/logic.arlk; NAT=lib/std/nat.arlk; AL=lib/almide.arlk; LIST=lib/std/list.arlk; WF=lib/std/wf.arlk
 REV=examples/std/reverse.arlk; SORT=examples/std/sort.arlk; WFX=examples/std/wf.arlk
 
-expect library 0 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST
+expect library 0 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST
 printf 'room audit uses eq, nat, almide, list, wf\naxioms wf.fix_eq\naxioms wf.lt_wf\naxioms list.append_assoc\naxioms list.length_snoc\naxioms nat.add_comm\naxioms nat.add_assoc\naxioms eq.cong2\naxioms eq.subst\n' >"$work/audit.arlk"
-expect library-audit 0 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/audit.arlk"
+expect library-audit 0 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST "$work/audit.arlk"
 lacks library-has-no-symbols "symbols: eq." "$work/library-audit.log"
 contains library-rests-on-types-only "symbols: (none)" "$work/library-audit.log"
 lacks library-has-no-rules "rules:   eq" "$work/library-audit.log"
 if grep -nE '^(symbol|rule) ' lib/std/*.arlk; then echo "FAIL  lib/std declares a symbol or rule"; fails=1; else echo "pass  lib/std declares no symbol or rule"; fi
 
-expect reverse 0 "$arlk" check $EQ $NAT $AL $LIST $REV
-expect sort 0 "$arlk" check $EQ $LOGIC $NAT $AL $LIST $SORT
-expect almide-bridge 0 "$arlk" check $EQ $NAT $AL $LIST $REV examples/almide/reverse.arlk examples/std/almide_bridge.arlk
-expect wf 0 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST $WFX
+expect reverse 0 "$arlk" qed $EQ $NAT $AL $LIST $REV
+expect sort 0 "$arlk" qed $EQ $LOGIC $NAT $AL $LIST $SORT
+expect almide-bridge 0 "$arlk" qed $EQ $NAT $AL $LIST $REV examples/almide/reverse.arlk examples/std/almide_bridge.arlk
+expect wf 0 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST $WFX
 for f in reverse sort almide-bridge wf; do contains "$f-no-symbols" "symbols: (none)" "$work/$f.log"; lacks "$f-no-symbol-names" "symbols: reverse" "$work/$f.log"; done
 
 # Semantic negative controls.
 mutate rev-drops $REV 's/cons(h, t) => append(rev(t), List.cons(h, List.nil)),/cons(h, t) => rev(t),/'
-expect rev-drops 1 "$arlk" check $EQ $NAT $AL $LIST "$work/rev-drops.arlk"
+expect rev-drops 1 "$arlk" qed $EQ $NAT $AL $LIST "$work/rev-drops.arlk"
 contains rev-drops-why "type mismatch" "$work/rev-drops.log"
 mutate rev-false-law $REV 's/^theorem rev_length\[u, A: Type(u)\](xs: List(A)) -> Eq(Nat, length(rev(xs)), length(xs))/theorem rev_length[u, A: Type(u)](xs: List(A)) -> Eq(Nat, length(rev(xs)), Nat.succ(length(xs)))/'
-expect rev-false-law 1 "$arlk" check $EQ $NAT $AL $LIST "$work/rev-false-law.arlk"
+expect rev-false-law 1 "$arlk" qed $EQ $NAT $AL $LIST "$work/rev-false-law.arlk"
 contains rev-false-law-why "type mismatch" "$work/rev-false-law.log"
 mutate rev-corrupt-proof $REV 's/cong_succ(rev_length(t))),/rev_length(t)),/'
-expect rev-corrupt-proof 1 "$arlk" check $EQ $NAT $AL $LIST "$work/rev-corrupt-proof.arlk"
+expect rev-corrupt-proof 1 "$arlk" qed $EQ $NAT $AL $LIST "$work/rev-corrupt-proof.arlk"
 contains rev-corrupt-proof-why "type mismatch" "$work/rev-corrupt-proof.log"
 mutate acc-drops $REV 's/cons(h, t) => go(t, List.cons(h, acc)),/cons(h, t) => go(t, acc),/'
-expect acc-drops 1 "$arlk" check $EQ $NAT $AL $LIST "$work/acc-drops.arlk"
+expect acc-drops 1 "$arlk" qed $EQ $NAT $AL $LIST "$work/acc-drops.arlk"
 contains acc-drops-why "type mismatch" "$work/acc-drops.log"
 
 # Wrong order: the smaller element goes second.
 mutate sort-wrong-order $SORT 's/left(e) => List.cons(x, List.cons(h, t)),/left(e) => List.cons(h, List.cons(x, t)),/'
-expect sort-wrong-order 1 "$arlk" check $EQ $LOGIC $NAT $AL $LIST "$work/sort-wrong-order.arlk" --keep-going
+expect sort-wrong-order 1 "$arlk" qed $EQ $LOGIC $NAT $AL $LIST "$work/sort-wrong-order.arlk" --keep-going
 line=$(grep -n '^def sorted_ins_fin' $SORT | cut -d: -f1)
 contains sort-wrong-order-in-sortedness "sort-wrong-order.arlk:$line:" "$work/sort-wrong-order.log"
 # A dropped insertion (sort(t) for insert(h, sort(t))): the result is still
 # ordered, so the order proof is taken out and only multiplicities can
 # catch it, on exactly one declaration.
 mutate sort-drops $SORT 's/cons(h, t) => insert(h, sort(t)),/cons(h, t) => sort(t),/; /^theorem sort_sorted/,/^}/d; /^axioms sort_sorted/d'
-expect sort-drops 1 "$arlk" check $EQ $LOGIC $NAT $AL $LIST "$work/sort-drops.arlk" --keep-going
+expect sort-drops 1 "$arlk" qed $EQ $LOGIC $NAT $AL $LIST "$work/sort-drops.arlk" --keep-going
 line=$(grep -n '^theorem sort_perm' "$work/sort-drops.arlk" | cut -d: -f1)
 contains sort-drops-in-counts "sort-drops.arlk:$line:" "$work/sort-drops.log"
 if [ "$(grep '^✗' "$work/sort-drops.log" | grep -vc 'unknown name sort_perm')" = 1 ]; then echo "pass  sort-drops-only-in-counts"; else echo "FAIL  sort-drops-only-in-counts: see $work/sort-drops.log"; fails=1; fi
 # Well-founded recursion: a wrong result, a call without its proof, a call
 # that does not decrease.
 mutate wf-wrong-quotient $WFX 's/^theorem seven_div_two: Eq(Nat, div(n7, n2), n3)/theorem seven_div_two: Eq(Nat, div(n7, n2), n4)/'
-expect wf-wrong-quotient 1 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-wrong-quotient.arlk"
+expect wf-wrong-quotient 1 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-wrong-quotient.arlk"
 contains wf-wrong-quotient-why "type mismatch" "$work/wf-wrong-quotient.log"
 mutate wf-no-proof $WFX 's/gcd(Nat.succ(k), mod(a, k), mod_lt(a, k))/gcd(Nat.succ(k), mod(a, k))/'
-expect wf-no-proof 1 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-no-proof.arlk"
+expect wf-no-proof 1 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-no-proof.arlk"
 contains wf-no-proof-why "a proof that the decreasing one is smaller" "$work/wf-no-proof.log"
 mutate wf-not-smaller $WFX 's/msort(alt(List.cons(a, List.cons(b, t)), Bool.tt), alt_shorter/msort(List.cons(a, List.cons(b, t)), alt_shorter/'
-expect wf-not-smaller 1 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-not-smaller.arlk"
+expect wf-not-smaller 1 "$arlk" qed $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-not-smaller.arlk"
 contains wf-not-smaller-why "mismatch" "$work/wf-not-smaller.log"
 # Equational chains (examples/calc.arlk): a step whose proof proves
 # another equation, and a step claimed by computation that does not hold,
 # are rejected.
 CALC=examples/calc.arlk
-expect calc 0 "$arlk" check $EQ $LOGIC $NAT $CALC
+expect calc 0 "$arlk" qed $EQ $LOGIC $NAT $CALC
 mutate calc-wrong-proof $CALC 's/= add(a, add(b, c)) by add_assoc(a, b, c),/= add(a, add(b, c)) by add_comm(a, add(b, c)),/'
-expect calc-wrong-proof 1 "$arlk" check $EQ $LOGIC $NAT "$work/calc-wrong-proof.arlk"
+expect calc-wrong-proof 1 "$arlk" qed $EQ $LOGIC $NAT "$work/calc-wrong-proof.arlk"
 contains calc-wrong-proof-why "type mismatch for add_comm(a, add(b, c))" "$work/calc-wrong-proof.log"
 mutate calc-wrong-step $CALC 's/^  = Nat.succ(Nat.succ(add(Nat.zero, n)))$/  = Nat.succ(add(Nat.zero, n))/'
-expect calc-wrong-step 1 "$arlk" check $EQ $LOGIC $NAT "$work/calc-wrong-step.arlk"
+expect calc-wrong-step 1 "$arlk" qed $EQ $LOGIC $NAT "$work/calc-wrong-step.arlk"
 contains calc-wrong-step-why "mismatch" "$work/calc-wrong-step.log"
 mutate rewrite-wrong $CALC 's/rewrite add_comm(a, b) { Eq.refl }/rewrite add_comm(b, c) { Eq.refl }/'
-expect rewrite-wrong 1 "$arlk" check $EQ $LOGIC $NAT "$work/rewrite-wrong.arlk"
+expect rewrite-wrong 1 "$arlk" qed $EQ $LOGIC $NAT "$work/rewrite-wrong.arlk"
 contains rewrite-wrong-why "rewrite: add(b, c) does not occur in the goal" "$work/rewrite-wrong.log"
 # Quotients (lib/quot.arlk assumes Lean's primitives): the integers as
 # pairs; negation that does not respect the relation, and a false
 # equation between classes, are rejected.
 QUOT=lib/quot.arlk; QX=examples/std/quot.arlk
-expect quot 0 "$arlk" check $EQ $LOGIC $NAT $QUOT $QX
+expect quot 0 "$arlk" qed $EQ $LOGIC $NAT $QUOT $QX
 contains quot-assumes-sound "quot.Quot.sound" "$work/quot.log"
 mutate quot-not-respecting $QX 's/Quot.mk(Pair, Same, swap(p))/Quot.mk(Pair, Same, Pair.mk(fst(p), fst(p)))/'
-expect quot-not-respecting 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/quot-not-respecting.arlk"
+expect quot-not-respecting 1 "$arlk" qed $EQ $LOGIC $NAT $QUOT "$work/quot-not-respecting.arlk"
 contains quot-not-respecting-why "mismatch" "$work/quot-not-respecting.log"
 mutate quot-false-class $QX 's/^theorem two_ways: Eq(Int, of(n3, n1), of(n2, Nat.zero))/theorem two_ways: Eq(Int, of(n3, n1), of(n3, Nat.zero))/'
-expect quot-false-class 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/quot-false-class.arlk"
+expect quot-false-class 1 "$arlk" qed $EQ $LOGIC $NAT $QUOT "$work/quot-false-class.arlk"
 contains quot-false-class-why "mismatch" "$work/quot-false-class.log"
 # Coinduction (examples/std/stream.arlk): streams by codata, bisimulation by
 # funext. A relation whose tails are not kept, and a false computed head,
 # are rejected.
 SX=examples/std/stream.arlk
-expect stream 0 "$arlk" check $EQ $LOGIC $NAT $QUOT $SX
+expect stream 0 "$arlk" qed $EQ $LOGIC $NAT $QUOT $SX
 contains stream-only-quotients "symbols: quot.Quot, quot.Quot.mk, quot.Quot.lift, quot.Quot.sound" "$work/stream.log"
 mutate stream-wrong-third $SX 's/^theorem third: Eq(Nat, Stream.head(Stream.tail(Stream.tail(from(Nat.zero)))), two)/theorem third: Eq(Nat, Stream.head(Stream.tail(from(Nat.zero))), two)/'
-expect stream-wrong-third 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/stream-wrong-third.arlk"
+expect stream-wrong-third 1 "$arlk" qed $EQ $LOGIC $NAT $QUOT "$work/stream-wrong-third.arlk"
 contains stream-wrong-third-why "mismatch" "$work/stream-wrong-third.log"
 mutate stream-bad-step $SX 's/tail(rest) => agree(R, heads, tails, rest, Stream.tail(x), Stream.tail(y), tails(x, y, r)),/tail(rest) => agree(R, heads, tails, rest, Stream.tail(x), Stream.tail(y), r),/'
-expect stream-bad-step 1 "$arlk" check $EQ $LOGIC $NAT $QUOT "$work/stream-bad-step.arlk"
+expect stream-bad-step 1 "$arlk" qed $EQ $LOGIC $NAT $QUOT "$work/stream-bad-step.arlk"
 contains stream-bad-step-why "mismatch" "$work/stream-bad-step.log"
 # A false equality in the library itself.
 mutate false-add $NAT 's/^theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), n)/theorem add_zero(n: Nat) -> Eq(Nat, add(n, Nat.zero), Nat.succ(n))/'
-expect false-add 1 "$arlk" check $EQ "$work/false-add.arlk"
+expect false-add 1 "$arlk" qed $EQ "$work/false-add.arlk"
 contains false-add-why "type mismatch" "$work/false-add.log"
 
 echo
@@ -134,7 +134,7 @@ echo "check time, seconds (fresh process, this machine; advisory)"
 for job in "reverse:$EQ $NAT $AL $LIST $REV" "sort:$EQ $LOGIC $NAT $AL $LIST $SORT" "wf:$EQ $LOGIC $NAT $WF $AL $LIST $WFX" "library:$EQ $LOGIC $NAT $WF $AL $LIST"; do
   name="${job%%:*}"; files="${job#*:}"
   start=$(date +%s.%N 2>/dev/null || date +%s)
-  "$arlk" check $files >/dev/null 2>&1
+  "$arlk" qed $files >/dev/null 2>&1
   end=$(date +%s.%N 2>/dev/null || date +%s)
   echo "$name $(echo "$end - $start" | bc 2>/dev/null || echo '?')"
 done

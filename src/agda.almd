@@ -505,6 +505,13 @@ fn emit(cx: ACx, e: AExpr) -> String = match e {
   ELam(ns, body) => "(" + list.join(ns |> list.map((n) => mangle(n) + ": _"), ", ") + ") => " + emit({ ...cx, bound: cx.bound + ns }, body),
   ESet(k) => if k == 0 then "Type" else "Sort(${int.to_string(k + 1)})",
   EHole => "_",
+  // The equation's name is primed: Agda programs call it `eq`, the name
+  // the equality type `_≡_` gets here.
+  EWith(EApp(EVar(tag), [scrut]), arms) if string.starts_with(tag, "%in:") => {
+    let h = string.drop(tag, 4)
+    let cx2 = { ...cx, ren: [(h, mangle(h) + "'")] + cx.ren }
+    " match ${emit(cx, scrut)} with ${mangle(h)}': ${mangle("_≡_")} {\n" + list.join(arms |> list.map(((p, rhs)) => "    ${emit_pat(cx.sc, p)} => ${emit({ ...cx2, bound: cx2.bound + pat_vars(p) + [h] }, rhs)},"), "\n") + "\n  }"
+  },
   EWith(scrut, arms) => " match ${emit(cx, scrut)} {\n" + list.join(arms |> list.map(((p, rhs)) => "    ${emit_pat(cx.sc, p)} => ${emit({ ...cx, bound: cx.bound + pat_vars(p) }, rhs)},"), "\n") + "\n  }",
   ERewrite(eqs, rhs) => "rewrite ${list.join(eqs |> list.map((e) => emit(cx, e)), ", ")} { ${emit(cx, rhs)} }",
   ELet(bs, body) => {
@@ -1069,7 +1076,12 @@ fn absorb(src: String, file: String) -> String! = {
         // `f ps with e`: its arms follow as `... | p = rhs`.
         let wi = list.index_of(words, "with") ?? 0
         let (lhs, _) = parse_expr(sc, list.take(words, wi), 0)!
-        let (e, _) = parse_expr(sc, list.drop(words, wi + 1), 0)!
+        // `with e in eq`: each arm also gets eq : e ≡ p (Arlk's
+        // `match e with eq: ≡ { ... }`).
+        let rest = list.drop(words, wi + 1)
+        let ii = list.index_of(rest, "in") ?? -1
+        let (e0, _) = parse_expr(sc, if ii >= 0 then list.take(rest, ii) else rest, 0)!
+        let e = if ii >= 0 then EApp(EVar("%in:" + at(rest, ii + 1)), [e0]) else e0
         let (f, args) = match lhs {
           EApp(EVar(f), args) => (f, args),
           EVar(f) => (f, []),

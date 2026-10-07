@@ -6,7 +6,7 @@
 # Builds a deterministic sequence of edits (each step a directory with
 # files.txt), runs them through one `arlk session` process, and after every
 # step compares the session's digest with a fresh process's
-# `arlk check --digest` of the same files: outcomes, statements, proofs,
+# `arlk qed --digest` of the same files: outcomes, statements, proofs,
 # assumption inventories and diagnostics must be identical. Each step also
 # states what must be checked again (and why) and what may be reused.
 #

@@ -5,7 +5,7 @@ directory whose `files.txt` lists its sources in checking order. The first step 
 After that, each step checks again only what an edit could have affected, and reuses the rest from
 the previous step. Each step reports how many units were checked and reused, and *why* each
 checked unit was checked. It then prints a digest of the result, which a fresh process must
-reproduce: `arlk check FILE... --digest`.
+reproduce: `arlk qed FILE... --digest`.
 
 ## What may be reused
 
@@ -46,7 +46,7 @@ options that change what is accepted, so a semantics change means a new process 
 [tools/session_check.py](../tools/session_check.py), run by CI, runs a deterministic sequence of 29
 edits through one session. The program is the native library, the reverse client, a room with
 symbols, rules and a record type, and the views example. After every edit it compares the
-session's digest with a fresh `arlk check --digest` of the same files. The digest covers:
+session's digest with a fresh `arlk qed --digest` of the same files. The digest covers:
 
 - each unit's outcome and printed lines;
 - every declared name's statement;

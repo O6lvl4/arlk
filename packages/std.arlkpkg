@@ -3,12 +3,12 @@ name: std
 version: 1.0.0
 semantics: arlk-kernel-1
 root: ../lib
-source: 2bb1995192548177d547071fa676f25d8f087bb5525e9a67a130e196fbef05ad std/eq.arlk
-source: 545970d815b2f57c72356a88a08475c14d7861a23460c2997c979f756781e832 std/logic.arlk
-source: 90384779f974877600f1a82bdbe3d98dff04bdce66ae24f8a7af03e5f46b003b std/nat.arlk
+source: 13ffd0f26c05a0950a63b230d32f90f80ee8197bec97f7f118e31e457df05cc7 std/eq.arlk
+source: efbb774b3b8a93bc117b3f2b8b10b2bea69fe095583b426f84ce67efb4b62049 std/logic.arlk
+source: 49d3990cd710d7a75444fea98b630585c901b66b08f6f1a604802d3c7a41120f std/nat.arlk
 source: ceb304f4fefae3d22c42698e788d850769991a6fa09fc958a5cffde4cbbfaae4 almide.arlk
-source: 8e7d59c65055d79a0bb2642fd9f0532168bb4b3c312ce5f72c4c79525643ff1d std/list.arlk
-source: 024c58db5ef8bb6a8a318ea3160a79fffb5f47c69662b5136653baf4088a3eae std/wf.arlk
+source: 73b5a219920894ed876d9ceb019bfc93fbf6aa49fecaf34fff04a006bc95a220 std/list.arlk
+source: b5b202d730b65c04586cab582ef5d9461afaae74d11ab8973f87f05686fe697b std/wf.arlk
 export-room: eq
 export-room: logic
 export-room: nat

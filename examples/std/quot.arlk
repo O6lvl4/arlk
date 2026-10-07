@@ -1,7 +1,7 @@
 // The integers as a quotient: a pair (a, b) stands for a - b, and two
 // pairs are the same integer when a + d = c + b.
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/quot.arlk \
 //     examples/std/quot.arlk
 //
 // Negation is defined on representatives and lifted to classes with a

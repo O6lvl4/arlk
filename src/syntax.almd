@@ -413,8 +413,16 @@ local fn arm_sub(ts: List[Token], p: Int) -> (Sub, Int)! = {
 local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   let t = tok(ts, p)
   guard not is_kw(ts, p, "match") else {
-    let (scrut, p1) = term(ts, p + 1)!
-    let p2 = expect(ts, p1, "{")!
+    let (scrut0, p1) = term(ts, p + 1)!
+    // `match f(x) with h: E { ... }`: each arm also gets h: E(_, f(x), p)
+    // for its pattern p (Lean's `match h : e with`, Agda's `with e in h`);
+    // E is an equality type with constructor E.refl, `Eq` when not given.
+    let (scrut, p1b) = if tok(ts, p1).kind == "ident" and tok(ts, p1).text == "with" then {
+      let (h, q) = ident(ts, p1 + 1)!
+      let (e, q2) = if is_sym(ts, q, ":") then ident(ts, q + 1)! else ("Eq", q)
+      (RApp(RApp(RApp(RName("%with"), scrut0), RName(h)), RName(e)), q2)
+    } else (scrut0, p1)
+    let p2 = expect(ts, p1b, "{")!
     let (as, p3) = arms(ts, p2, [])!
     ok((RMatch(scrut, as), p3))
   }

@@ -1,7 +1,7 @@
 // Well-founded recursion, natively: accessibility, well-founded relations,
 // the fixpoint and its unfolding law, and `<` on Nat.
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk YOUR.arlk
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/std/wf.arlk YOUR.arlk
 //
 // A definition `def f(x: A, ...) -> B decreasing x by W = ...` recurses on
 // x through a relation R that W proves well-founded: each recursive call

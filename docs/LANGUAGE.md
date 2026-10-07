@@ -21,7 +21,7 @@ axioms s
 ```
 
 ```
-$ arlk check examples/logic.arlk
+$ arlk qed examples/logic.arlk
 ✓ theorem logic.s: (a: Prop, b: Prop, c: Prop) -> Prf(imp(imp(a, imp(b, c)), imp(imp(a, b), imp(a, c))))
 axioms logic.s
   rooms:   logic

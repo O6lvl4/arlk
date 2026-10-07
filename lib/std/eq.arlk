@@ -1,6 +1,6 @@
 // Equality, natively: the identity type and its basic laws.
 //
-//   arlk check lib/std/eq.arlk YOUR.arlk
+//   arlk qed lib/std/eq.arlk YOUR.arlk
 //
 // Every fact here is proved from the inductive type `Eq` (its recursor is
 // generated and checked); nothing is a symbol, rule or axiom

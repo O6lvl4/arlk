@@ -30,7 +30,7 @@ theorem add_comm_in_rocq(n: core.El(core.l1, LeanNat), m: core.El(core.l1, LeanN
 ```
 
 ```
-$ ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
+$ ./arlk qed lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
 to_rocq(lean_add(Init.Nat.succ(Init.Nat.zero), Init.Nat.succ(Init.Nat.zero))) = Corelib.Init.Datatypes.nat.S(Corelib.Init.Datatypes.nat.S(Corelib.Init.Datatypes.nat.O))
 ✓ theorem bridge.add_zero_in_rocq: ...
 ✓ theorem bridge.add_comm_in_rocq: ...
@@ -74,7 +74,7 @@ theorem em(p: Sort(0)) -> Or(p, Not(p)) = ...   // read with Arlk's Or, Not and 
 ```
 
 ```
-$ ./arlk check lib/hol.arlk bool.arlk examples/hol_types.arlk
+$ ./arlk qed lib/hol.arlk bool.arlk examples/hol_types.arlk
 ✓ view holtypes.hol_types: hol in holtypes, 12 symbols mapped
 ✓ translated holtypes.hol_types.opentheory.bool_class.thm1: ... (197 declarations carried)
 ✓ theorem holtypes.em: (p: Sort(0)) -> Or(p, Not(p))

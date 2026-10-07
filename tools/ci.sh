@@ -74,25 +74,25 @@ must_pass "almide test src/" 1800 almide test src/
 must_pass "toolchain: test files per backend" 3600 tools/toolchain-check.sh "$LOGS/toolchain"
 
 for f in examples/logic.arlk examples/nat.arlk examples/data.arlk examples/mutual.arlk examples/nested.arlk; do
-  must_pass "example $f" 300 ./arlk check "$f"
+  must_pass "example $f" 300 ./arlk qed "$f"
 done
 
-must_pass "Lean Nat.add_zero" 300 ./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
-must_pass "Rocq Init.Peano" 300 ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
-must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
-must_pass "Metamath set.mm propositional" 300 ./arlk check absorbed/metamath/set_prop.arlk
+must_pass "Lean Nat.add_zero" 300 ./arlk qed lib/core.arlk absorbed/lean/nat_add_zero.arlk
+must_pass "Rocq Init.Peano" 300 ./arlk qed lib/core.arlk absorbed/rocq/init_peano.arlk
+must_pass "Lean Nat.Basic + Rocq + bridge" 1200 ./arlk qed lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk examples/bridge.arlk
+must_pass "Metamath set.mm propositional" 300 ./arlk qed absorbed/metamath/set_prop.arlk
 # A database checked in parts (`arlk chunk`, as .github/workflows/setmm.yml
 # does for the whole of set.mm): each part proves its share and assumes the
 # earlier theorems by statement; all three parts of set_prop check.
 for k in 1 2 3; do
   ./arlk chunk absorbed/metamath/set_prop.arlk --part "$k/3" -o "$LOGS/set_prop-part$k.arlk" >"$LOGS/set_prop-chunk$k.log" 2>&1
-  must_pass "Metamath set_prop part $k/3" 300 ./arlk check "$LOGS/set_prop-part$k.arlk"
+  must_pass "Metamath set_prop part $k/3" 300 ./arlk qed "$LOGS/set_prop-part$k.arlk"
 done
 # set.mm's propositional calculus read in Arlk's own logic (a checked view):
 # Peirce's law, proved by set.mm, as a native theorem resting only on
 # excluded middle. A view that reads negation as the identity is rejected.
 log="$LOGS/metamath-logic.log"
-if limit 600 ./arlk check absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk >"$log" 2>&1 && grep -q '^  symbols: mmlogic.em$' "$log"; then
+if limit 600 ./arlk qed absorbed/metamath/set_prop.arlk examples/metamath_logic.arlk >"$log" 2>&1 && grep -q '^  symbols: mmlogic.em$' "$log"; then
   record "transport: Metamath logic into Arlk" pass "peirce_law rests on mmlogic.em alone"
 else
   record "transport: Metamath logic into Arlk" FAIL "see $log"
@@ -101,17 +101,18 @@ sed 's/^  wn = Not,$/  wn = (p: Sort(0)) => p,/' examples/metamath_logic.arlk >"
 if cmp -s examples/metamath_logic.arlk "$LOGS/metamath_logic-negation.arlk"; then
   record "Metamath logic tampered: negation as identity" FAIL "the edit did not apply"
 else
-  must_reject "Metamath logic tampered: negation as identity" 600 "type mismatch" ./arlk check absorbed/metamath/set_prop.arlk "$LOGS/metamath_logic-negation.arlk"
+  must_reject "Metamath logic tampered: negation as identity" 600 "type mismatch" ./arlk qed absorbed/metamath/set_prop.arlk "$LOGS/metamath_logic-negation.arlk"
 fi
-must_pass "HOL foundation" 60 ./arlk check lib/hol.arlk
+must_pass "HOL foundation" 60 ./arlk qed lib/hol.arlk
 must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 must_pass "Isabelle absorption (proofs replayed by simp)" 600 tools/isabelle-export/check.sh ./arlk
 must_pass "language server" 300 python3 tools/lsp/smoke.py ./arlk
+must_pass "CLI: arlk qed, and check as its alias" 300 tools/cli-qed-check.sh ./arlk
 
 # Rocq's Corelib.Init (Logic, Datatypes, Peano, Nat, Specif, Wf): all 753
 # declarations check, sig/sigT lowered into Prop included.
 log="$LOGS/rocq-init.log"
-limit 1800 ./arlk check lib/core.arlk absorbed/rocq/init.arlk --keep-going >"$log" 2>&1
+limit 1800 ./arlk qed lib/core.arlk absorbed/rocq/init.arlk --keep-going >"$log" 2>&1
 if grep -q '^ok: lib/core.arlk absorbed/rocq/init.arlk (753 declarations)' "$log" && ! grep -q '^✗' "$log"; then
   record "Rocq Corelib.Init (all checked)" pass "753 declarations, none failing"
 else
@@ -122,7 +123,7 @@ fi
 # Nat.Linear's reflection proofs included.
 log="$LOGS/lean-nat-lemmas.log"
 # About 5 minutes here; a shared CI runner has needed over 40.
-limit 3600 ./arlk check lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
+limit 3600 ./arlk qed lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk --keep-going >"$log" 2>&1
 if grep -q '^ok: lib/core.arlk absorbed/lean/init_data_nat_lemmas.arlk (1573 declarations)' "$log" && ! grep -q '^✗' "$log"; then
   record "Lean Init.Data.Nat.Lemmas (all checked)" pass "1573 declarations, none failing"
 else
@@ -134,7 +135,7 @@ fi
 for m in init_simplemmas init_proplemmas init_data_bool init_data_sum_lemmas init_data_option_lemmas \
          init_data_int_lemmas init_data_int_order init_data_nat_dvd init_data_nat_gcd \
          init_data_prod init_data_char_lemmas init_core; do
-  must_pass "Lean module $m" 1200 ./arlk check lib/core.arlk "absorbed/lean/$m.arlk"
+  must_pass "Lean module $m" 1200 ./arlk qed lib/core.arlk "absorbed/lean/$m.arlk"
 done
 
 # Lean's Init.Data.List.Lemmas (688 theorems at their lowest universes):
@@ -142,7 +143,7 @@ done
 # check.
 if [ "${ARLK_FULL:-}" = 1 ]; then
   log="$LOGS/lean-list-lemmas.log"
-  limit 7200 ./arlk check lib/core.arlk absorbed/lean/init_data_list_lemmas.arlk --keep-going >"$log" 2>&1
+  limit 7200 ./arlk qed lib/core.arlk absorbed/lean/init_data_list_lemmas.arlk --keep-going >"$log" 2>&1
   if grep -q '^ok: lib/core.arlk absorbed/lean/init_data_list_lemmas.arlk (2617 declarations)' "$log" && ! grep -q '^✗' "$log"; then
     record "Lean Init.Data.List.Lemmas (all checked)" pass "2617 declarations, none failing"
   else
@@ -153,13 +154,13 @@ fi
 # Lean's theorems on Rocq's numbers (examples/transport.arlk): checked, and
 # a broken translation or a false preservation lemma must be rejected.
 LIBS="lib/core.arlk absorbed/lean/init_data_nat_basic.arlk absorbed/rocq/init_peano.arlk"
-must_pass "transport: Rocq add_comm from Lean" 1200 ./arlk check $LIBS examples/transport.arlk
+must_pass "transport: Rocq add_comm from Lean" 1200 ./arlk qed $LIBS examples/transport.arlk
 tampered() { # name sed-expression
   sed "$2" examples/transport.arlk >"$LOGS/transport-$1.arlk"
   if cmp -s examples/transport.arlk "$LOGS/transport-$1.arlk"; then
     record "transport tampered: $1" FAIL "the edit did not apply"
   else
-    must_reject "transport tampered: $1" 1200 "type mismatch" ./arlk check $LIBS "$LOGS/transport-$1.arlk"
+    must_reject "transport tampered: $1" 1200 "type mismatch" ./arlk qed $LIBS "$LOGS/transport-$1.arlk"
   fi
 }
 tampered broken-to_lean 's/(x: RN, r: LN) => Nat.succ(r)/(x: RN, r: LN) => r/'
@@ -176,14 +177,14 @@ if limit 900 tools/opentheory/fetch.sh base-1.221 "$OT" >"$LOGS/opentheory.artic
   ARTS=()
   while IFS= read -r a; do ARTS+=("$a"); done <"$LOGS/opentheory.articles"
   must_pass "OpenTheory: absorb base-1.221" 1800 ./arlk absorb-hol "${ARTS[@]}" -o "$LOGS/opentheory-base.arlk"
-  must_pass "OpenTheory: check base-1.221" 2400 ./arlk check lib/hol.arlk "$LOGS/opentheory-base.arlk"
+  must_pass "OpenTheory: check base-1.221" 2400 ./arlk qed lib/hol.arlk "$LOGS/opentheory-base.arlk"
   must_pass "OpenTheory: absorb bool, unit" 300 ./arlk absorb-hol "${ARTS[@]:0:8}" -o "$LOGS/opentheory-bool.arlk"
   ot_tampered() { # name sed-expression
     sed "$2" "$LOGS/opentheory-bool.arlk" >"$LOGS/opentheory-$1.arlk"
     if cmp -s "$LOGS/opentheory-bool.arlk" "$LOGS/opentheory-$1.arlk"; then
       record "OpenTheory tampered: $1" FAIL "the edit did not apply"
     else
-      must_reject "OpenTheory tampered: $1" 300 "type mismatch" ./arlk check lib/hol.arlk "$LOGS/opentheory-$1.arlk"
+      must_reject "OpenTheory tampered: $1" 300 "type mismatch" ./arlk qed lib/hol.arlk "$LOGS/opentheory-$1.arlk"
     fi
   }
   ot_tampered false-definition 's/^theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.F, /theorem bool_def.thm1: Prf(eq(bool)(Data.Bool.T, /'
@@ -191,12 +192,12 @@ if limit 900 tools/opentheory/fetch.sh base-1.221 "$OT" >"$LOGS/opentheory.artic
   # HOL read in Arlk's own type theory (a checked view): excluded middle,
   # proved by HOL, as a native theorem. A view that reads every HOL
   # statement as true must be rejected.
-  must_pass "HOL in types: excluded middle" 300 ./arlk check lib/hol.arlk "$LOGS/opentheory-bool.arlk" examples/hol_types.arlk
+  must_pass "HOL in types: excluded middle" 300 ./arlk qed lib/hol.arlk "$LOGS/opentheory-bool.arlk" examples/hol_types.arlk
   sed 's/^  Prf = (p: Sort(0)) => p,$/  Prf = (p: Sort(0)) => True,/' examples/hol_types.arlk >"$LOGS/hol_types-trivial.arlk"
   if cmp -s examples/hol_types.arlk "$LOGS/hol_types-trivial.arlk"; then
     record "HOL in types tampered: trivial view" FAIL "the edit did not apply"
   else
-    must_reject "HOL in types tampered: trivial view" 300 "type mismatch" ./arlk check lib/hol.arlk "$LOGS/opentheory-bool.arlk" "$LOGS/hol_types-trivial.arlk"
+    must_reject "HOL in types tampered: trivial view" 300 "type mismatch" ./arlk qed lib/hol.arlk "$LOGS/opentheory-bool.arlk" "$LOGS/hol_types-trivial.arlk"
   fi
 else
   record "OpenTheory base-1.221 (fetched, pinned)" FAIL "see $LOGS/opentheory-fetch.log and opentheory-sha.log"
@@ -204,7 +205,7 @@ fi
 
 # Proof bundles (#15): two results bundled and replayed from the bundle
 # alone; every kind of tampering caught with its own exit status.
-must_pass "views: route found and composed" 120 ./arlk check examples/views.arlk
+must_pass "views: route found and composed" 120 ./arlk qed examples/views.arlk
 must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arlk "$LOGS/bundles"
 # Independent expected identity, assumption policy, and original-source/model binding.
 must_pass "proof audit: trusted policy and source model" 300 python3 tools/proof-audit-check.py ./arlk
@@ -232,7 +233,7 @@ must_pass "Almide program: reverse keeps length" 1200 tools/almide-check.sh ./ar
 
 for f in spec/fixtures/reject/*.arlk; do
   want="$(sed -nE 's|^// expect: (.*)$|\1|p' "$f" | head -1)"
-  must_reject "reject $(basename "$f")" 120 "$want" ./arlk check "$f"
+  must_reject "reject $(basename "$f")" 120 "$want" ./arlk qed "$f"
 done
 must_reject "reject negative-numeral.json" 60 "negative" ./arlk absorb spec/fixtures/reject/negative-numeral.json
 

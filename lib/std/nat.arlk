@@ -1,7 +1,7 @@
 // Natural numbers (Peano) and addition, with the laws proofs about
 // programs keep needing.
 //
-//   arlk check lib/std/eq.arlk lib/std/nat.arlk YOUR.arlk
+//   arlk qed lib/std/eq.arlk lib/std/nat.arlk YOUR.arlk
 //
 // `add` recurses on its first argument, like a program written by
 // pattern matching: `add(zero, n)` and `add(succ(m), n)` compute, and the

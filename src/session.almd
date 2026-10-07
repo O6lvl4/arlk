@@ -2,7 +2,7 @@
 //
 //   arlk session STEP_DIR...     check the first step, then each following
 //                                step reusing what is unaffected
-//   arlk check FILE... --digest  the same digest from a fresh check
+//   arlk qed FILE... --digest  the same digest from a fresh check
 //
 // A step is a directory with `files.txt`, the source files in checking
 // order. A unit is one top-level declaration; its key is the hash of its
@@ -28,7 +28,7 @@
 // nothing is read from disk but sources. Each step prints what was reused
 // and why each other unit was checked again, and a digest of the result
 // (each declaration's outcome, statement, definition body, assumption
-// inventory and diagnostics) that a fresh `arlk check --digest` must
+// inventory and diagnostics) that a fresh `arlk qed --digest` must
 // reproduce exactly.
 
 import fs
@@ -596,5 +596,5 @@ fn digest_text(env: Env, records: List[Record]) -> String = {
   list.join(out, "\n")
 }
 
-// A fresh check, as records (for `arlk check --digest`).
+// A fresh check, as records (for `arlk qed --digest`).
 effect fn fresh(files: List[String]) -> Step = step(none, files)!

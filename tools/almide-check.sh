@@ -26,7 +26,7 @@ contains() { # name text file
 P=examples/almide
 
 expect model-is-the-translation 0 "$arlk" absorb-almide $P/reverse.almd --verify $P/reverse.arlk
-expect property-checks 0 "$arlk" check lib/almide.arlk $P/reverse.arlk $P/reverse_proof.arlk
+expect property-checks 0 "$arlk" qed lib/almide.arlk $P/reverse.arlk $P/reverse_proof.arlk
 expect bundle 0 "$arlk" bundle reverse_proof.reverse_length lib/almide.arlk $P/reverse.arlk $P/reverse_proof.arlk -o "$work/bundle"
 expect replay 0 sh -c "cd / && '$arlk' replay '$work/bundle'"
 contains bundle-carries-the-source-hash "almide-source-sha256: $(shasum -a 256 $P/reverse.almd | cut -d' ' -f1)" "$work/bundle/src/1-reverse.arlk"
@@ -37,7 +37,7 @@ sed 's/\[h, \.\.t\] => reverse(t) + \[h\],/[h, ..t] => reverse(t),/' $P/reverse.
 if cmp -s $P/reverse.almd "$work/reverse.almd"; then echo "FAIL  the edit did not apply"; fails=1; fi
 expect old-model-is-stale 1 "$arlk" absorb-almide "$work/reverse.almd" --verify $P/reverse.arlk
 expect absorb-broken 0 "$arlk" absorb-almide "$work/reverse.almd" -o "$work/reverse.arlk"
-expect old-proof-fails 1 "$arlk" check lib/almide.arlk "$work/reverse.arlk" $P/reverse_proof.arlk
+expect old-proof-fails 1 "$arlk" qed lib/almide.arlk "$work/reverse.arlk" $P/reverse_proof.arlk
 contains old-proof-fails-for-the-property "type mismatch" "$work/old-proof-fails.log"
 
 # Outside the subset: refused where it is written.
@@ -49,7 +49,7 @@ expect blocks-refused 1 "$arlk" absorb-almide "$work/block.almd"
 contains blocks-refused-here "block.almd:5:19: a block" "$work/blocks-refused.log"
 printf 'type N =\n  | Z\n  | S(N)\n\nfn loop(n: N) -> N = match n {\n  Z => Z,\n  S(m) => loop(S(m)),\n}\n' >"$work/loop.almd"
 expect absorb-loop 0 "$arlk" absorb-almide "$work/loop.almd" -o "$work/loop.arlk"
-expect non-structural-refused 1 "$arlk" check lib/almide.arlk "$work/loop.arlk"
+expect non-structural-refused 1 "$arlk" qed lib/almide.arlk "$work/loop.arlk"
 contains non-structural-refused-why "structural recursion" "$work/non-structural-refused.log"
 
 # The model against the compiled program, on the example main prints.
@@ -57,7 +57,7 @@ if command -v almide >/dev/null 2>&1; then
   expect compiled-program-runs 0 almide run $P/reverse.almd
   compiled=$(grep -E '^(Red|Green|Blue)( |$)' "$work/compiled-program-runs.log" | tail -1)
   { cat $P/reverse.arlk; printf '\nroom diff uses almide, almide_reverse\neval reverse(List.cons(Color.Red, List.cons(Color.Green, List.cons(Color.Blue, List.cons(Color.Blue, List.nil)))))\n'; } >"$work/diff.arlk"
-  expect model-evaluates 0 "$arlk" check lib/almide.arlk "$work/diff.arlk"
+  expect model-evaluates 0 "$arlk" qed lib/almide.arlk "$work/diff.arlk"
   model=$(grep -F 'reverse(' "$work/model-evaluates.log" | grep -F ' = ' | sed 's/.* = //' | grep -oE 'Color\.(Red|Green|Blue)' | sed 's/Color\.//' | tr '\n' ' ' | sed 's/ $//')
   if [ "$compiled" = "$model" ] && [ -n "$model" ]; then echo "pass  model agrees with the compiled program: $model"; else echo "FAIL  compiled '$compiled', model '$model'"; fails=1; fi
 fi

@@ -647,6 +647,30 @@ local fn arm_body(cx: Comp, body: Raw, look: (String) -> Target?, ret: Raw) -> R
   // variable. Its type is found from the head function's result type
   // (`look("=f")`). Where the result type mentions f(a), it is abstracted
   // (Agda's `with`), so each arm's goal has its constructor in its place.
+  // `match f(a) with h: E { ... }`: as below, but each arm's goal is
+  // (h: E(_, f(a), p)) -> G[p] (f(a) abstracted in G only), and the whole
+  // is applied to E.refl, which proves E(_, f(a), f(a)).
+  RMatch(RApp(RApp(RApp(RName("%with"), e), RName(hname)), RName(eqty)), arms) => {
+    let (h, _) = raw_spine(e)
+    let fname = match h {
+      RName(n) => n,
+      RInst(n, _) => n,
+      RExplicit(n, _) => n,
+      _ => "",
+    }
+    guard fname != "" else err("match on an expression: write a call (`match f(x) with h { ... }`)")
+    let taken = names_in(e) + names_in(ret) + [hname] + (arms |> list.flat_map((a) => names_in(a.body) + (a.subs |> list.flat_map((s) => sub_names(s))))) + (cx.d.params |> list.map(((x, _)) => x)) + cx.vars
+    let v = fresh("value", taken)
+    let rows = arms |> list.map((a) => (if a.ctor == "_" then [SName("_")] else [SCon(a.ctor, a.subs)], RLam(hname, hole(), a.body)))
+    let head = match list.find(cx.d.params, ((x, _)) => x == fname) {
+      some((_, ty)) => raw_head_name(codomain(ty)),
+      none => "=" + fname,
+    }
+    let cx2 = { ...cx, heads: cx.heads + [(v, head)] }
+    let goal = RPi(hname, raw_apply(RName(eqty), [hole(), e, RName(v)]), abstract_expr(ret, e, names_in(e), RName(v)))
+    let inner = matrix(cx2, [v], rows, look, goal)!
+    ok(RApp(RApp(RLam(v, hole(), inner), recursive_calls(cx, e)!), RName(eqty + ".refl")))
+  },
   RMatch(e, arms) => {
     let (h, _) = raw_spine(e)
     let fname = match h {

@@ -3,7 +3,7 @@
 // states where it lands and gives its proof; a step without `by` holds by
 // computation. The chain is joined with `trans` and checked step by step.
 //
-//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk examples/calc.arlk
+//   arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk examples/calc.arlk
 room calcdemo uses eq, logic, nat
 
 theorem rotate(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(add(b, c), a)) = calc add(add(a, b), c) {

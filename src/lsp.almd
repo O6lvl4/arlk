@@ -5,13 +5,13 @@
 // On open, change and save, the document is checked with every
 // declaration kept going, and each failure becomes a diagnostic on its
 // line. Files the document needs are read from its first comment line of
-// the form `arlk check A.arlk B.arlk THIS.arlk` (the convention of the
+// the form `arlk qed A.arlk B.arlk THIS.arlk` (the convention of the
 // examples and the library), relative to the workspace root; the last name
 // on that line is the document itself. Hover shows the type of the
 // constant under the cursor, as the checked document sees it.
 //
 // Nothing here decides what is true: it runs the same checker as
-// `arlk check` and reports what it says.
+// `arlk qed` and reports what it says.
 
 import json
 import io
@@ -97,15 +97,17 @@ local fn int_at(v: Value, path: List[String]) -> Int = match field(v, path) {
 
 // ── Checking a document ─────────────────────────────────────────────
 
-// The files a document needs, from its `arlk check ...` comment line.
+// The files a document needs, from its `arlk qed ...` comment line (or
+// `arlk check ...`, the command's earlier name).
 fn prerequisites(text: String) -> List[String] = {
   // The line may continue on the next comment lines after a `\`.
   var words: List[String] = []
   var state = 0
   for line in string.split(text, "\n") {
     let t = string.trim(line)
-    if state == 0 and string.starts_with(t, "//") and string.contains(t, "arlk check ") then {
-      words = string.split(string.drop(t, (string.index_of(t, "arlk check ") ?? 0) + 11), " ")
+    let verb = if string.contains(t, "arlk qed ") then "arlk qed " else "arlk check "
+    if state == 0 and string.starts_with(t, "//") and string.contains(t, verb) then {
+      words = string.split(string.drop(t, (string.index_of(t, verb) ?? 0) + string.len(verb)), " ")
       state = if string.ends_with(t, "\\") then 1 else 2
     } else if state == 1 and string.starts_with(t, "//") then {
       words = words + string.split(string.drop(t, 2), " ")
@@ -134,7 +136,7 @@ effect fn check_text(root: String, text: String) -> (List[(Int, String)], Env) =
         },
         err(e) => list.push(problems, (1, "in ${pre}: ${e}")),
       },
-      err(_) => list.push(problems, (1, "cannot read ${path} (named on the `arlk check` line)")),
+      err(_) => list.push(problems, (1, "cannot read ${path} (named on the `arlk qed` line)")),
     }
   }
   match syntax.parse(text) {
@@ -255,10 +257,11 @@ effect fn serve() -> Unit = {
   }
 }
 
-test "a document's prerequisites come from its arlk check line, continued after \\" {
-  let text = "// Div.\n//\n//   arlk check lib/std/eq.arlk lib/std/nat.arlk \\\n//     lib/std/wf.arlk YOUR.arlk\n\nroom r\n"
+test "a document's prerequisites come from its arlk qed line, continued after \\" {
+  let text = "// Div.\n//\n//   arlk qed lib/std/eq.arlk lib/std/nat.arlk \\\n//     lib/std/wf.arlk YOUR.arlk\n\nroom r\n"
   assert_eq(prerequisites(text), ["lib/std/eq.arlk", "lib/std/nat.arlk", "lib/std/wf.arlk"])
   assert_eq(prerequisites("room r\n"), [])
+  assert_eq(prerequisites("//   arlk check lib/std/eq.arlk YOUR.arlk\n"), ["lib/std/eq.arlk"])
 }
 
 test "the word under the cursor" {

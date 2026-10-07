@@ -21,7 +21,7 @@ Files are loaded in order, each after what it uses. Load only what a client need
 | `wf` | `lib/std/wf.arlk` | `eq`, `logic`, `nat` |
 
 ```
-arlk check lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
+arlk qed lib/std/eq.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk YOUR.arlk
 ```
 
 A client names the rooms it uses: `room mine uses eq, nat, almide, list`. Nothing from `core`,

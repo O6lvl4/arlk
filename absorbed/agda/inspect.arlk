@@ -1,0 +1,42 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Inspect (Inspect.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Inspect
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type Bool: Type =
+  | true: Bool
+  | false: Bool
+
+type eq(A: Type, x: A): A -> Type =
+  | refl: eq(A, x, x)
+
+type sum(A: Type, B: Type): Type =
+  | inj1(x1: A): sum(A, B)
+  | inj2(x1: B): sum(A, B)
+
+def is_zero(x1: ℕ) -> Bool = match x1 {
+  zero => Bool.true,
+  suc(n) => Bool.false,
+}
+
+type Bot: Type =
+
+def Bot_elim[A: Type](x2: Bot) -> A = match x2 {
+}
+
+def falsextrue(x1: eq(_, Bool.false, Bool.true)) -> Bot = match x1 {
+}
+
+def zero_of_true(n: ℕ, e: eq(_, is_zero(n), Bool.true)) -> eq(_, n, ℕ.zero) = match n {
+  zero => eq.refl,
+  suc(n') => Bot_elim(falsextrue(e)),
+}
+
+def zero_or_false(n: ℕ) -> sum(eq(_, n, ℕ.zero), eq(_, is_zero(n), Bool.false)) =  match is_zero(n) with eq': eq {
+    true => sum.inj1(zero_of_true(n, eq')),
+    false => sum.inj2(eq.refl),
+  }

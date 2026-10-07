@@ -1,7 +1,7 @@
 // Transport from Agda: a theorem absorbed from an Agda module, used to
 // prove the same fact about Arlk's own naturals.
 //
-//   arlk check absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk
+//   arlk qed absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk
 //
 // absorbed/agda/arith.arlk is `arlk absorb-agda absorbed/agda/Arith.agda`:
 // Agda's ℕ, _+_ and +-comm, as checked Arlk declarations. Agda's ℕ and

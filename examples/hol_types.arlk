@@ -17,7 +17,7 @@
 // it carries is checked again here, so nothing about the view is trusted.
 //
 //   arlk absorb-hol bool-def.art ... -o bool.arlk
-//   arlk check lib/hol.arlk bool.arlk examples/hol_types.arlk
+//   arlk qed lib/hol.arlk bool.arlk examples/hol_types.arlk
 
 room holtypes
 

@@ -1724,6 +1724,46 @@ theorem still_a_name(n: Nat) -> Eq(Nat, rewrite(n), n) = Eq.refl
   })
 }
 
+test "match with an equation gives each arm the equation of its case" {
+  let src = "\n" + """
+room mw uses eq, logic, nat
+type B: Type =
+  | t: B
+  | f: B
+def is_zero(n: Nat) -> B = match n {
+  zero => B.t,
+  succ(k) => B.f,
+}
+def is_t(b: B) -> Sort(0) = match b {
+  t => True,
+  f => False,
+}
+theorem t_ne_f(e: Eq(B, B.t, B.f)) -> False = subst((b: B) => is_t(b), e, True.intro)
+theorem zero_of_t(n: Nat, e: Eq(B, is_zero(n), B.t)) -> Eq(Nat, n, Nat.zero) = match n {
+  zero => Eq.refl,
+  succ(k) => absurd(Eq(Nat, Nat.succ(k), Nat.zero), t_ne_f(symm(e))),
+}
+"""
+  let good = src + """
+theorem zero_or_f(n: Nat) -> Or(Eq(Nat, n, Nat.zero), Eq(B, is_zero(n), B.f)) = match is_zero(n) with h {
+  t => Or.inl(zero_of_t(n, h)),
+  f => Or.inr(Eq.refl),
+}
+"""
+  assert_eq(run_wf(good)!, none)
+  // In the arm for f, h says is_zero(n) = f, which is not what the goal needs.
+  let bad = src + """
+theorem zero_or_f(n: Nat) -> Or(Eq(Nat, n, Nat.zero), Eq(B, is_zero(n), B.f)) = match is_zero(n) with h {
+  t => Or.inl(zero_of_t(n, h)),
+  f => Or.inl(zero_of_t(n, h)),
+}
+"""
+  assert(match run_wf(bad)! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}
+
 // ── Quotients ──────────────────────────────────────────────────────
 
 effect fn run_quot(src: String) -> String? = {

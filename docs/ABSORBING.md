@@ -7,14 +7,14 @@ What Arlk takes from each system, natively and when absorbing it, and what is mi
 tools/lean-export/Export.lean      Lean side: a declaration (or module) and its dependencies as JSON
 tools/rocq-export/                 Rocq side: a plugin, `Arlk Export "out.json" name...`
 arlk absorb EXPORT.json -o F       Arlk side: turn that JSON into Arlk source
-arlk check lib/core.arlk F         check it; neither prover is involved
+arlk qed lib/core.arlk F         check it; neither prover is involved
 ```
 
 ```
-$ ./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
+$ ./arlk qed lib/core.arlk absorbed/lean/nat_add_zero.arlk
 ✓ theorem Init.Nat.add_zero: core.El(core.l0, core.pi(core.l1, core.l0, Nat, (n: core.El(core.l1, Nat)) => Eq@1(Nat, HAdd.hAdd@0@0@0(..., n, OfNat.ofNat@0(Nat, Nat.zero, ...)), n)))
 
-$ ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
+$ ./arlk qed lib/core.arlk absorbed/rocq/init_peano.arlk
 ✓ theorem Corelib.Init.Peano.plus_n_O: core.El(core.l0, core.pi(core.l1, core.l0, Init.Datatypes.nat, (n: ...) => Init.Logic.eq@1(Init.Datatypes.nat, n, Init.Nat.add(n, Init.Datatypes.nat.O))))
 ```
 
@@ -119,7 +119,7 @@ keeps definitions apart by identity, not by name.
 ```
 $ tools/opentheory/fetch.sh base-1.221 otlib > order.txt
 $ ./arlk absorb-hol $(cat order.txt) -o base.arlk
-$ ./arlk check lib/hol.arlk base.arlk
+$ ./arlk qed lib/hol.arlk base.arlk
 ✓ theorem opentheory.bool_class.thm1: hol.Prf(Data.Bool.forall(hol.bool, (t_7: hol.Tm(hol.bool)) => Data.Bool.or(t_7, Data.Bool.not(t_7))))
 ...
 ```
@@ -146,7 +146,7 @@ prove Arlk's own `nat.add_comm` again, through the isomorphism of the two natura
 
 ```
 $ ./arlk absorb-agda absorbed/agda/Arith.agda -o absorbed/agda/arith.arlk
-$ ./arlk check absorbed/agda/arith.arlk
+$ ./arlk qed absorbed/agda/arith.arlk
 ```
 
 A `coinductive` record becomes Arlk `codata`, and a definition by copatterns (`head (from n) = n`,
@@ -186,7 +186,7 @@ that a false lemma is rejected.
 
 ```
 $ ./arlk absorb-isabelle absorbed/isabelle/Lists.thy -o absorbed/isabelle/lists.arlk
-$ ./arlk check lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk
+$ ./arlk qed lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk
 ✓ theorem isabelle.Lists.total_rev: (xs: isabelle.Main.list(isabelle.Main.nat)) -> eq.Eq[1](isabelle.Main.nat, total(isabelle.Main.rev(isabelle.Main.nat, xs)), total(xs))
 ```
 

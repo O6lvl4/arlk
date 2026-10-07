@@ -4,6 +4,10 @@ Build prerequisites and the pinned CI toolchain are in [docs/TOOLCHAIN.md](TOOLC
 Commands below run from the repository root; use `./arlk`, or put the built binary on `PATH`
 when a command is written as `arlk`. Uppercase names are placeholders for your own files or claim.
 
+`arlk qed FILE...` checks every proof in the files, in order, and exits 0 only when all of what
+was to be shown is shown (1 when something is rejected, 2 on a usage error). `arlk check` is the
+same command under its earlier name and keeps working.
+
 [tools/ci.sh](../tools/ci.sh) runs the build, tests, native examples, committed absorbed libraries,
 OpenTheory library checks, and rejection fixtures. Lean and Rocq are not needed to recheck the
 committed `.arlk` sources. `Corelib.Init` is expected to pass completely; the separate daily Rocq
@@ -13,16 +17,16 @@ commit, not a soundness proof; see [docs/TRUST.md](TRUST.md).
 
 ```
 almide build src/main.almd -o arlk
-./arlk check examples/logic.arlk
-./arlk check examples/nat.arlk
+./arlk qed examples/logic.arlk
+./arlk qed examples/nat.arlk
 
-./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
-./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
-./arlk check absorbed/metamath/set_prop.arlk
+./arlk qed lib/core.arlk absorbed/lean/nat_add_zero.arlk
+./arlk qed lib/core.arlk absorbed/rocq/init_peano.arlk
+./arlk qed absorbed/metamath/set_prop.arlk
 ./arlk absorb-mm set.mm --upto stoic4b -o out.arlk
 ./arlk bundle CLAIM FILE... -o DIR && ./arlk replay DIR
 ./arlk absorb-almide examples/almide/reverse.almd --verify examples/almide/reverse.arlk
-./arlk check lib/hol.arlk
+./arlk qed lib/hol.arlk
 tools/opentheory/fetch.sh base-1.221 otlib > order.txt && ./arlk absorb-hol $(cat order.txt) -o base.arlk
 tools/check-absorbed.sh
 
@@ -39,7 +43,7 @@ and append's laws), and well-founded recursion (`Acc`, `WellFounded`, `fix` and 
 loads only the files it needs and redeclares none of it; see [docs/STDLIB.md](STDLIB.md).
 
 ```
-arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
+arlk qed lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk lib/almide.arlk lib/std/list.arlk examples/std/sort.arlk
 ```
 
 Quotient types live beside it in [lib/quot.arlk](../lib/quot.arlk): Lean's `Quot`, `Quot.mk`, `Quot.lift`
@@ -53,8 +57,8 @@ builds the integers as pairs of naturals up to `a + d = c + b`, lifts negation t
 `arlk lsp` is a language server (Language Server Protocol, on standard input and output). On open,
 change and save it checks the document with every declaration kept going and reports each failure
 on its line; hovering a name shows its type. The files a document needs come from its comment line
-`arlk check A.arlk B.arlk THIS.arlk` (the convention the examples and the library already follow),
-relative to the workspace root. It runs the same checker as `arlk check`
+`arlk qed A.arlk B.arlk THIS.arlk` (the convention the examples and the library already follow),
+relative to the workspace root. It runs the same checker as `arlk qed`
 ([src/lsp.almd](../src/lsp.almd); [tools/lsp/smoke.py](../tools/lsp/smoke.py) drives a session in CI).
 
 ## Incremental checking
@@ -63,7 +67,7 @@ relative to the workspace root. It runs the same checker as `arlk check`
 that an edit cannot have affected, and says why each other one was checked again. Proofs are opaque
 to their users, so editing a proof checks one declaration. Changing a definition, rule, type, room
 or view checks everything that rests on it. After every edit, the result must be identical to a
-fresh check (`arlk check --digest`); CI checks this over 29 edits of every kind. See
+fresh check (`arlk qed --digest`); CI checks this over 29 edits of every kind. See
 [docs/INCREMENTAL.md](INCREMENTAL.md).
 
 ## Packages: checked libraries and views, reused
@@ -107,7 +111,7 @@ fn reverse[A](xs: List[A]) -> List[A] = match xs {     // examples/almide/revers
 
 ```
 $ arlk absorb-almide examples/almide/reverse.almd -o examples/almide/reverse.arlk
-$ arlk check lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
+$ arlk qed lib/almide.arlk examples/almide/reverse.arlk examples/almide/reverse_proof.arlk
 ✓ theorem reverse_proof.reverse_length: (A: Type, xs: almide.List[0](A)) -> Eq[1](Nat, length(A, almide_reverse.reverse(A, xs)), length(A, xs))
 axioms reverse_proof.reverse_length
   symbols: (none)

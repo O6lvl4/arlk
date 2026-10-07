@@ -2,7 +2,7 @@
 // negation, and their counterparts in Type (Unit, Empty, Prod, Sum) for
 // computations that carry evidence (`LE(a, b) -> Type`).
 //
-//   arlk check lib/std/logic.arlk YOUR.arlk
+//   arlk qed lib/std/logic.arlk YOUR.arlk
 //
 // All are inductive types with checked recursors; nothing is assumed.
 // Or and Exists eliminate only into Prop; And, False, and the Type-level

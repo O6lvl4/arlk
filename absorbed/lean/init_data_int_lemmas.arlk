@@ -1,5 +1,5 @@
 // Absorbed from Lean 4 by `arlk absorb`: 148 theorems and everything they use.
-// Check it with `arlk check lib/core.arlk <this file>`;
+// Check it with `arlk qed lib/core.arlk <this file>`;
 // Lean 4 is not needed to check it. The check is relative to the symbols
 // and rules below (see `axioms`), which encode Lean 4's theory.
 room Init uses core
