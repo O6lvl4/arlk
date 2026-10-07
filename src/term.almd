@@ -215,6 +215,23 @@ fn instantiate(t: Term, vals: List[Term], depth: Int) -> Term = match t {
 // β-substitution: the body of a binder with Var(0) := v.
 fn subst(body: Term, v: Term) -> Term = instantiate(body, [v], 0)
 
+// β-normal form, for showing a term (goals, hypotheses): no definition is
+// unfolded. At most `fuel` contractions are nested, so it always stops.
+fn beta_nf(t: Term) -> Term = beta_go(t, 64)
+
+local fn beta_go(t: Term, fuel: Int) -> Term = match t {
+  App(f, a) => {
+    let g = beta_go(f, fuel)
+    match g {
+      Lam(_, _, b) => if fuel > 0 then beta_go(subst(b, a), fuel - 1) else App(g, a),
+      _ => App(g, beta_go(a, fuel)),
+    }
+  },
+  Lam(x, ty, b) => Lam(x, beta_go(ty, fuel), beta_go(b, fuel)),
+  Pi(x, ty, b) => Pi(x, beta_go(ty, fuel), beta_go(b, fuel)),
+  other => other,
+}
+
 // Split `f a1 .. an` into its head and arguments, in application order.
 fn spine(t: Term) -> (Term, List[Term]) = spine_acc(t, [])
 
@@ -284,4 +301,10 @@ test "terms equal up to binder names" {
   assert(alpha_eq(App(Pi("a", Const("N", []), Const("N", [])), Var(1)), App(Pi("b", Const("N", []), Const("N", [])), Var(1))))
   assert(not alpha_eq(Lam("x", Sort(LZero), Var(0)), Lam("x", Sort(LZero), Var(1))))
   assert(not alpha_eq(Lam("x", Sort(LZero), Var(0)), Pi("x", Sort(LZero), Var(0))))
+}
+
+test "beta_nf contracts every redex, under binders too" {
+  let id = Lam("x", Sort(LZero), Var(0))
+  let t = Lam("y", Sort(LZero), App(Const("f", []), App(id, Var(0))))
+  assert_eq(beta_nf(App(App(Lam("g", Sort(LZero), Var(0)), t), Const("c", []))), App(Const("f", []), Const("c", [])))
 }

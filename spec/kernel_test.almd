@@ -1634,12 +1634,28 @@ test "an unknown name suggests close spellings or the room that declares it" {
 test "an open goal says which visible theorem closes it, and nothing for a false one" {
   let open_goal = "room gs uses eq, logic, nat\ntheorem c(m: Nat, n: Nat) -> Eq(Nat, add(m, n), add(n, m)) = ?\n"
   assert(match run_wf(open_goal)! {
-    some(e) => string.contains(e, "search closes it: nat.add_comm(m, n)"),
+    some(e) => string.contains(e, "search closes it: add_comm(m, n)"),
     none => false,
   })
   let false_goal = "room gs uses eq, logic, nat\ntheorem c(m: Nat) -> Eq(Nat, add(m, Nat.zero), Nat.succ(m)) = ?\n"
   assert(match run_wf(false_goal)! {
     some(e) => string.contains(e, "1 open goal") and not string.contains(e, "search closes it"),
+    none => false,
+  })
+}
+
+test "a goal inside a match arm is shown with the motive applied, in the names the room uses" {
+  // A local name that a short name would hide keeps the long one.
+  let shadow = "room gs uses eq, logic, nat\ntheorem z(add: Nat) -> Eq(Nat, nat.add(add, Nat.zero), add) = ?\n"
+  assert(match run_wf(shadow)! {
+    some(e) => string.contains(e, "goal: Eq[1](Nat, nat.add(add, Nat.zero), add)"),
+    none => false,
+  })
+  let arm = "room gs uses eq, logic, nat\ntheorem z(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {\n  zero => Eq.refl,\n  succ(k) => ?,\n}\n"
+  assert(match run_wf(arm)! {
+    some(e) => string.contains(e, "goal: Eq[1](Nat, add(Nat.succ(k), Nat.zero), Nat.succ(k))")
+      and string.contains(e, "ih_k: Eq[1](Nat, add(k, Nat.zero), k)")
+      and not string.contains(e, "=>"),
     none => false,
   })
 }

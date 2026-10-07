@@ -365,6 +365,39 @@ local fn names_of(ctx: Ctx) -> List[String] = ctx |> list.map(((x, _)) => x)
 
 fn show(env: Env, ctx: Ctx, t: Term) -> String = pretty.show(env.room, names_of(ctx), t)
 
+// Like `show`, but names from the rooms in use print as they are written
+// there (`add`, not `nat.add`) whenever that spelling resolves back to the
+// same name. For goals and hypotheses shown to the reader.
+fn show_short(env: Env, ctx: Ctx, t: Term) -> String = {
+  let names = names_of(ctx)
+  var short: Map[String, String] = map.new()
+  for c in list.unique(consts(t)) {
+    let r = room_of(env, c)
+    match string.strip_prefix(c, r + ".") {
+      some(x) => if r != env.room and not list.contains(names, x) and resolves_to(env, x, c) then map.insert(short, c, env.room + "." + x) else (),
+      none => (),
+    }
+  }
+  pretty.show(env.room, names, rename_consts(t, short))
+}
+
+local fn resolves_to(env: Env, x: String, c: String) -> Bool = match resolve_const(env, x) {
+  ok(q) => q == c,
+  err(_) => false,
+}
+
+local fn rename_consts(t: Term, m: Map[String, String]) -> Term = match t {
+  Const(c, ls) => match map.get(m, c) {
+    // Not `map.get(m, c) ?? c`: v0.64.0 borrows and moves c in one call (almide/almide#3409).
+    some(short) => Const(short, ls),
+    none => Const(c, ls),
+  },
+  App(f, a) => App(rename_consts(f, m), rename_consts(a, m)),
+  Lam(x, ty, b) => Lam(x, rename_consts(ty, m), rename_consts(b, m)),
+  Pi(x, ty, b) => Pi(x, rename_consts(ty, m), rename_consts(b, m)),
+  other => other,
+}
+
 // ── Work budget ─────────────────────────────────────────────────────
 //
 // Rules may loop, so every reduction step and every conversion or

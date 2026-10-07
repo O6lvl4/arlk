@@ -13,7 +13,7 @@
 // Nothing here is trusted. The output has no holes left and goes to the
 // kernel like any hand-written term; a wrong solution is a type error.
 
-import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta, occurs, alpha_eq}
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta, occurs, alpha_eq, beta_nf}
 import self.syntax.{Raw}
 import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
@@ -969,24 +969,24 @@ local fn goal_report(env: Env, sc: Scope, st: ElabState) -> String = {
   let n = list.len(st.goals)
   list.push(out, "${int.to_string(n)} open goal${if n == 1 then "" else "s"} (?)")
   for (ctx, m, ty) in st.goals {
-    list.push(out, "  goal: ${show(env, ctx, zonk(st, ty))}")
+    list.push(out, "  goal: ${kernel.show_short(env, ctx, beta_nf(zonk(st, ty)))}")
     var i = list.len(ctx) - 1
     while i >= 0 {
       match list.get(ctx, i) {
         some((x, xty)) => {
           let outer = list.drop(ctx, i + 1)
-          list.push(out, "    ${x}: ${show(env, outer, zonk(st, xty))}")
+          list.push(out, "    ${x}: ${kernel.show_short(env, outer, beta_nf(zonk(st, xty)))}")
         },
         none => (),
       }
       i = i - 1
     }
     let zm = zonk(st, m)
-    if not has_meta(zm) then list.push(out, "    (unification found: ${show(env, ctx, zm)})")
+    if not has_meta(zm) then list.push(out, "    (unification found: ${kernel.show_short(env, ctx, beta_nf(zm))})")
     else {
       let zty = zonk(st, ty)
       if has_meta(zty) then () else match search.suggest(env, ctx, zty) {
-        some(t) => list.push(out, "    (search closes it: ${show(env, ctx, t)})"),
+        some(t) => list.push(out, "    (search closes it: ${kernel.show_short(env, ctx, t)})"),
         none => (),
       }
     }
