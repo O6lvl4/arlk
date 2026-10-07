@@ -3,6 +3,7 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -18,10 +19,16 @@ audit = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(audit)
 
 
+# The audit refuses paths through symbolic links, and macOS's temporary
+# directory is reached through one (/var -> /private/var): work under its
+# real path.
+TMP = os.path.realpath(tempfile.gettempdir())
+
+
 class ProofAuditTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.shared = tempfile.TemporaryDirectory(prefix="arlk-audit-test-")
+        cls.shared = tempfile.TemporaryDirectory(prefix="arlk-audit-test-", dir=TMP)
         cls.base = Path(cls.shared.name) / "reverse"
         cls.bundle(cls.base, "reverse_proof.reverse_length", "lib/almide.arlk",
                    "examples/almide/reverse.arlk", "examples/almide/reverse_proof.arlk")
@@ -39,7 +46,7 @@ class ProofAuditTests(unittest.TestCase):
             raise AssertionError(result.stdout + result.stderr)
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix="arlk-audit-case-")
+        self.tmp = tempfile.TemporaryDirectory(prefix="arlk-audit-case-", dir=TMP)
         self.addCleanup(self.tmp.cleanup)
         self.work = Path(self.tmp.name)
         self.candidate = self.work / "candidate"
