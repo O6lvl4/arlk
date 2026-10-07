@@ -10,6 +10,24 @@
 // variables in scope where it was made). The kernel never accepts one.
 type Term = | Sort(Level) | Var(Int) | Const(String, List[Level]) | App(Term, Term) | Lam(String, Term, Term) | Pi(String, Term, Term) | Meta(Int)
 
+// Equality up to the names of binders (which only printing looks at): the
+// same term with a binder renamed (`x` and `x'`) is equal.
+fn alpha_eq(a: Term, b: Term) -> Bool = match a {
+  App(f, x) => match b {
+    App(g, y) => alpha_eq(f, g) and alpha_eq(x, y),
+    _ => false,
+  },
+  Lam(_, t1, b1) => match b {
+    Lam(_, t2, b2) => alpha_eq(t1, t2) and alpha_eq(b1, b2),
+    _ => false,
+  },
+  Pi(_, t1, b1) => match b {
+    Pi(_, t2, b2) => alpha_eq(t1, t2) and alpha_eq(b1, b2),
+    _ => false,
+  },
+  _ => a == b,
+}
+
 // ── Universe levels ─────────────────────────────────────────────────
 
 // Levels as in Lean's kernel: imax(u, v) is 0 when v is 0 and max(u, v)
@@ -259,4 +277,11 @@ test "levels: max, succ and imax are decided for every parameter value" {
   assert_eq(level_simp(LIMax(level_of_nat(2), level_of_nat(1))), level_of_nat(2))
   assert_eq(level_simp(LIMax(u, LZero)), LZero)
   assert_eq(level_simp(LMax(u, LZero)), u)
+}
+
+test "terms equal up to binder names" {
+  assert(alpha_eq(Lam("x", Sort(LZero), Var(0)), Lam("y", Sort(LZero), Var(0))))
+  assert(alpha_eq(App(Pi("a", Const("N", []), Const("N", [])), Var(1)), App(Pi("b", Const("N", []), Const("N", [])), Var(1))))
+  assert(not alpha_eq(Lam("x", Sort(LZero), Var(0)), Lam("x", Sort(LZero), Var(1))))
+  assert(not alpha_eq(Lam("x", Sort(LZero), Var(0)), Pi("x", Sort(LZero), Var(0))))
 }

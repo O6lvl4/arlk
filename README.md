@@ -554,9 +554,9 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
 | Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
-| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | 1572 of 1573 (one theorem of `Nat.Linear`'s reflection proofs runs out of budget) | ~5 min |
+| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | all 1573 | ~5 min |
 | Lean `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` (each module whole: 2136 theorems) | all of them | ~16 min together |
-| Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | 2612 of 2617 (two roots run out of budget) | ~13 min |
+| Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | 2614 of 2617 (one root runs out of budget) | ~13 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
