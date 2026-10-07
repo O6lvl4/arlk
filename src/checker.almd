@@ -2100,7 +2100,7 @@ local fn needs_elab(env: Env, r: Raw) -> Bool =
   else uses_inference(env, r)
 
 local fn has_hole(r: Raw) -> Bool = match r {
-  RName(x) => x == "_" or x == "?" or x == "%simp",
+  RName(x) => x == "_" or x == "?" or x == "%simp" or x == "%rewrite",
   RApp(f, a) => has_hole(f) or has_hole(a),
   RLam(_, ty, b) => has_hole(ty) or has_hole(b),
   RPi(_, ty, b) => has_hole(ty) or has_hole(b),
@@ -2108,7 +2108,7 @@ local fn has_hole(r: Raw) -> Bool = match r {
 }
 
 local fn uses_inference(env: Env, r: Raw) -> Bool = match r {
-  RName(x) => x == "_" or x == "?" or x == "%simp" or match resolve_const(env, x) {
+  RName(x) => x == "_" or x == "?" or x == "%simp" or x == "%rewrite" or match resolve_const(env, x) {
     ok(c) => map.contains(env.implicits, c) or map.contains(env.lparams, c),
     // `p.x` (a field of a local p) is the elaborator's to read.
     err(_) => string.contains(x, "."),

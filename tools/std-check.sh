@@ -94,6 +94,9 @@ contains calc-wrong-proof-why "type mismatch for add_comm(a, add(b, c))" "$work/
 mutate calc-wrong-step $CALC 's/^  = Nat.succ(Nat.succ(add(Nat.zero, n)))$/  = Nat.succ(add(Nat.zero, n))/'
 expect calc-wrong-step 1 "$arlk" check $EQ $LOGIC $NAT "$work/calc-wrong-step.arlk"
 contains calc-wrong-step-why "mismatch" "$work/calc-wrong-step.log"
+mutate rewrite-wrong $CALC 's/rewrite add_comm(a, b) { Eq.refl }/rewrite add_comm(b, c) { Eq.refl }/'
+expect rewrite-wrong 1 "$arlk" check $EQ $LOGIC $NAT "$work/rewrite-wrong.arlk"
+contains rewrite-wrong-why "rewrite: add(b, c) does not occur in the goal" "$work/rewrite-wrong.log"
 # Quotients (lib/quot.arlk assumes Lean's primitives): the integers as
 # pairs; negation that does not respect the relation, and a false
 # equation between classes, are rejected.

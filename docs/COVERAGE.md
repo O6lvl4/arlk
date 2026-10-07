@@ -27,6 +27,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Well-founded recursion (`decreasing x by W`), `fix` and its unfolding law; course-of-values recursion (calls on deeper subterms) through it | native, from `Acc` (adds no trust) | `checker.add_wf_def`, `lib/std/wf.arlk` |
 | Rewriting tactic (`by simp`, `by induction x simp`) | native, produces checked terms | `simp.almd` |
 | Equational chains (`calc`; Lean's `calc`, Agda's `≡⟨⟩` reasoning, Isar's `also`/`finally`) | native, a chain of `trans` (adds no trust) | `syntax.calc` |
+| Rewriting the goal with an equation (`rewrite h { … }`; Lean's `rw`, Agda's `rewrite`) | native, the goal's occurrences abstracted and carried by the equality's recursor (adds no trust) | `elab.rewrite` |
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
 | Views and translations between theories | native | `checker.add_view`, `translate` |
 | Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
@@ -71,12 +72,14 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Dependent pattern matching on equality (`sym refl = refl`) | absorbed (index refinement in `match`) |
 | Absurd patterns `()` (also in a later argument), dependent matching on `≤`-like families | absorbed (impossible arms left out, checked by Arlk's match) |
 | Records (`constructor`, `field`, `open R`), projections | absorbed (a type with one constructor, a projection per field) |
-| `with` on a value, in functions and in proofs whose goal mentions it | absorbed (`match` on the call, which abstracts the call where the goal mentions it); `with … | inspect`/`rewrite` are missing |
+| `with` on a value, in functions and in proofs whose goal mentions it | absorbed (`match` on the call, which abstracts the call where the goal mentions it); `with … | inspect` is missing |
+| `rewrite e₁ \| e₂`, `let … in`, point-free clauses (`f = λ x → …`), implicit patterns `{n}`, helpers in `where` | absorbed (Arlk's `rewrite e₁, e₂ { … }`, a block, η-expansion, a declaration of its own before the function; a helper that uses the clause's variables is not supported) |
 | Coinductive records and definitions by copatterns (guarded corecursion by a state) | absorbed (Arlk `codata` and `corec`) |
 | Instance arguments, sized types, cubical features, `--without-K` | missing |
 | `absorbed/agda/Order.agda` (`≤`, `≤-pred`, `¬s≤z ()`) | 15 of 15 declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Records.agda` (`Pair` with projections, `filter` by `with`, a proof by `with`) | 27 of 27 declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Streams.agda` (coinductive `Stream`, `repeat`/`from`/`map` by copatterns) | all declarations check; Agda 2.8.0.2 accepts the source |
+| `absorbed/agda/Rewriting.agda` (`+-comm`, `+-assoc`, `*-suc` by `rewrite` and `where` helpers, `let`, a point-free definition) | all declarations check; Agda 2.8.0.2 accepts the source |
 | `absorbed/agda/Arith.agda` | 27 of 27 declarations check; Agda 2.8.0.2 accepts the source; its `+-comm` proves Arlk's `nat.add_comm` again ([examples/agda_transport.arlk](../examples/agda_transport.arlk)) |
 
 ## Isabelle/HOL

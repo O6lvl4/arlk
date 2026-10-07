@@ -21,7 +21,7 @@ import self.kernel.{Env, Ctx, Budget, whnf, conv, infer, show}
 
 // The equality the goal is stated with: its type former, constructor and
 // recursor, and the levels.
-type SEquality = { ty: String, refl: String, rec: String, large: Bool }
+type SEquality = { ty: String, refl: String, rec: String, large: Bool, poly: Bool }
 
 // A rewrite rule: a proof (applied to the rule's variables gives the
 // equation), its number of variables, the equation's type and sides under
@@ -39,7 +39,10 @@ fn equality(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> (SEquality, List[Lev
       some(info) => if info.params == 2 and info.indices == 1 and list.len(info.ctors) == 1 and list.len(args) == 3 then {
         let rec = e + ".rec"
         let large = list.len(map.get(env.lparams, rec) ?? []) > list.len(map.get(env.lparams, e) ?? [])
-        some((SEquality { ty: e, refl: list.first(info.ctors) ?? "", rec: rec, large: large }, ls, args))
+        // `poly`: E takes its type's universe as a level (Eq[u]); an
+        // equality on one universe (Agda's `_≡_` on Set) takes none.
+        let poly = not list.is_empty(map.get(env.lparams, e) ?? [])
+        some((SEquality { ty: e, refl: list.first(info.ctors) ?? "", rec: rec, large: large, poly: poly }, ls, args))
       } else none,
       none => none,
     },
@@ -57,13 +60,15 @@ local fn sort_level(env: Env, ctx: Ctx, ty: Term, mut bu: Budget) -> Level = mat
 
 // ── Building proofs ─────────────────────────────────────────────────
 
-local fn eq_at(q: SEquality, u: Level, a: Term, x: Term, y: Term) -> Term = apply(Const(q.ty, [u]), [a, x, y])
+local fn us(q: SEquality, u: Level) -> List[Level] = if q.poly then [u] else []
 
-local fn refl_at(q: SEquality, u: Level, a: Term, x: Term) -> Term = apply(Const(q.refl, [u]), [a, x])
+local fn eq_at(q: SEquality, u: Level, a: Term, x: Term, y: Term) -> Term = apply(Const(q.ty, us(q, u)), [a, x, y])
+
+local fn refl_at(q: SEquality, u: Level, a: Term, x: Term) -> Term = apply(Const(q.refl, us(q, u)), [a, x])
 
 // E.rec at the motive's sort v: `E.rec(A, x, motive, minor, y, h)`.
 local fn rec_at(q: SEquality, u: Level, v: Level, a: Term, x: Term, motive: Term, minor: Term, y: Term, h: Term) -> Term =
-  apply(Const(q.rec, if q.large then [v, u] else [u]), [a, x, motive, minor, y, h])
+  apply(Const(q.rec, if q.large then [v] + us(q, u) else us(q, u)), [a, x, motive, minor, y, h])
 
 // The motive `(y': A, e: E(A, x, y')) => body(y')`, body given with y' as Var(0)
 // in the context extended by y' (then shifted past e).
@@ -75,6 +80,14 @@ fn symm(env: Env, ctx: Ctx, q: SEquality, u: Level, a: Term, x: Term, y: Term, h
   let v = sort_level(env, ctx, eq_at(q, u, a, x, x), bu)
   let body = eq_at(q, u, shift(a, 1, 0), Var(0), shift(x, 1, 0))
   rec_at(q, u, v, a, x, motive(q, u, a, x, body), refl_at(q, u, a, x), y, h)
+}
+
+// body proves P(y) where `over` is P with Var(0) for the abstracted
+// value; h: E(A, x, y) gives P(x): E's recursor along symm(h).
+fn transport(env: Env, ctx: Ctx, q: SEquality, u: Level, a: Term, x: Term, y: Term, over: Term, body: Term, h: Term, mut bu: Budget) -> Term = {
+  let v = sort_level(env, ctx, subst(over, x), bu)
+  let back = symm(env, ctx, q, u, a, x, y, h, bu)
+  rec_at(q, u, v, a, y, motive(q, u, a, y, over), body, x, back)
 }
 
 // h: E(A, x, y), k: E(A, y, z) give E(A, x, z).
@@ -269,6 +282,21 @@ local fn normalize(env: Env, ctx: Ctx, q: SEquality, u: Level, rules: List[SRule
     }
   }
   ok((cur, proof))
+}
+
+// An equation with both sides computed by the cases of the definitions in
+// them (`add(succ(k), zero)` to `succ(add(k, zero))`), recursive calls kept
+// as calls, as Agda shows a goal: convertible to the goal, for `rewrite`.
+fn computed_goal(env: Env, ctx: Ctx, goal: Term, mut bu: Budget) -> Term? = match equality(env, ctx, goal, bu) {
+  none => none,
+  some((q, ls, args)) => {
+    let u = list.first(ls) ?? LZero
+    let a = list.first(args) ?? Var(0)
+    match (normalize(env, ctx, q, u, [], list.get(args, 1) ?? Var(0), a, bu), normalize(env, ctx, q, u, [], list.get(args, 2) ?? Var(0), a, bu)) {
+      (ok((l, _)), ok((r, _))) => some(eq_at(q, u, a, l, r)),
+      _ => none,
+    }
+  },
 }
 
 // The proof of `goal` from the rules.

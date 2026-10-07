@@ -783,6 +783,7 @@ fn sort_of(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw) -> (Term, L
 
 fn check(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = match r {
   _ if simp_head(r) => by_simp(env, sc, st, ctx, r, expected),
+  RApp(RApp(RName("%rewrite"), h), body) => rewrite(env, sc, st, ctx, h, body, expected),
   RName("_") => {
     let m = new_meta(st, ctx)
     list.push(st.typed, (ctx, m, expected))
@@ -879,6 +880,51 @@ local fn run_simp(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expe
   }
   simp.prove(env, zctx, goal, rules, st.bu)
 }
+
+// `rewrite h { body }`, h: E(A, a, b) for an equality type E: body proves
+// the goal with every occurrence of a replaced by b, and the result is
+// carried back along h by E's recursor (simp.almd's proof builders). The goal
+// must be known by now; the proof is an ordinary term the kernel checks.
+local fn rewrite(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, h: Raw, body: Raw, expected: Term) -> Term! = {
+  let (th, tyh) = infer(env, sc, st, ctx, h)!
+  settle(env, sc, st)!
+  let zty = zonk(st, tyh)
+  let goal = zonk(st, expected)
+  let zctx = ctx |> list.map(((x, ty)) => (x, zonk(st, ty)))
+  guard not has_meta(goal) else err("rewrite: the goal is not known here (${kernel.show_short(env, ctx, goal)}); give its type")
+  match simp.equality(env, zctx, zty, st.bu) {
+    none => err("rewrite: ${kernel.show_short(env, ctx, zonk(st, th))} has type ${kernel.show_short(env, ctx, zty)}, not an equation"),
+    some((q, ls, args)) => {
+      let u = list.first(ls) ?? LZero
+      let a = list.get(args, 0) ?? type0()
+      let lhs = list.get(args, 1) ?? type0()
+      let rhs = list.get(args, 2) ?? type0()
+      // The goal over a fresh y' (Var(0)) standing for the left side: as
+      // written (β-reduced), or else computed further, as Agda does.
+      let first = kabstract(shift(beta_nf(goal), 1, 0), shift(lhs, 1, 0), 0)
+      let over = if occurs(first, 0) then first else match simp.computed_goal(env, zctx, beta_nf(goal), st.bu) {
+        some(g) => kabstract(shift(g, 1, 0), shift(lhs, 1, 0), 0),
+        none => first,
+      }
+      guard occurs(over, 0) else err("rewrite: ${kernel.show_short(env, ctx, lhs)} does not occur in the goal ${kernel.show_short(env, ctx, goal)}")
+      let rewritten = subst(over, rhs)
+      let tb = check(env, sc, st, ctx, body, rewritten)!
+      let zth = zonk(st, th)
+      guard q.large or kernel.is_prop(env, zctx, goal, st.bu) else err("rewrite: ${q.ty} only rewrites propositions")
+      ok(simp.transport(env, zctx, q, u, a, lhs, rhs, over, zonk(st, tb), zth, st.bu))
+    },
+  }
+}
+
+// t with every subterm equal to x (up to binder names) replaced by the
+// variable `depth` binders up, x and t seen `depth` binders deep.
+local fn kabstract(t: Term, x: Term, depth: Int) -> Term =
+  if alpha_eq(t, shift(x, depth, 0)) then Var(depth) else match t {
+    App(f, a) => App(kabstract(f, x, depth), kabstract(a, x, depth)),
+    Lam(n, ty, b) => Lam(n, kabstract(ty, x, depth), kabstract(b, x, depth + 1)),
+    Pi(n, ty, b) => Pi(n, kabstract(ty, x, depth), kabstract(b, x, depth + 1)),
+    other => other,
+  }
 
 local fn mismatch(env: Env, st: ElabState, ctx: Ctx, t: Term, expected: Term, ty: Term) -> String =
   "type mismatch for ${clip(kernel.show_short(env, ctx, zonk(st, t)))}\n    expected: ${kernel.show_short(env, ctx, beta_nf(zonk(st, expected)))}\n    found:    ${kernel.show_short(env, ctx, beta_nf(zonk(st, ty)))}"

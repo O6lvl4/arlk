@@ -1692,6 +1692,38 @@ theorem still_a_name(n: Nat) -> Eq(Nat, calc(n), n) = Eq.refl
   })
 }
 
+test "rewrite replaces an equation's left side in the goal, computed as Agda shows it" {
+  let good = "\n" + """
+room rw uses eq, logic, nat
+theorem add_zero_r(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
+  zero => Eq.refl,
+  succ(k) => rewrite add_zero_r(k) { Eq.refl },
+}
+theorem swap(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(add(b, a), c)) =
+  rewrite add_comm(a, b) { Eq.refl }
+theorem two(a: Nat, b: Nat, h: Eq(Nat, a, b), k: Eq(Nat, b, Nat.zero)) -> Eq(Nat, add(a, a), Nat.zero) =
+  rewrite h, k { Eq.refl }
+def rewrite(n: Nat) -> Nat = n
+theorem still_a_name(n: Nat) -> Eq(Nat, rewrite(n), n) = Eq.refl
+"""
+  assert_eq(run_wf(good)!, none)
+  let wrong = "room rw uses eq, logic, nat\ntheorem w(a: Nat, b: Nat, h: Eq(Nat, a, b)) -> Eq(Nat, a, Nat.zero) = rewrite h { Eq.refl }\n"
+  assert(match run_wf(wrong)! {
+    some(e) => string.contains(e, "expected: Eq[1](Nat, b, Nat.zero)"),
+    none => false,
+  })
+  let absent = "room rw uses eq, logic, nat\ntheorem w(a: Nat, b: Nat, h: Eq(Nat, a, b)) -> Eq(Nat, b, b) = rewrite h { Eq.refl }\n"
+  assert(match run_wf(absent)! {
+    some(e) => string.contains(e, "rewrite: a does not occur in the goal"),
+    none => false,
+  })
+  let not_eq = "room rw uses eq, logic, nat\ntheorem w(a: Nat) -> Eq(Nat, a, a) = rewrite a { Eq.refl }\n"
+  assert(match run_wf(not_eq)! {
+    some(e) => string.contains(e, "rewrite: a has type Nat, not an equation"),
+    none => false,
+  })
+}
+
 // ── Quotients ──────────────────────────────────────────────────────
 
 effect fn run_quot(src: String) -> String? = {

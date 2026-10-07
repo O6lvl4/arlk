@@ -43,6 +43,10 @@ type AExpr =
   | EHole
   // `f ps with e` and its `... | p = rhs` clauses: a match on e.
   | EWith(AExpr, List[(APat, AExpr)])
+  // `f ps rewrite e1 | e2 = rhs`: Arlk's `rewrite e1, e2 { rhs }`.
+  | ERewrite(List[AExpr], AExpr)
+  // `let x = e ; y = e' in body`: an Arlk block.
+  | ELet(List[(String, AExpr)], AExpr)
 
 type APat =
   | PV(String)
@@ -120,6 +124,67 @@ fn lex(src: String) -> List[ATok] = {
       }
     }
     if cur != "" then list.push(out, ATok { text: cur, line: li + 1, col: start + 1 }) else ()
+  }
+  out
+}
+
+// `f ps = e where g : T; g qs = e'`: the local declarations become
+// declarations of their own, named `g-where-L` (L the clause's line) in the
+// clause and in themselves, placed before f's signature (they are f's
+// helpers). A helper that uses the clause's variables is then an unknown
+// name to the kernel: not supported, and not silently dropped either.
+local fn lift_wheres(bl: List[List[ATok]]) -> List[List[ATok]] = {
+  var out: List[List[ATok]] = []
+  for b in bl {
+    let words = b |> list.map((t) => t.text)
+    let head = at(words, 0)
+    let eq = list.index_of(words, "=") ?? -1
+    let wi = list.index_of(words, "where") ?? -1
+    let declares = head == "data" or head == "record" or head == "module" or head == "postulate" or head == "mutual"
+    if declares or eq < 0 or wi < eq then list.push(out, b) else {
+      let line = match list.first(b) {
+        some(t) => t.line,
+        none => 0,
+      }
+      let inner = list.drop(b, wi + 1)
+      let lbase = match list.first(inner) {
+        some(t) => t.col,
+        none => 1,
+      }
+      let locals = blocks(inner, lbase)
+      // The names the where-block declares (its signatures).
+      var names: List[String] = []
+      for lb in locals {
+        let lw = lb |> list.map((t) => t.text)
+        let c = list.index_of(lw, ":") ?? -1
+        let e = list.index_of(lw, "=") ?? -1
+        if c >= 0 and (e < 0 or c < e) then {
+          for n in list.take(lw, c) {
+            list.push(names, n)
+          }
+        } else ()
+      }
+      let rename = (t: ATok) => if list.contains(names, t.text) then ATok { ...t, text: t.text + "-where-" + int.to_string(line) } else t
+      let lifted = locals |> list.map((lb) => lb |> list.map((t) => rename(t)))
+      let clause = list.take(b, wi) |> list.map((t) => rename(t))
+      // Before the signature of the function this clause defines.
+      let f = head
+      var at_sig = -1
+      for (i, ob) in list.enumerate(out) {
+        let ow = ob |> list.map((t) => t.text)
+        let c = list.index_of(ow, ":") ?? -1
+        let e = list.index_of(ow, "=") ?? -1
+        if at_sig < 0 and c >= 0 and (e < 0 or c < e) and list.contains(list.take(ow, c), f) then {
+          at_sig = i
+        } else ()
+      }
+      if at_sig >= 0 then {
+        out = list.take(out, at_sig) + lifted + list.drop(out, at_sig)
+      } else {
+        out = out + lifted
+      }
+      list.push(out, clause)
+    }
   }
   out
 }
@@ -254,6 +319,39 @@ fn parse_expr(sc: AScope, ts: List[String], i: Int) -> (AExpr, Int)! = {
     }
     let (body, k) = parse_expr(sc, ts, j + 1)!
     ok((ELam(names, body), k))
+  } else if t == "let" then {
+    // `let x = e ; y = e' in body`
+    var depth = 0
+    var j = i + 1
+    var stop = -1
+    while stop < 0 and j < list.len(ts) {
+      let u = at(ts, j)
+      if u == "let" then {
+        depth = depth + 1
+      } else if u == "in" then {
+        if depth == 0 then {
+          stop = j
+        } else {
+          depth = depth - 1
+        }
+      } else ()
+      j = j + 1
+    }
+    guard stop >= 0 else err("let without in")
+    var bs: List[(String, AExpr)] = []
+    var cur: List[String] = []
+    for u in list.slice(ts, i + 1, stop) + [";"] {
+      if u == ";" then {
+        if not list.is_empty(cur) then {
+          guard at(cur, 1) == "=" else err("let: only `x = e` bindings are read, found '${list.join(cur, " ")}'")
+          let (e, _) = parse_expr(sc, list.drop(cur, 2), 0)!
+          list.push(bs, (at(cur, 0), e))
+          cur = []
+        } else ()
+      } else list.push(cur, u)
+    }
+    let (body, k) = parse_expr(sc, ts, stop + 1)!
+    ok((ELet(bs, body), k))
   } else if t == "∀" then {
     // `∀ {x y} → B`, `∀ (x : A) → B`, `∀ x → B`
     var bs: List[(String, AExpr, Bool)] = []
@@ -408,6 +506,16 @@ fn emit(cx: ACx, e: AExpr) -> String = match e {
   ESet(k) => if k == 0 then "Type" else "Sort(${int.to_string(k + 1)})",
   EHole => "_",
   EWith(scrut, arms) => " match ${emit(cx, scrut)} {\n" + list.join(arms |> list.map(((p, rhs)) => "    ${emit_pat(cx.sc, p)} => ${emit({ ...cx, bound: cx.bound + pat_vars(p) }, rhs)},"), "\n") + "\n  }",
+  ERewrite(eqs, rhs) => "rewrite ${list.join(eqs |> list.map((e) => emit(cx, e)), ", ")} { ${emit(cx, rhs)} }",
+  ELet(bs, body) => {
+    var inner = cx
+    var parts: List[String] = []
+    for (x, e) in bs {
+      list.push(parts, "let ${mangle(x)} = ${emit(inner, e)}")
+      inner = { ...inner, bound: inner.bound + [x] }
+    }
+    "{ " + list.join(parts, "  ") + "  " + emit(inner, body) + " }"
+  },
 }
 
 // A pattern in a `with` arm, as Arlk writes it.
@@ -490,6 +598,8 @@ local fn free_vars(e: AExpr) -> List[String] = match e {
   EPi(bs, _, body) => (bs |> list.flat_map(((_, t)) => free_vars(t))) + (free_vars(body) |> list.filter((v) => not list.any(bs, ((n, _)) => n == v))),
   ELam(ns, body) => free_vars(body) |> list.filter((v) => not list.contains(ns, v)),
   EWith(e, arms) => free_vars(e) + (arms |> list.flat_map(((p, rhs)) => free_vars(rhs) |> list.filter((v) => not list.contains(pat_vars(p), v)))),
+  ERewrite(eqs, rhs) => (eqs |> list.flat_map((e) => free_vars(e))) + free_vars(rhs),
+  ELet(bs, body) => (bs |> list.flat_map(((_, e)) => free_vars(e))) + (free_vars(body) |> list.filter((v) => not list.any(bs, ((x, _)) => x == v))),
   _ => [],
 }
 
@@ -562,13 +672,20 @@ fn emit_fun(sc: AScope, name: String, ty: AExpr, clauses: List[(List[APat], AExp
   let params = if list.is_empty(exps) then "" else "(" + list.join(show_b(exps), ", ") + ")"
   let ret_s = emit({ ...cx, ren: sig_ren }, ret)
   let cols = exps |> list.map(((n, _, _)) => mangle(n))
+  // A clause with fewer patterns than explicit arguments (`f = λ x → x`,
+  // `g x = h`) stands for its right-hand side applied to the rest: the rest
+  // become variable patterns, named after the parameters.
+  let clauses = clauses |> list.map(((ps, rhs)) => if list.len(ps) >= explicit_n then (ps, rhs) else {
+    let extra = list.drop(exps, list.len(ps)) |> list.map(((n, _, _)) => n + "'")
+    (ps + (extra |> list.map((v) => PV(v))), EApp(rhs, extra |> list.map((v) => EVar(v))))
+  })
   // Each clause: its explicit patterns (Agda patterns name only explicit arguments).
   for (ps, _) in clauses {
     guard list.len(ps) == explicit_n else err("${name}: a clause has ${int.to_string(list.len(ps))} patterns for ${int.to_string(explicit_n)} explicit arguments")
   }
   guard not list.is_empty(clauses) else err("${name} has no clauses")
   let body = case_tree(sc, cols, clauses |> list.map(((ps, rhs)) => (ps, rhs, [])), names, "  ")!
-  let arrow = if list.is_empty(exps) and list.is_empty(imps) then ": " else " -> "
+  let arrow = if list.is_empty(exps) then ": " else " -> "
   ok("def ${mangle(name)}${generics}${params}${arrow}${ret_s} =${body}")
 }
 
@@ -696,7 +813,7 @@ fn emit_corec(sc: AScope, name: String, ty: AExpr, cps: List[(String, List[APat]
     let (_, t, _) = b
     mangle(n) + ": " + emit(cx0, t)
   }), ", ") + ")"
-  let arrow = if list.is_empty(exps) and list.is_empty(imps) then ": " else " -> "
+  let arrow = if list.is_empty(exps) then ": " else " -> "
   ok("def ${mangle(name)}${generics}${params}${arrow}${emit(cx0, ret)} =\n  ${mangle(d.name)}.corec(${list.join(outs, ", ")}, ${seed})")
 }
 
@@ -836,7 +953,7 @@ fn absorb(src: String, file: String) -> String! = {
     some(t) => t.col,
     none => 1,
   }
-  let bl = blocks(body, base)
+  let bl = lift_wheres(blocks(body, base))
   // First pass: names, so that operators and constructors are known.
   var sc = AScope { datas: [], funs: [], fixes: [], own: "", opens: [] }
   for b in bl {
@@ -980,8 +1097,22 @@ fn absorb(src: String, file: String) -> String! = {
           } else list.push(lhs_words, w)
         }
         guard eq >= 0 or absurd else err("${file}:${int.to_string(line)}: cannot read this declaration (${head} ...)")
-        let (lhs, _) = parse_expr(sc, lhs_words, 0)!
-        let (rhs, _) = if eq >= 0 then parse_expr(sc, list.drop(words, eq + 1), 0)! else (EVar(ABSURD), 0)
+        // `lhs rewrite e1 | e2 = rhs`
+        let rw = list.index_of(lhs_words, "rewrite") ?? -1
+        let (lhs, _) = parse_expr(sc, if rw >= 0 then list.take(lhs_words, rw) else lhs_words, 0)!
+        var eqs: List[AExpr] = []
+        if rw >= 0 then {
+          var cur: List[String] = []
+          for w in list.drop(lhs_words, rw + 1) + ["|"] {
+            if w == "|" then {
+              let (e, _) = parse_expr(sc, cur, 0)!
+              list.push(eqs, e)
+              cur = []
+            } else list.push(cur, w)
+          }
+        } else ()
+        let (rhs0, _) = if eq >= 0 then parse_expr(sc, list.drop(words, eq + 1), 0)! else (EVar(ABSURD), 0)
+        let rhs = if list.is_empty(eqs) then rhs0 else ERewrite(eqs, rhs0)
         let (f, args) = head_args(lhs)
         guard f != "" else err("${file}:${int.to_string(line)}: cannot read this clause's left-hand side")
         // A copattern, `head (repeat x) = x`: a projection of a coinductive
@@ -1205,6 +1336,23 @@ test "a coinductive record becomes codata, and copatterns become corecursion" {
   }
   assert(string.contains(out, "codata St(A: Type): Type = { hd: A, tl: St(A) }"))
   assert(string.contains(out, "St.corec((n: N) => n, (n: N) => N.s(n), n)"))
+}
+
+test "rewrite, let, where helpers and point-free clauses" {
+  let src = "module W where\n\ndata N : Set where\n  z : N\n  s : N → N\n\ndata _≡_ {A : Set} (x : A) : A → Set where\n  refl : x ≡ x\n\nf : N → N\nf n = let m = s n in s m\n\ng : N → N\ng = λ x → x\n\nh : (n : N) → n ≡ n\nh n rewrite k n = refl\n  where\n    k : (m : N) → m ≡ m\n    k m = refl\n"
+  let out = match absorb(src, "W.agda") {
+    ok(o) => o,
+    err(e) => e,
+  }
+  assert(string.contains(out, "def f(n: N) -> N = { let m = N.s(n)  N.s(m) }"))
+  assert(string.contains(out, "def g(x1: N) -> N = ((x: _) => x)(x1)"))
+  assert(string.contains(out, "def k_where_17(m: N) -> eq(_, m, m) = eq.refl"))
+  assert(string.contains(out, "rewrite k_where_17(n) { eq.refl }"))
+  // The helper comes before the function that uses it.
+  assert(match (string.index_of(out, "def k_where_17"), string.index_of(out, "def h(")) {
+    (some(i), some(j)) => i < j,
+    _ => false,
+  })
 }
 
 test "Agda names become Arlk identifiers" {

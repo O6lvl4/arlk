@@ -424,6 +424,9 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   // `calc a { = b by h, = c, ... }`: a chain of equations (Lean's `calc`,
   // Agda's `≡⟨ h ⟩`, Isar's `also ... finally`). The word is not reserved.
   guard not (t.kind == "ident" and t.text == "calc" and starts_calc(ts, p + 1)) else calc(ts, p + 1)
+  // `rewrite h1, h2 { e }`: e proves the goal with each equation's left side
+  // replaced by its right side, in turn (Lean's `rw`, Agda's `rewrite`).
+  guard not (t.kind == "ident" and t.text == "rewrite" and starts_rewrite(ts, p + 1)) else rewrite(ts, p + 1)
   if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "simp" then ok((RName("%simp"), p + 2))
   else if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "induction" then {
     let (x, p1) = ident(ts, p + 2)!
@@ -592,6 +595,34 @@ local fn search_spec(ts: List[Token], p: Int) -> (List[String], Int, Int)! = {
 // Eq.refl (the two sides are equal by computation); the steps are joined
 // with `trans`. `Eq`, `Eq.refl` and `trans` are the ones in scope (the
 // room's `uses eq`), and every step is checked against its stated sides.
+// `rewrite` followed by equations and a block; `rewrite(x)` is a call.
+local fn starts_rewrite(ts: List[Token], p: Int) -> Bool =
+  not is_sym(ts, p, "(") and match term(ts, p) {
+    ok((_, q)) => if is_sym(ts, q, "{") then true else if is_sym(ts, q, ",") then starts_rewrite(ts, q + 1) else false,
+    err(_) => false,
+  }
+
+local fn rewrite(ts: List[Token], p: Int) -> (Raw, Int)! = {
+  var eqs: List[Raw] = []
+  var q = p
+  var more = true
+  while more {
+    let (h, q1) = term(ts, q)!
+    list.push(eqs, h)
+    if is_sym(ts, q1, ",") then {
+      q = q1 + 1
+    } else {
+      q = q1
+      more = false
+    }
+  }
+  let q2 = expect(ts, q, "{")!
+  let (body, q3) = term(ts, q2)!
+  let q4 = expect(ts, q3, "}")!
+  // The first equation rewrites the goal first: it is the outermost.
+  ok((list.fold(list.reverse(eqs), body, (acc, h) => RApp(RApp(RName("%rewrite"), h), acc)), q4))
+}
+
 local fn starts_calc(ts: List[Token], p: Int) -> Bool = match term(ts, p) {
   ok((_, q)) => is_sym(ts, q, "{") and is_sym(ts, q + 1, "="),
   err(_) => false,

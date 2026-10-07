@@ -113,6 +113,8 @@ match x { c(a) => t, _ => u }        pattern matching (structural recursion), se
 calc a { = b by h, = c }               a chain of equations, joined by `trans` (Lean's `calc`,
                                        Agda's `≡⟨ h ⟩`, Isar's `also`/`finally`); a step with no
                                        `by` holds by computation (`Eq.refl`)
+rewrite h1, h2 { e }                   e proves the goal with each equation's left side replaced
+                                       by its right side (Lean's `rw`, Agda's `rewrite`)
 _                                      a hole the elaborator fills
 ?                                      an open goal: checking stops and shows its type, its context
                                        (β-reduced, in the names the room uses), and a visible theorem

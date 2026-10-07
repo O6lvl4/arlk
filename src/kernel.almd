@@ -1289,7 +1289,7 @@ fn irrelevant_eq(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
     err(_) => false,
   }
 
-local fn is_prop(env: Env, ctx: Ctx, ty: Term, mut bu: Budget) -> Bool = match infer(env, ctx, ty, bu) {
+fn is_prop(env: Env, ctx: Ctx, ty: Term, mut bu: Budget) -> Bool = match infer(env, ctx, ty, bu) {
   ok(s) => match whnf(env, ctx, s, bu) {
     Sort(l) => level_eq(l, LZero),
     _ => false,

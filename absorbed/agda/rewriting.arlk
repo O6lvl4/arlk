@@ -1,0 +1,73 @@
+// Absorbed from Agda by `arlk absorb-agda`: module Rewriting (Rewriting.agda).
+// Agda is not needed to check it: every declaration below is an
+// ordinary Arlk type or definition, checked by the kernel.
+room agda.Rewriting
+
+type ℕ: Type =
+  | zero: ℕ
+  | suc(x1: ℕ): ℕ
+
+type eq(A: Type, x: A): A -> Type =
+  | refl: eq(A, x, x)
+
+def sym[A: Type, x: A, y: A](x4: eq(_, x, y)) -> eq(_, y, x) = match x4 {
+  refl => eq.refl,
+}
+
+def trans[A: Type, x: A, y: A, z: A](x5: eq(_, x, y), q: eq(_, y, z)) -> eq(_, x, z) = match x5 {
+  refl => q,
+}
+
+def cong[A: Type, B: Type, x: A, y: A](f: A -> B, x6: eq(_, x, y)) -> eq(_, f(x), f(y)) = match x6 {
+  refl => eq.refl,
+}
+
+def plus(x1: ℕ, n: ℕ) -> ℕ = match x1 {
+  zero => n,
+  suc(m) => ℕ.suc(plus(m, n)),
+}
+
+def times(x1: ℕ, n: ℕ) -> ℕ = match x1 {
+  zero => ℕ.zero,
+  suc(m) => plus(n, times(m, n)),
+}
+
+def plus_zero(n: ℕ) -> eq(_, plus(n, ℕ.zero), n) = match n {
+  zero => eq.refl,
+  suc(n') => rewrite plus_zero(n') { eq.refl },
+}
+
+def plus_suc(m: ℕ, n: ℕ) -> eq(_, plus(m, ℕ.suc(n)), ℕ.suc(plus(m, n))) = match m {
+  zero => eq.refl,
+  suc(m') => rewrite plus_suc(m', n) { eq.refl },
+}
+
+def plus_comm(m: ℕ, n: ℕ) -> eq(_, plus(m, n), plus(n, m)) = match m {
+  zero => rewrite plus_zero(n) { eq.refl },
+  suc(m') => rewrite plus_comm(m', n), plus_suc(n, m') { eq.refl },
+}
+
+def plus_assoc(a: ℕ, b: ℕ, c: ℕ) -> eq(_, plus(plus(a, b), c), plus(a, plus(b, c))) = match a {
+  zero => eq.refl,
+  suc(a') => rewrite plus_assoc(a', b, c) { eq.refl },
+}
+
+def times_zero(n: ℕ) -> eq(_, times(n, ℕ.zero), ℕ.zero) = match n {
+  zero => eq.refl,
+  suc(n') => rewrite times_zero(n') { eq.refl },
+}
+
+def pred_suc[n: ℕ]: eq(_, ℕ.suc(n), ℕ.suc(n)) = eq.refl
+
+def twice(f: ℕ -> ℕ, x: ℕ) -> ℕ = { let y = f(x)  f(y) }
+
+def id_lam(x1: ℕ) -> ℕ = ((x: _) => x)(x1)
+
+def swap_where_68(a: ℕ, b: ℕ, c: ℕ) -> eq(_, plus(a, plus(b, c)), plus(b, plus(a, c))) = rewrite sym(plus_assoc(a, b, c)), plus_comm(a, b), plus_assoc(b, a, c) { eq.refl }
+
+def lemma_where_68(a: ℕ, b: ℕ, c: ℕ) -> eq(_, plus(b, plus(a, c)), plus(a, plus(b, c))) = swap_where_68(b, a, c)
+
+def times_suc(m: ℕ, n: ℕ) -> eq(_, times(m, ℕ.suc(n)), plus(m, times(m, n))) = match m {
+  zero => eq.refl,
+  suc(m') => rewrite times_suc(m', n) { cong(ℕ.suc, lemma_where_68(m', n, times(m', n))) },
+}

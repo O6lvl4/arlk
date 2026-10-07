@@ -43,6 +43,14 @@ if (cd "$work" && "$arlk" absorb-agda BadWith.agda -o BadWith.arlk >/dev/null) &
 sed 's/^tail (from n) = from (suc n)/tail (from n) = from n/; s/^module Streams/module BadStreams/' absorbed/agda/Streams.agda >"$work/BadStreams.agda"
 if cmp -s absorbed/agda/Streams.agda "$work/BadStreams.agda"; then echo "FAIL  the Streams mutation did not apply"; fails=1; fi
 if (cd "$work" && "$arlk" absorb-agda BadStreams.agda -o BadStreams.arlk >/dev/null) && "$arlk" check "$work/BadStreams.arlk" >"$work/badstreams.log" 2>&1; then echo "FAIL  a wrong corecursive step was accepted"; fails=1; elif grep -q "BadStreams.arlk:$(grep -n '^def third' "$work/BadStreams.arlk" | cut -d: -f1): type mismatch" "$work/badstreams.log"; then echo "pass  a wrong corecursive step is rejected (third)"; else echo "FAIL  a wrong corecursive step failed for another reason"; tail -2 "$work/badstreams.log"; fails=1; fi
+# A rewrite that leaves the goal unproved: without +-suc, m + suc n is not suc (m + n).
+sed 's/^+-comm (suc m) n rewrite +-comm m n | +-suc n m = refl/+-comm (suc m) n rewrite +-comm m n = refl/; s/^module Rewriting/module BadRewrite/' absorbed/agda/Rewriting.agda >"$work/BadRewrite.agda"
+if cmp -s absorbed/agda/Rewriting.agda "$work/BadRewrite.agda"; then echo "FAIL  the rewrite mutation did not apply"; fails=1; fi
+if (cd "$work" && "$arlk" absorb-agda BadRewrite.agda -o BadRewrite.arlk >/dev/null) && "$arlk" check "$work/BadRewrite.arlk" >"$work/badrewrite.log" 2>&1; then echo "FAIL  a rewrite that does not prove the goal was accepted"; fails=1; elif grep -q "type mismatch" "$work/badrewrite.log"; then echo "pass  a rewrite that does not prove the goal is rejected"; else echo "FAIL  the wrong rewrite was rejected for another reason (see $work/badrewrite.log)"; fails=1; fi
+# A helper in `where` that proves the wrong equation.
+sed 's/^    lemma a b c = swap b a c/    lemma a b c = swap a b c/; s/^module Rewriting/module BadWhere/' absorbed/agda/Rewriting.agda >"$work/BadWhere.agda"
+if cmp -s absorbed/agda/Rewriting.agda "$work/BadWhere.agda"; then echo "FAIL  the where mutation did not apply"; fails=1; fi
+if (cd "$work" && "$arlk" absorb-agda BadWhere.agda -o BadWhere.arlk >/dev/null) && "$arlk" check "$work/BadWhere.arlk" >"$work/badwhere.log" 2>&1; then echo "FAIL  a wrong where helper was accepted"; fails=1; elif grep -q "type mismatch" "$work/badwhere.log"; then echo "pass  a wrong where helper is rejected"; else echo "FAIL  the wrong where helper was rejected for another reason (see $work/badwhere.log)"; fails=1; fi
 # The transport: Agda's +-comm proves nat.add_comm, with nothing assumed.
 if "$arlk" check absorbed/agda/arith.arlk lib/std/eq.arlk lib/std/nat.arlk examples/agda_transport.arlk >"$work/tr.log" 2>&1 && grep -q "symbols: (none)" "$work/tr.log"; then echo "pass  transport from Agda, no symbols"; else echo "FAIL  transport from Agda (see $work/tr.log)"; fails=1; fi
 exit $fails

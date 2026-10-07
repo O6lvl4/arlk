@@ -27,4 +27,16 @@ theorem add_zero_right(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
   },
 }
 
+// Rewriting the goal: `rewrite h { e }` replaces h's left side by its right
+// side in the goal (as computed by the definitions, as Agda shows it), and
+// e proves what is left.
+theorem add_zero_right'(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
+  zero => Eq.refl,
+  succ(k) => rewrite add_zero_right'(k) { Eq.refl },
+}
+
+theorem swap_inner(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(add(b, a), c)) =
+  rewrite add_comm(a, b) { Eq.refl }
+
 axioms rotate
+axioms swap_inner
