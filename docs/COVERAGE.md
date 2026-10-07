@@ -61,7 +61,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). [Recorded results](#recorded
 | Inductive types, `match`, `fix` (also over indexed families) | absorbed (lambda-lifted symbols with rules) |
 | Universe constraints, template polymorphism, cumulativity | absorbed (levels numbered, instances per level, explicit `lift`) |
 | `Corelib.Init` | all 753 declarations (436 targets) check (`sig`/`sigT` lowered into `Prop` included) |
-| `Stdlib.Arith.PeanoNat` | 1194 of 1207 targets check (6 of the others use `SProp`); daily in CI against a fixed baseline ([rocq.yml](../.github/workflows/rocq.yml)) |
+| `Stdlib.Arith.PeanoNat` | 1196 of 1207 targets check (6 of the others use `SProp`); daily in CI against a fixed baseline ([rocq.yml](../.github/workflows/rocq.yml)) |
 | `Stdlib.Lists.List` | 456 of 470 targets check (6 of the others use `SProp`); daily in CI the same way |
 | `SProp`, primitive projections, cofixpoints, primitive integers | missing |
 
@@ -134,7 +134,7 @@ run on a particular commit. Source-system support is limited to the features lis
 | Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
 | Rocq `Corelib.Init.Peano` | 99, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 753 (436 targets) | ~20 s |
-| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 1194 targets check (6 of the rest use `SProp`); the rest are a fixed baseline | ~2 min |
+| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 1196 targets check (6 of the rest use `SProp`); the rest are a fixed baseline | ~2 min |
 | Rocq `Stdlib.Lists.List` (470 targets; the same) | 456 targets check (6 of the rest use `SProp`) | ~1 min |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤`, records, `with`, coinduction) | all of them | < 0.5 s |
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |

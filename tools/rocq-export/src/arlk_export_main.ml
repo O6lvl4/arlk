@@ -281,7 +281,7 @@ and sort_param_nums env ind args =
   template_override := [];
   let defaults = Array.map level_of_level levels in
   template_override := saved;
-  let nums = Array.copy defaults in
+  let nums = Array.make (Array.length defaults) 0 in
   let complete = ref true in
   List.iteri (fun i d ->
     match d with
@@ -289,9 +289,11 @@ and sort_param_nums env ind args =
       (match arity_level env t with
        | Some l ->
          if i >= Array.length args then complete := false
-         else Array.iteri (fun k l' -> if Univ.Level.equal l l' then nums.(k) <- min nums.(k) (max 1 (level_of_family env args.(i)))) levels
+         else Array.iteri (fun k l' -> if Univ.Level.equal l l' then nums.(k) <- max nums.(k) (max 1 (level_of_family env args.(i)))) levels
        | None -> ())
     | _ -> ()) params;
+  (* a level no parameter fixed keeps its default *)
+  Array.iteri (fun k n -> if n = 0 then nums.(k) <- defaults.(k)) nums;
   if !complete && nums <> defaults then Some nums else None
 
 and abstract_instance _ind = UVars.Instance.empty
@@ -332,10 +334,14 @@ and mono_pairs env c args =
       | _ when i >= Array.length args -> acc
       | Prod (_, d, b) ->
         let acc = match arity_level env d with
-          | Some l when not (List.exists (fun (l', _) -> Univ.Level.equal l l') acc) ->
-            (* never Prop: a Type parameter stays predicative *)
-            (l, max 1 (level_of_family env args.(i))) :: acc
-          | _ -> acc in
+          | Some l ->
+            (* never Prop: a Type parameter stays predicative; parameters
+               written with the same level take the highest of theirs *)
+            let n = max 1 (level_of_family env args.(i)) in
+            (match List.find_opt (fun (l', _) -> Univ.Level.equal l l') acc with
+             | Some (_, n') -> (l, max n n') :: List.filter (fun (l', _) -> not (Univ.Level.equal l l')) acc
+             | None -> (l, n) :: acc)
+          | None -> acc in
         go (Vars.subst1 args.(i) b) (i + 1) acc
       | _ -> acc in
     let pairs = List.rev (go cb.Declarations.const_type 0 []) in
@@ -362,6 +368,14 @@ and level_of_family env a =
   let ty = Reduction.whd_all env (Typeops.infer env a).Environ.uj_type in
   match kind ty with
   | Sort _ -> level_of_type env a
+  (* `fun x => T`: where T lives in the encoding, which Rocq's sort for it
+     may not say (a template instance follows its arguments) *)
+  | Prod _ when isLambda a ->
+    let (ctx, body) = Term.decompose_lambda_decls a in
+    let benv = Environ.push_rel_context ctx env in
+    (match kind (Reduction.whd_all benv (Typeops.infer benv body).Environ.uj_type) with
+     | Sort _ -> level_of_type benv body
+     | _ -> level_of_family benv body)
   | Prod _ ->
     let (ctx, concl) = Term.decompose_prod_decls ty in
     (match kind (Reduction.whd_all (Environ.push_rel_context ctx env) concl) with
