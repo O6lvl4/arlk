@@ -856,6 +856,11 @@ A matching identity means: the same claim, resting on the same declarations and 
 checked by a checker of the same semantics. It does not mean that the sources say what their
 authors meant; that is the separate obligation described in [docs/TRUST.md](docs/TRUST.md).
 
+For a separately trusted acceptance policy, [proof audits](docs/PROOF_AUDIT.md) pin an
+expected bundle identity, restrict its assumptions, and verify a bundled Almide model against
+the original source bytes. The existing reverse-length proof is the first checked example;
+the JSON report records fresh verifier outcomes and makes the model/executable boundary explicit.
+
 ## What the kernel trusts (read this before believing a result)
 
 The full map of the trusted base, with the code each guarantee rests on, is in

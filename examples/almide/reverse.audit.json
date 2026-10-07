@@ -1,0 +1,14 @@
+{
+  "format": 1,
+  "claim": "reverse_proof.reverse_length",
+  "claim_id": "07637bf9fbcbe1c452992fb6b538fbd2bb79e50757cf4c56738e788262be3258",
+  "permitted_symbols": [],
+  "permitted_rules": [],
+  "models": [
+    {
+      "source": "examples/almide/reverse.almd",
+      "sha256": "80850accfea4006314f7215c75d8cfdd811a680148d5284175951ba66bc096af",
+      "model": "src/1-reverse.arlk"
+    }
+  ]
+}
