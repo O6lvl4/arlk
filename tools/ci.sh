@@ -206,6 +206,8 @@ fi
 # alone; every kind of tampering caught with its own exit status.
 must_pass "views: route found and composed" 120 ./arlk check examples/views.arlk
 must_pass "proof bundles: replay and tampering" 1200 tools/bundle-check.sh ./arlk "$LOGS/bundles"
+# Independent expected identity, assumption policy, and original-source/model binding.
+must_pass "proof audit: trusted policy and source model" 300 python3 tools/proof-audit-check.py ./arlk
 
 # The native standard library and its clients, with negative controls (#18).
 must_pass "native standard library and clients" 600 tools/std-check.sh ./arlk "$LOGS/std"
