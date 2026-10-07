@@ -1,11 +1,11 @@
 name: rocq
 
-# Rocq's Stdlib.Arith.PeanoNat (the natural numbers' library, 1200 theorems),
-# too large to commit as Arlk: exported from Rocq 9.2 in its official image,
-# absorbed and checked by Arlk's kernel. Rocq only exports; nothing it says
-# is trusted. The declarations that do not check yet are a fixed baseline
-# (absorbed/rocq/peanonat.expected-failures): any other failure, and any
-# listed one that starts to pass, fails the run.
+# Rocq Stdlib modules too large to commit as Arlk (Arith.PeanoNat, the
+# natural numbers' library; Lists.List): exported from Rocq 9.2 in its
+# official image, absorbed and checked by Arlk's kernel. Rocq only exports;
+# nothing it says is trusted. The targets that do not check yet are a fixed
+# baseline (absorbed/rocq/<module>.expected-failures): any other failure, and
+# any listed one that starts to pass, fails the run.
 on:
   schedule:
     - cron: "53 4 * * *"
@@ -15,6 +15,7 @@ on:
       - tools/rocq-export/**
       - lib/core.arlk
       - absorbed/rocq/peanonat.*
+      - absorbed/rocq/list.*
       - .github/workflows/rocq.yml
 
 # A newer run replaces an older one still waiting or running: the parts are
@@ -34,33 +35,43 @@ jobs:
     container:
       image: rocq/rocq-prover:9.2.0
       options: --user root
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { key: peanonat, import: PeanoNat, prefix: Stdlib.Arith.PeanoNat }
+          - { key: list, import: List, prefix: Stdlib.Lists.List }
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build the export plugin and export PeanoNat
+      - name: Build the export plugin and export ${{ matrix.prefix }}
         shell: bash
         run: |
           export OPAMROOT=/home/rocq/.opam
           eval "$(opam env --root=$OPAMROOT --switch=default --set-root --set-switch 2>/dev/null || opam env --root=$OPAMROOT)"
           rocq --version
           tools/rocq-export/build.sh
-          out="$PWD/peanonat.json"
+          out="$PWD/${{ matrix.key }}.json"
           {
-            echo 'From Stdlib Require Import PeanoNat.'
+            echo 'From Stdlib Require Import ${{ matrix.import }}.'
             echo 'Declare ML Module "rocq-arlk-export.plugin".'
-            echo "Arlk Export \"$out\" $(sed 's/^/Stdlib.Arith.PeanoNat./' absorbed/rocq/peanonat.names | tr '\n' ' ')."
-          } > peanonat.v
-          (cd tools/rocq-export && OCAMLPATH=$PWD/src rocq c -I src ../../peanonat.v)
+            echo "Arlk Export \"$out\" $(sed 's/^/${{ matrix.prefix }}./' absorbed/rocq/${{ matrix.key }}.names | tr '\n' ' ')."
+          } > export.v
+          (cd tools/rocq-export && OCAMLPATH=$PWD/src rocq c -I src ../../export.v)
 
       - uses: actions/upload-artifact@v4
         with:
-          name: peanonat-json
-          path: peanonat.json
+          name: rocq-${{ matrix.key }}-json
+          path: ${{ matrix.key }}.json
 
   check:
     needs: export
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        key: [peanonat, list]
     steps:
       - uses: actions/checkout@v4
 
@@ -92,18 +103,18 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: peanonat-json
+          name: rocq-${{ matrix.key }}-json
 
-      - name: Absorb and check PeanoNat against the baseline
+      - name: Absorb and check against the baseline
         run: |
-          ./arlk absorb peanonat.json -o peanonat.arlk
-          status=0; ./arlk check lib/core.arlk peanonat.arlk --keep-going > check.log 2>&1 || status=$?
+          ./arlk absorb ${{ matrix.key }}.json -o ${{ matrix.key }}.arlk
+          status=0; ./arlk check lib/core.arlk ${{ matrix.key }}.arlk --keep-going > check.log 2>&1 || status=$?
           tail -1 check.log | cut -c1-200
-          tools/rocq-baseline.py peanonat.json check.log absorbed/rocq/peanonat.expected-failures
+          tools/rocq-baseline.py ${{ matrix.key }}.json ${{ matrix.key }}.arlk check.log absorbed/rocq/${{ matrix.key }}.expected-failures
 
       - name: Keep the log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: peanonat-check
+          name: rocq-${{ matrix.key }}-check
           path: check.log

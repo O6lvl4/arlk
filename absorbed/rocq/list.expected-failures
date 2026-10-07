@@ -1,0 +1,15 @@
+# Stdlib.Lists.List targets that do not check yet (tools/rocq-baseline.py, .github/workflows/rocq.yml).
+Stdlib.Lists.List.Add_sind
+Stdlib.Lists.List.Exists_sind
+Stdlib.Lists.List.Forall2_sind
+Stdlib.Lists.List.ForallOrdPairs_sind
+Stdlib.Lists.List.ListCompareSpec_sind
+Stdlib.Lists.List.NoDup_sind
+Stdlib.Lists.List.firstn_rev
+Stdlib.Lists.List.firstn_skipn_rev
+Stdlib.Lists.List.nth_error_rev
+Stdlib.Lists.List.nth_middle
+Stdlib.Lists.List.rev_nth
+Stdlib.Lists.List.skipn_all2
+Stdlib.Lists.List.skipn_all_iff
+Stdlib.Lists.List.skipn_rev

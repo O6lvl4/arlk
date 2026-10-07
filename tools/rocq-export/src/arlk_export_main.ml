@@ -484,6 +484,13 @@ let shape key =
 let levels_in_force () =
   String.concat "," (List.map (fun (l, n) -> Univ.Level.to_string l ^ "=" ^ string_of_int n) !template_override)
 
+(* The level numbers of a term's sorts, in order. *)
+let sort_numbers t =
+  let rec go acc t = match kind t with
+    | Sort s -> (try level_of_sort s with Unsupported _ -> -1) :: acc
+    | _ -> Constr.fold go acc t in
+  go [] t
+
 let find_aux key0 =
   let key = (levels_in_force (), key0) in
   match Hashtbl.find_opt st.aux key with
@@ -497,6 +504,9 @@ let find_aux key0 =
       | None ->
         let (n', h') = shape k in
         if lv <> fst key || n <> n' || not (Constr.equal h h') then None
+        (* The same term up to the names of universes whose numbers agree
+           (`Type@{app.u0}` and `Type@{Facts.u0}` are both level 2 here). *)
+        else if Constr.eq_constr_nounivs k key0 && sort_numbers k = sort_numbers key0 then Some ids
         else match Conversion.default_conv Conversion.CONV env k key0 with
           | Ok () -> Some ids
           | Error () -> None) st.aux None
@@ -659,20 +669,15 @@ and tr_case_elim parent env case =
   let s = match kind (Reduction.whd_all penv (Typeops.infer penv pbody).Environ.uj_type) with
     | Sort s -> s
     | _ -> unsupported "a motive that is not a type" in
-  (* the motive's level in the encoding, which can be above Rocq's sort
-     (a template instance never goes below its default) *)
+  (* the motive's level in the encoding (it can differ from Rocq's sort: a
+     template instance follows its arguments), and a sort standing for it:
+     Prop, Set, or some global level set to that number *)
   let m = level_of_type penv pbody in
-  let (s, m) = if level_of_sort s = m then (s, m)
-    else if m = 1 then (Sorts.set, 1)
-    else (Sorts.sort_of_univ (Univ.Universe.make (any_level ())), m) in
-  let spair = match s with
-    | Sorts.Prop | Sorts.Set -> []
-    | Sorts.Type u ->
-      (match Univ.Universe.repr u with
-       | [ (l, k) ] when not (Univ.Level.is_set l) -> [ (l, m - k) ]
-       | [ (l, k) ] -> if k + 1 = m then [] else unsupported "motive level"
-       | _ -> unsupported "an algebraic motive sort")
-    | _ -> unsupported "motive sort" in
+  ignore s;
+  let (s, spair) =
+    if m = 0 then (Sorts.prop, [])
+    else if m = 1 then (Sorts.set, [])
+    else let l = any_level () in (Sorts.sort_of_univ (Univ.Universe.make l), [ (l, m) ]) in
   let nums = template_nums env ind pms in
   let name = ensure_case ind nums s m spair in
   let (_, args) = Inductive.find_rectype env (Typeops.infer env c).Environ.uj_type in

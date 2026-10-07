@@ -563,7 +563,8 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
 | Rocq `Corelib.Init.Peano` | 99, all of them | < 0.5 s |
 | Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 753 (436 targets) | ~20 s |
-| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 945 targets check; the rest are a fixed baseline | ~2 min |
+| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 1194 targets check (6 of the rest use `SProp`); the rest are a fixed baseline | ~2 min |
+| Rocq `Stdlib.Lists.List` (470 targets; the same) | 456 targets check (6 of the rest use `SProp`) | ~1 min |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
