@@ -13,8 +13,8 @@ was found.
 
 **Lean 4, Rocq, Metamath and HOL are absorbed, not linked, and Lean and Rocq meet in one place.**
 
-- Lean's whole `Init.Data.Nat.Basic` module (308 of its 310 theorems, 823 declarations with their
-  dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
+- Lean's whole `Init.Data.Nat.Basic` module (all 310 theorems, the two universe-polymorphic ones
+  at their lowest universes; 823 declarations with their dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
 - Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: 969 of 973 declarations) is
   checked the same way.
 - Metamath's `set.mm`, the whole database (47 913 theorems: logic, ZFC, the number systems,
@@ -549,7 +549,7 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Library | Declarations checked | Time |
 |---|---|---|
 | Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
-| Lean `Init.Data.Nat.Basic` | 823, including 308 of the module's 310 theorems | ~30 s |
+| Lean `Init.Data.Nat.Basic` (310 theorems, universe-polymorphic ones at their lowest universes) | all 823 | ~30 s |
 | Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | all 1573 | ~5 min |
 | Lean `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` (each module whole: 2136 theorems) | all of them | ~16 min together |
 | Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
@@ -888,8 +888,9 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 
 1. **Kernel hardening.** Confluence and termination checks for user rewrite rules, and checking
    subject reduction instead of trusting a rule's declared variable types.
-2. **The rest of each library.** Lean: `Init` as a whole;
-   `Nat.Linear`'s reflection proofs, which run out of budget. Rocq: `sig`/`sigT` at `Prop`
+2. **The rest of each library.** Lean: `Init` as a whole (some modules, such as `String.Lemmas`,
+   the exporter cannot translate yet), universe polymorphism kept rather than
+   instantiated. Rocq: `sig`/`sigT` at `Prop`
    (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
    `with … | inspect`, instance arguments. Isabelle: Isar steps inside induction cases,
    premises other than equations, type classes, more of Main. Metamath: set.mm's heaviest theorems (hours each part).
