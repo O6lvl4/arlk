@@ -69,5 +69,10 @@ test "Rocq's cumulativity is checked: lifting a proposition downwards is rejecte
   let up = "core.lift(core.l0, core.l1, Init.Logic.eq"
   assert(string.contains(src, up))
   let down = string.replace(src, up, "core.lift(core.l2, core.l1, Init.Logic.eq")
-  assert(check_with(fs.read_text(CORE)!, down) != none)
+  // The kernel describes terms only when checking a failed declaration
+  // again; the message still names the term.
+  assert(match check_with(fs.read_text(CORE)!, down) {
+    some(e) => string.contains(e, "type mismatch for Init.Logic.eq@2("),
+    none => false,
+  })
 }

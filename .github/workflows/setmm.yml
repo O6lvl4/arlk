@@ -17,6 +17,12 @@ on:
       - src/chunk.almd
       - .github/workflows/setmm.yml
 
+# A newer run replaces an older one still waiting or running: the parts are
+# long, and the runners are shared with the other workflows.
+concurrency:
+  group: setmm
+  cancel-in-progress: true
+
 env:
   ALMIDE_REPO: https://github.com/almide/almide
   ALMIDE_COMMIT: 963df767bc9c1ef7f4e7cc3d6f0662073e66baec

@@ -6,7 +6,7 @@ import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, 
 import self.syntax.{Raw, Decl, Located, Inductive, Sig}
 import self.syntax
 import self.kernel
-import self.kernel.{IndInfo, StructEta, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
+import self.kernel.{IndInfo, StructEta, View, Env, Entry, Pat, Rule, Rw, Ctx, Budget, MState, budget, budget_in, whnf, nf, conv, infer, check, expect_sort, resolve_const, room_of, show, exhausted_error, match_all, index_in, level_of}
 import self.inductive
 import self.elab
 import self.patterns
@@ -260,7 +260,7 @@ local fn rule_lhs(env: Env, vars: List[(String, Raw)], lhs_raw: Raw, mut bu: Bud
 
 local fn add_rule(mut env: Env, vars: List[(String, Raw)], lhs_raw: Raw, rhs_raw: Raw, line: Int) -> Change! = {
   no_brackets([rhs_raw])!
-  var bu = budget()
+  var bu = budget_in(env)
   let l = rule_lhs(env, vars, lhs_raw, bu)!
   let ctx = l.ctx
   let rhs = resolve(env, l.lparams, l.scope, rhs_raw)!
@@ -304,7 +304,7 @@ local fn add_structure(mut env: Env, ty_name: String, mk_name: String, proj_name
   }
   guard not map.contains(env.structs, mk) else err("structure ${ty_name}: already declared")
   guard map.get(env.lparams, mk) == map.get(env.lparams, ty) and list.all(projs, (f) => map.get(env.lparams, f) == map.get(env.lparams, ty)) else err("structure ${ty_name}: the type, constructor and projections must share their universe parameters")
-  var bu = budget()
+  var bu = budget_in(env)
   // The constructor: parameters, then one argument per field, ending in S(parameters).
   var ctx: Ctx = []
   var t = map.get(env.types, mk) ?? type0()
@@ -355,7 +355,7 @@ local fn struct_params_ok(env: Env, ctx: Ctx, si: StructEta, result: Term, param
 }
 
 local fn add_irrelevant(mut env: Env, vars: List[(String, Raw)], ty_raw: Raw, line: Int) -> Change! = {
-  var bu = budget()
+  var bu = budget_in(env)
   let l = rule_lhs(env, vars, ty_raw, bu)!
   expect_sort(env, l.ctx, l.term, bu)!
   let r = Rule {
@@ -375,7 +375,24 @@ local fn add_irrelevant(mut env: Env, vars: List[(String, Raw)], ty_raw: Raw, li
 
 // Process one declaration: check it, add it to `env` if it is good, and
 // return the lines to print. A declaration that fails leaves `env` as it was.
-fn process(mut env: Env, d: Located) -> List[String]! = match d.decl {
+// A declaration, checked; a failure that a term's description would make
+// clearer (a type mismatch) is checked again with labels on for its message.
+// The first attempt may have declared part of it already, so the second
+// one's message is used only when it is the same kind of failure, described.
+fn process(mut env: Env, d: Located) -> List[String]! = match process_once(env, d) {
+  ok(lines) => ok(lines),
+  err(e) => if env.labels or not (string.starts_with(e, "type mismatch") or string.contains(e, "is applied to an argument")) then err(e) else {
+    env.labels = true
+    let again = process_once(env, d)
+    env.labels = false
+    match again {
+      err(e2) => if string.starts_with(e2, "type mismatch for") or (string.contains(e2, "is applied to an argument") and not string.starts_with(e2, "a term ")) then err(e2) else err(e),
+      ok(_) => err(e),
+    }
+  },
+}
+
+local fn process_once(mut env: Env, d: Located) -> List[String]! = match d.decl {
   DInductive(ind) => {
     // All or nothing: a type whose constructors fail leaves no trace.
     let start = list.len(env.order)
@@ -561,7 +578,7 @@ local fn add_wf_def(mut env: Env, line: Int, decl: Decl) -> List[String]! = {
   guard not list.any(inductive.raw_spine(xty).1, (a) => list.any(list.drop(pnames, sig.implicits), (p) => mentions(a, p))) else err("${sig.name}: the type of ${x} may depend only on implicit parameters")
   // R, from W's type: WellFounded(A, R), that is (x: A) -> Acc(A, R, x).
   let (_, wty) = elab.elab_infer(env, sig.levels, w)!
-  var bu = budget()
+  var bu = budget_in(env)
   let rel_opt: Option[Term] = match whnf(env, [], wty, bu) {
     Pi(_, _, b) => {
       let (_, aargs) = spine(whnf(env, [("x", type0())], b, bu))
@@ -752,7 +769,7 @@ local fn nested_kind(mut env: Env, sig: Sig, body: Raw) -> (String, Int)? = {
           Pi(_, d, _) => d,
           _ => type0(),
         }
-        var bu = budget()
+        var bu = budget_in(env)
         let w = whnf(env, ctx, dom, bu)
         let (h, _) = spine(w)
         let own = match h {
@@ -813,7 +830,7 @@ local fn shape(pat: Term, t: Term, np: Int, depth: Int) -> Bool = match pat {
 local fn nested_target(env: Env, q: String, kind: Int) -> patterns.Target! = {
   let info = map.get(env.inductives, q) ?? IndInfo { params: 0, indices: 0, ctors: [], fields: [], nested: [] }
   let np = info.params
-  var bu = budget()
+  var bu = budget_in(env)
   let (pctx, _) = telescope(env, [], map.get(env.types, q) ?? type0(), np, bu)!
   var list_ctors: List[(String, Ctx)] = []
   if kind == 0 then {
@@ -1055,7 +1072,7 @@ local fn result_sort(mut env: Env, sig: Sig, body: Raw) -> Level! = {
     }
     k = k + 1
   }
-  var bu = budget()
+  var bu = budget_in(env)
   expect_sort(env, ctx, t, bu)
 }
 
@@ -1193,7 +1210,7 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
   for d in inductive.constructors(ind) {
     step(env, line, d)!
   }
-  var bu = budget()
+  var bu = budget_in(env)
   let (plan, auxes) = admissible(env, ind, bu)!
   let q = env.room + "." + ind.name
   let elim_decls = if list.is_empty(auxes) then inductive.eliminator(ind, plan) else inductive.nested_eliminator(ind, plan, nested_layout(env, ind, q, auxes, bu)!)
@@ -1313,7 +1330,7 @@ local fn install_view(mut env: Env, name: String, src: String, given: Map[String
 local fn image(mut env: Env, mut v: View, q: String, r: Raw) -> Unit! = {
   guard not map.contains(env.lparams, q) else err("${q} has universe parameters; a view maps only symbols without them")
   let ty = carry(v, map.get(env.types, q) ?? type0())
-  var bu = budget()
+  var bu = budget_in(env)
   expect_sort(env, [], ty, bu)!
   let t = surface_term(env, [], no_brackets_ok(r)!, ty)!
   check(env, [], t, ty, bu)!
@@ -1325,7 +1342,7 @@ local fn image(mut env: Env, mut v: View, q: String, r: Raw) -> Unit! = {
 local fn image_term(mut env: Env, mut v: View, q: String, t: Term) -> Unit! = {
   guard not map.contains(env.lparams, q) else err("${q} has universe parameters; a view maps only symbols without them")
   let ty = carry(v, map.get(env.types, q) ?? type0())
-  var bu = budget()
+  var bu = budget_in(env)
   expect_sort(env, [], ty, bu)!
   check(env, [], t, ty, bu)!
   map.insert(v.images, q, t)
@@ -1491,7 +1508,7 @@ local fn carry_decl(mut env: Env, mut v: View, prefix: String, q: String) -> Str
   let lv = map.get(env.lparams, q) ?? []
   let imps = map.get(env.implicits, q) ?? 0
   let ty = carry(v, map.get(env.types, q) ?? type0())
-  var bu = budget()
+  var bu = budget_in(env)
   expect_sort(env, [], ty, bu)!
   let body = match map.get(env.bodies, q) {
     some(b) => some(carry(v, b)),
@@ -1523,7 +1540,7 @@ local fn keeps_rule(mut env: Env, v: View, name: String, r: Rule) -> Unit! = {
     list.push(ctx, ("x" + int.to_string(i), carry(v, ty)))
     i = i + 1
   }
-  var bu = budget()
+  var bu = budget_in(env)
   let same = conv(env, ctx, lhs, rhs, bu)
   guard not bu.exhausted else err(exhausted_error())
   guard same else err("view ${name} does not keep the rule ${r.text}\n    left:  ${show(env, ctx, lhs)}\n    right: ${show(env, ctx, rhs)}")
@@ -1924,7 +1941,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   DSymbol(sig) => {
     no_brackets([sig.ty])!
     let ty = surface_type(env, sig.levels, sig.ty)!
-    var bu = budget()
+    var bu = budget_in(env)
     expect_sort(env, [], ty, bu)!
     ok((declare(env, sig, "symbol", ty, none)!, []))
   },
@@ -1946,7 +1963,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
       let (t, _) = elab.elab_infer(env, [], e_raw)!
       t
     } else resolve(env, [], [], e_raw)!
-    var bu = budget()
+    var bu = budget_in(env)
     let ty = infer(env, [], e, bu)!
     ok((NoChange, ["${show(env, [], e)}: ${show(env, [], ty)}"]))
   },
@@ -1956,7 +1973,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
       let (t, _) = elab.elab_infer(env, [], e_raw)!
       t
     } else resolve(env, [], [], e_raw)!
-    var bu = budget()
+    var bu = budget_in(env)
     infer(env, [], e, bu)!
     let v = nf(env, [], e, bu)
     guard not bu.exhausted else err(exhausted_error())
@@ -1977,7 +1994,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
   DSearch(sig, kind, names, depth) => {
     no_brackets([sig.ty])!
     let ty = surface_type(env, sig.levels, sig.ty)!
-    var bu = budget()
+    var bu = budget_in(env)
     expect_sort(env, [], ty, bu)!
     var using: List[(String, List[String], Term)] = []
     for n in names {
@@ -1998,7 +2015,7 @@ local fn examine(mut env: Env, d: Located) -> (Change, List[String])! = match d.
     let z = resolve_const(env, zero_name)!
     let sc = resolve_const(env, succ_name)!
     guard list.is_empty(map.get(env.lparams, z) ?? []) and list.is_empty(map.get(env.lparams, sc) ?? []) else err("numerals ${zero_name}, ${succ_name}: constants with universe parameters cannot make numerals")
-    var bu = budget()
+    var bu = budget_in(env)
     let zty = map.get(env.types, z) ?? type0()
     let sty = map.get(env.types, sc) ?? type0()
     guard conv(env, [], sty, Pi("_", zty, zty), bu) else err("numerals ${zero_name}, ${succ_name}: ${succ_name} must be a function from ${show(env, [], zty)} to itself, but it is a ${show(env, [], sty)}")
@@ -2015,7 +2032,7 @@ local fn op_result(env: Env, zero_name: String, op: String, zty: Term, yes: Stri
   if kernel.is_test_op(op) then {
     guard yes != "" and no != "" else err("numerals ${zero_name} computes: ${op} answers with a boolean; give `true: T, false: F` in the same declaration")
     let bty = map.get(env.types, yes) ?? type0()
-    var bu = budget()
+    var bu = budget_in(env)
     guard conv(env, [], map.get(env.types, no) ?? type0(), bty, bu) else err("numerals ${zero_name} computes: ${yes} and ${no} must have the same type")
     ok(bty)
   } else ok(zty)
@@ -2042,7 +2059,7 @@ local fn computes(env: Env, zero_name: String, fields: List[(String, String)]) -
     some((_, c)) => resolve_const(env, c)!,
     none => "",
   }
-  var bu = budget()
+  var bu = budget_in(env)
   var out: List[(String, kernel.Compute)] = []
   for (op, cname) in fields {
     if op == "true" or op == "false" then () else {
@@ -2062,7 +2079,7 @@ local fn computes(env: Env, zero_name: String, fields: List[(String, String)]) -
         for n in [0, 1, 2, 5] {
           let r = kernel.compute_op(op, m, n) ?? 0
           let expected = if kernel.is_test_op(op) then Const(if r == 1 then yes else no, []) else kernel.literal(z, r)
-          var cb = budget()
+          var cb = budget_in(env)
           let call = if unary then App(Const(c, []), kernel.literal(z, m)) else App(App(Const(c, []), kernel.literal(z, m)), kernel.literal(z, n))
           guard conv(env, [], call, expected, cb) else err("numerals ${zero_name} computes: ${op}: ${c}(${int.to_string(m)}${if unary then "" else ", " + int.to_string(n)}) does not reduce to ${show(env, [], expected)}, so ${c} is not ${op}")
         }
@@ -2284,7 +2301,7 @@ local fn result_head(t: Term) -> String? = match t {
 local fn typed_body(mut env: Env, lv: List[String], ty_raw: Raw, body_raw: Raw) -> (Term, Term)! = {
   no_brackets([ty_raw, body_raw])!
   let ty = surface_type(env, lv, ty_raw)!
-  var bu = budget()
+  var bu = budget_in(env)
   expect_sort(env, [], ty, bu)!
   let body = surface_term(env, lv, body_raw, ty)!
   check(env, [], body, ty, bu)!

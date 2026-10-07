@@ -910,8 +910,10 @@ What each system's features are in Arlk, and what is missing, is tabulated in
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
    guarded corecursion that is not a state machine.
 4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used
-   again, almide/almide#3434). Lean `Nat.Lemmas` takes about 5 minutes (10.5 before Arlk computed Lean's `Nat` operations on
-   literals), `List.Lemmas` about 13.
+   again, almide/almide#3434). The kernel avoids it where it can: it describes a term for an error
+   only when a failed declaration is checked again for its message (a set.mm part went from 35 to
+   22 seconds). Lean `Nat.Lemmas` takes about 5 minutes (10.5 before Arlk computed Lean's `Nat`
+   operations on literals), `List.Lemmas` about 13.
 5. **Natural language layer.** Pair each theorem with a statement in natural language, and
    track where the formal statement and the intended meaning may differ.
 

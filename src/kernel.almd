@@ -84,6 +84,9 @@ type Env = {
   computes: Map[String, Compute],
   room: String,
   order: List[String],
+  // describe the terms errors are about (see Budget); on only while a
+  // failed declaration is checked again for its message
+  labels: Bool,
 }
 
 // A view of room `source` in the room it was declared in: the term each of
@@ -142,6 +145,7 @@ fn empty() -> Env = Env {
   computes: [:],
   room: "main",
   order: [],
+  labels: false,
 }
 
 // ── Numerals ────────────────────────────────────────────────────────
@@ -427,12 +431,23 @@ local fn rename_consts(t: Term, m: Map[String, String]) -> Term = match t {
 // twice computes it twice (Lean's omega proofs ran into the hundreds of
 // millions of steps). A closed term's normal form depends only on the
 // environment, which does not change within a declaration.
-type Budget = { left: Int, depth: Int, exhausted: Bool, failed: Map[(Int, Int, Int), Bool], memo: Map[Int, List[(Term, Term)]] }
+// `labels`: describe the terms that errors are about. Off by default:
+// describing a term passes it to a function, which copies it
+// (almide/almide#3434), and every application would copy its function part,
+// the whole proof so far (checking set.mm took 40% longer). A declaration
+// that fails is checked again with labels on, for the message.
+type Budget = { left: Int, depth: Int, exhausted: Bool, failed: Map[(Int, Int, Int), Bool], memo: Map[Int, List[(Term, Term)]], labels: Bool }
 
 let STEPS = 50_000_000
 let MAX_DEPTH = 512
 
-fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:], memo: [:] }
+fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:], memo: [:], labels: false }
+
+// A budget whose errors describe the terms they are about.
+fn labelled() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:], memo: [:], labels: true }
+
+// The budget for checking in env: labelled while a failure is described.
+fn budget_in(env: Env) -> Budget = if env.labels then labelled() else budget()
 
 // Applications larger than this are not remembered (hashing and comparing
 // them would cost more than it saves).
@@ -1352,8 +1367,9 @@ fn infer(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term! = match t {
     // Neither f nor a is used after the call that checks it: a value used
     // again is copied first (almide/almide#3434), and in a deep proof term,
     // each step an argument of the next, those copies made checking
-    // quadratic in time and memory (#17's term family).
-    let label = brief(env, ctx, f)
+    // quadratic in time and memory (#17's term family). Its description is
+    // made only when labels are on (see Budget).
+    let label = if bu.labels then brief(env, ctx, f) else "a term"
     let tf = infer(env, ctx, f, bu)!
     match whnf(env, ctx, tf, bu) {
       Pi(_, dom, cod) => {
@@ -1397,11 +1413,11 @@ fn expect_sort(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Level! = {
 fn check(env: Env, ctx: Ctx, t: Term, expected: Term, mut bu: Budget) -> Unit! = {
   // The term is described before it is checked, not after (see infer's
   // application case).
-  let label = brief(env, ctx, t)
+  let label = if bu.labels then " for " + brief(env, ctx, t) else ""
   let actual = infer(env, ctx, t, bu)!
   let same = conv(env, ctx, actual, expected, bu)
   guard not bu.exhausted else err(exhausted_error())
-  guard same else err("type mismatch for ${label}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(env, ctx, actual)}")
+  guard same else err("type mismatch${label}\n    expected: ${show(env, ctx, expected)}\n    found:    ${show(env, ctx, actual)}")
   ok(())
 }
 
