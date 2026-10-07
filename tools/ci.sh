@@ -108,12 +108,12 @@ must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 must_pass "Isabelle absorption (proofs replayed by simp)" 600 tools/isabelle-export/check.sh ./arlk
 must_pass "language server" 300 python3 tools/lsp/smoke.py ./arlk
 
-# Rocq's Corelib.Init (Logic, Datatypes, Peano, Nat, Specif, Wf): all 981
+# Rocq's Corelib.Init (Logic, Datatypes, Peano, Nat, Specif, Wf): all 753
 # declarations check, sig/sigT lowered into Prop included.
 log="$LOGS/rocq-init.log"
 limit 1800 ./arlk check lib/core.arlk absorbed/rocq/init.arlk --keep-going >"$log" 2>&1
-if grep -q '^ok: lib/core.arlk absorbed/rocq/init.arlk (981 declarations)' "$log" && ! grep -q '^✗' "$log"; then
-  record "Rocq Corelib.Init (all checked)" pass "981 declarations, none failing"
+if grep -q '^ok: lib/core.arlk absorbed/rocq/init.arlk (753 declarations)' "$log" && ! grep -q '^✗' "$log"; then
+  record "Rocq Corelib.Init (all checked)" pass "753 declarations, none failing"
 else
   record "Rocq Corelib.Init (all checked)" FAIL "see $log"
 fi

@@ -21,10 +21,9 @@ def RocqNat: core.Univ(core.l1) = Init.Datatypes.nat
 def lean_add(n: core.El(core.l1, LeanNat), m: core.El(core.l1, LeanNat)) -> core.El(core.l1, LeanNat) =
   HAdd.hAdd@0@0@0(Nat, Nat, Nat, instHAdd@0(Nat, instAddNat), n, m)
 
-// Rocq's `a = b` on its numbers. Rocq's eq takes its type in universe 2,
-// so nat is lifted there: cumulativity, made explicit.
+// Rocq's `a = b` on its numbers: eq at nat's universe (Set, level 1).
 def rocq_eq(a: core.El(core.l1, RocqNat), b: core.El(core.l1, RocqNat)) -> core.Univ(core.l0) =
-  Init.Logic.eq@2(core.lift(core.l1, core.l2, RocqNat), a, b)
+  Init.Logic.eq@1(RocqNat, a, b)
 
 // ── From Lean's numbers to Rocq's ──────────────────────────────────
 
@@ -43,7 +42,7 @@ eval to_rocq(lean_add(Nat.succ(Nat.zero), Nat.succ(Nat.zero)))
 
 // Lean's definitions reduce n + 0 to n, so Rocq's reflexivity is enough.
 theorem add_zero_in_rocq(n: core.El(core.l1, LeanNat)) -> core.El(core.l0, rocq_eq(to_rocq(lean_add(n, Nat.zero)), to_rocq(n))) =
-  Init.Logic.eq.eq_refl@2(core.lift(core.l1, core.l2, RocqNat), to_rocq(n))
+  Init.Logic.eq.eq_refl@1(RocqNat, to_rocq(n))
 
 // ── A Lean theorem, transported into Rocq's logic ──────────────────
 
@@ -55,7 +54,7 @@ theorem add_comm_in_rocq(n: core.El(core.l1, LeanNat), m: core.El(core.l1, LeanN
     Nat,
     lean_add(n, m),
     (b: core.El(core.l1, Nat), h: core.El(core.l0, Eq@1(Nat, lean_add(n, m), b))) => rocq_eq(to_rocq(lean_add(n, m)), to_rocq(b)),
-    Init.Logic.eq.eq_refl@2(core.lift(core.l1, core.l2, RocqNat), to_rocq(lean_add(n, m))),
+    Init.Logic.eq.eq_refl@1(RocqNat, to_rocq(lean_add(n, m))),
     lean_add(m, n),
     Nat.add_comm(n, m))
 

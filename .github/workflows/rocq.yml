@@ -1,0 +1,103 @@
+name: rocq
+
+# Rocq's Stdlib.Arith.PeanoNat (the natural numbers' library, 1200 theorems),
+# too large to commit as Arlk: exported from Rocq 9.2 in its official image,
+# absorbed and checked by Arlk's kernel. Rocq only exports; nothing it says
+# is trusted. The declarations that do not check yet are a fixed baseline
+# (absorbed/rocq/peanonat.expected-failures): any other failure, and any
+# listed one that starts to pass, fails the run.
+on:
+  schedule:
+    - cron: "53 4 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/rocq-export/**
+      - lib/core.arlk
+      - absorbed/rocq/peanonat.*
+      - .github/workflows/rocq.yml
+
+env:
+  ALMIDE_REPO: https://github.com/almide/almide
+  ALMIDE_COMMIT: 963df767bc9c1ef7f4e7cc3d6f0662073e66baec
+  RUST_VERSION: 1.96.1
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    container:
+      image: rocq/rocq-prover:9.2.0
+      options: --user root
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the export plugin and export PeanoNat
+        shell: bash
+        run: |
+          export OPAMROOT=/home/rocq/.opam
+          eval "$(opam env --root=$OPAMROOT --switch=default --set-root --set-switch 2>/dev/null || opam env --root=$OPAMROOT)"
+          rocq --version
+          tools/rocq-export/build.sh
+          out="$PWD/peanonat.json"
+          {
+            echo 'From Stdlib Require Import PeanoNat.'
+            echo 'Declare ML Module "rocq-arlk-export.plugin".'
+            echo "Arlk Export \"$out\" $(sed 's/^/Stdlib.Arith.PeanoNat./' absorbed/rocq/peanonat.names | tr '\n' ' ')."
+          } > peanonat.v
+          (cd tools/rocq-export && OCAMLPATH=$PWD/src rocq c -I src ../../peanonat.v)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: peanonat-json
+          path: peanonat.json
+
+  check:
+    needs: export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache the Almide build
+        uses: actions/cache@v4
+        with:
+          path: ~/almide-src/target
+          key: almide-${{ env.ALMIDE_COMMIT }}-rust-${{ env.RUST_VERSION }}-${{ runner.os }}
+
+      - name: Build Almide at ${{ env.ALMIDE_COMMIT }}
+        run: |
+          mkdir -p ~/almide-src && cd ~/almide-src
+          git init -q . 2>/dev/null || true
+          git fetch -q --depth 1 "$ALMIDE_REPO" "$ALMIDE_COMMIT"
+          git checkout -q --force FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ALMIDE_COMMIT"
+          cargo build --release --locked
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/almide "$HOME/.local/bin/almide"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build arlk
+        run: almide build src/main.almd -o arlk
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: peanonat-json
+
+      - name: Absorb and check PeanoNat against the baseline
+        run: |
+          ./arlk absorb peanonat.json -o peanonat.arlk
+          status=0; ./arlk check lib/core.arlk peanonat.arlk --keep-going > check.log 2>&1 || status=$?
+          tail -1 check.log | cut -c1-200
+          tools/rocq-baseline.py peanonat.json check.log absorbed/rocq/peanonat.expected-failures
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: peanonat-check
+          path: check.log

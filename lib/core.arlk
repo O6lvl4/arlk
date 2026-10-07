@@ -24,6 +24,8 @@ symbol max(n: Lvl, m: Lvl) -> Lvl
 rule max(lz, m) = m  where m: Lvl
 rule max(ls(n), lz) = ls(n)  where n: Lvl
 rule max(ls(n), ls(m)) = ls(max(n, m))  where n: Lvl, m: Lvl
+// Associative, as max is: nested maxima lean right.
+rule max(max(n, m), k) = max(n, max(m, k))  where n: Lvl, m: Lvl, k: Lvl
 
 // The level of a function type from universe a into universe b: 0 when b
 // is 0 (a function into Prop is a proposition), max(a, b) otherwise.
@@ -63,6 +65,9 @@ rule El({imax(a, b)}, pi(a, b, A, B)) = (x: El(a, A)) -> El(b, B(x))
 // `lift(a, b, A)` moves A from universe a up to max(a, b). It has the same values.
 symbol lift(a: Lvl, b: Lvl, A: Univ(a)) -> Univ(max(a, b))
 rule El({max(a, b)}, lift(a, b, A)) = El(a, A)  where a: Lvl, b: Lvl, A: Univ(a)
+// Lifting twice is lifting once: Rocq's cumulativity is transitive, and two
+// paths up to the same universe give the same type.
+rule lift({max(a, b)}, c, lift(a, b, A)) = lift(a, max(b, c), A)  where a: Lvl, b: Lvl, c: Lvl, A: Univ(a)
 
 // ── Proof irrelevance (from Lean) ──────────────────────────────────
 

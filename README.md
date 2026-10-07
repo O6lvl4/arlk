@@ -15,7 +15,7 @@ was found.
 
 - Lean's whole `Init.Data.Nat.Basic` module (all 310 theorems, the two universe-polymorphic ones
   at their lowest universes; 823 declarations with their dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
-- Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: all 981 declarations) is
+- Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: all 436 targets, 753 declarations) is
   checked the same way.
 - Metamath's `set.mm`, the whole database (47 913 theorems: logic, ZFC, the number systems,
   analysis, ...), is read straight from the database, proofs included, and every theorem is checked
@@ -369,8 +369,8 @@ $ ./arlk check lib/core.arlk absorbed/lean/nat_add_zero.arlk
 ok: lib/core.arlk absorbed/lean/nat_add_zero.arlk (53 declarations)
 
 $ ./arlk check lib/core.arlk absorbed/rocq/init_peano.arlk
-✓ theorem Corelib.Init.Peano.plus_n_O: core.El(core.l0, core.pi(core.l1, core.l0, Init.Datatypes.nat, (n: ...) => Init.Logic.eq@2(core.lift(core.l1, core.l2, Init.Datatypes.nat), n, Init.Nat.add(n, Init.Datatypes.nat.O))))
-ok: lib/core.arlk absorbed/rocq/init_peano.arlk (118 declarations)
+✓ theorem Corelib.Init.Peano.plus_n_O: core.El(core.l0, core.pi(core.l1, core.l0, Init.Datatypes.nat, (n: ...) => Init.Logic.eq@1(Init.Datatypes.nat, n, Init.Nat.add(n, Init.Datatypes.nat.O))))
+ok: lib/core.arlk absorbed/rocq/init_peano.arlk (99 declarations)
 ```
 
 ### The shared foundation
@@ -406,8 +406,10 @@ uses it.
 | Rocq kernel feature | How it is absorbed |
 |---|---|
 | Universe variables with constraints | numbered by the longest path from `Set` in Rocq's universe graph, which satisfies every constraint |
-| Template polymorphism (`eq`, `prod`, `sig`, ...) | one instance per level it is used at (`eq@2`), floored at its declared levels |
-| `match` | a lambda-lifted symbol with one rule per constructor (as in Dedukti's CoqInE); convertible matches share one symbol |
+| Template polymorphism (`eq`, `prod`, `sig`, ...) | one instance per level its arguments live at (`eq@1` on `nat`), `Prop` when Rocq lowers it there |
+| Monomorphic constants and inductives over sorts (`eq_trans (A : Type@{u})`, `PER`) | the same: an instance per level of their arguments (`eq_trans@1`), so a lemma used on `nat` states facts about `eq@1` |
+| Universe-polymorphic constants | one instance per universe instance (`Unconvertible@1`) |
+| `match` | the inductive's case eliminator at the motive's level (`nat.case@1(P, b_O, b_S, n)`), one rule per constructor, so matches with convertible branches are convertible, as in Rocq |
 | `fix`, including over indexed families | lambda-lifted symbols whose rules fire only on a constructor, as Rocq's guard condition expects |
 | Cumulativity | explicit `lift`, computed in the encoding's own level arithmetic |
 | `SProp`, primitive projections, cofixpoints, primitive integers | not yet |
@@ -557,8 +559,9 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | all 1573 | ~5 min |
 | Lean `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` (each module whole: 2136 theorems) | all of them | ~16 min together |
 | Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
-| Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
-| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 981 | ~40 s |
+| Rocq `Corelib.Init.Peano` | 99, all of them | < 0.5 s |
+| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 753 (436 targets) | ~20 s |
+| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 945 targets check; the rest are a fixed baseline | ~2 min |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
@@ -611,7 +614,7 @@ theorem add_comm_in_rocq(n: core.El(core.l1, LeanNat), m: core.El(core.l1, LeanN
     Nat,
     lean_add(n, m),
     (b: core.El(core.l1, Nat), h: core.El(core.l0, Eq@1(Nat, lean_add(n, m), b))) => rocq_eq(to_rocq(lean_add(n, m)), to_rocq(b)),
-    Init.Logic.eq.eq_refl@2(core.lift(core.l1, core.l2, RocqNat), to_rocq(lean_add(n, m))),
+    Init.Logic.eq.eq_refl@1(RocqNat, to_rocq(lean_add(n, m))),
     lean_add(m, n),
     Nat.add_comm(n, m))
 ```

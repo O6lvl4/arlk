@@ -62,12 +62,12 @@ test "the Lean proof really computes through Lean's definitions" {
   }
 }
 
-test "Rocq's cumulativity is checked: lifting nat downwards is rejected" {
-  // eq wants its type in universe 2; nat is lifted from 1. Claiming it
-  // came from 3 breaks the proof, because lift only goes up.
-  let src = fs.read_text(ROCQ_ABSORBED)!
-  let up = "core.lift(core.l1, core.l2, Init.Datatypes.nat)"
+test "Rocq's cumulativity is checked: lifting a proposition downwards is rejected" {
+  // Rocq's Init lifts propositions (level 0) to where a Type is wanted.
+  // Claiming they came from level 2 breaks the proofs: lift only goes up.
+  let src = fs.read_text("absorbed/rocq/init.arlk")!
+  let up = "core.lift(core.l0, core.l1, Init.Logic.eq"
   assert(string.contains(src, up))
-  let down = string.replace(src, up, "core.lift(core.l3, core.l2, Init.Datatypes.nat)")
+  let down = string.replace(src, up, "core.lift(core.l2, core.l1, Init.Logic.eq")
   assert(check_with(fs.read_text(CORE)!, down) != none)
 }

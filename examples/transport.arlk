@@ -26,10 +26,10 @@ room transport uses Init, Corelib
 def LN: Type = core.El(core.l1, Nat)
 def RN: Type = core.El(core.l1, Init.Datatypes.nat)
 
-// Rocq's eq takes its type in universe 2: nat lifted there.
-def rnat: core.Univ(core.l2) = core.lift(core.l1, core.l2, Init.Datatypes.nat)
+// Rocq's eq on nat is its instance at nat's universe (Set, level 1).
+def rnat: core.Univ(core.l1) = Init.Datatypes.nat
 
-def REq(a: RN, b: RN) -> Type = core.El(core.l0, Init.Logic.eq@2(rnat, a, b))
+def REq(a: RN, b: RN) -> Type = core.El(core.l0, Init.Logic.eq@1(rnat, a, b))
 def LEq(n: LN, m: LN) -> Type = core.El(core.l0, Eq@1(Nat, n, m))
 
 def ladd(n: LN, m: LN) -> LN = HAdd.hAdd@0@0@0(Nat, Nat, Nat, instHAdd@0(Nat, instAddNat), n, m)
@@ -37,18 +37,19 @@ def radd(a: RN, b: RN) -> RN = Corelib.Init.Nat.add(a, b)
 
 // ── Rocq equality, as needed below ─────────────────────────────────
 
-theorem rsym(a: RN, b: RN, h: REq(a, b)) -> REq(b, a) = Init.Logic.eq_sym(rnat, a, b, h)
+theorem rsym(a: RN, b: RN, h: REq(a, b)) -> REq(b, a) =
+  Init.Logic.eq_ind@1(rnat, a, (x: RN) => Init.Logic.eq@1(rnat, x, a), Init.Logic.eq.eq_refl@1(rnat, a), b, h)
 
 theorem rtrans(a: RN, b: RN, c: RN, h1: REq(a, b), h2: REq(b, c)) -> REq(a, c) =
-  Init.Logic.eq_ind(rnat, b, (x: RN) => Init.Logic.eq@2(rnat, a, x), h1, c, h2)
+  Init.Logic.eq_ind@1(rnat, b, (x: RN) => Init.Logic.eq@1(rnat, a, x), h1, c, h2)
 
 theorem rcong_S(a: RN, b: RN, h: REq(a, b)) -> REq(Init.Datatypes.nat.S(a), Init.Datatypes.nat.S(b)) =
-  Init.Logic.f_equal(rnat, rnat, (x: RN) => Init.Datatypes.nat.S(x), a, b, h)
+  Init.Logic.f_equal@1@1(rnat, rnat, (x: RN) => Init.Datatypes.nat.S(x), a, b, h)
 
 theorem rcong_add(a: RN, a': RN, b: RN, b': RN, ha: REq(a, a'), hb: REq(b, b')) -> REq(radd(a, b), radd(a', b')) =
   rtrans(radd(a, b), radd(a', b), radd(a', b'),
-    Init.Logic.f_equal(rnat, rnat, (x: RN) => radd(x, b), a, a', ha),
-    Init.Logic.f_equal(rnat, rnat, (y: RN) => radd(a', y), b, b', hb))
+    Init.Logic.f_equal@1@1(rnat, rnat, (x: RN) => radd(x, b), a, a', ha),
+    Init.Logic.f_equal@1@1(rnat, rnat, (y: RN) => radd(a', y), b, b', hb))
 
 // ── The correspondence ─────────────────────────────────────────────
 
@@ -63,8 +64,8 @@ def to_lean(a: RN) -> LN =
 // Every Rocq number comes from a Lean one: by Rocq's induction.
 theorem round_trip(a: RN) -> REq(to_rocq(to_lean(a)), a) =
   Init.Datatypes.nat_ind(
-    (x: RN) => Init.Logic.eq@2(rnat, to_rocq(to_lean(x)), x),
-    Init.Logic.eq.eq_refl@2(rnat, Init.Datatypes.nat.O),
+    (x: RN) => Init.Logic.eq@1(rnat, to_rocq(to_lean(x)), x),
+    Init.Logic.eq.eq_refl@1(rnat, Init.Datatypes.nat.O),
     (x: RN, ih: REq(to_rocq(to_lean(x)), x)) => rcong_S(to_rocq(to_lean(x)), x, ih),
     a)
 
@@ -72,7 +73,7 @@ theorem round_trip(a: RN) -> REq(to_rocq(to_lean(a)), a) =
 // with Rocq's lemmas for its own addition (which recurses on the left).
 theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_rocq(m))) =
   Nat.rec@0(
-    (k: LN) => Init.Logic.eq@2(rnat, to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k))),
+    (k: LN) => Init.Logic.eq@1(rnat, to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k))),
     Init.Peano.plus_n_O(to_rocq(n)),
     (k: LN, ih: REq(to_rocq(ladd(n, k)), radd(to_rocq(n), to_rocq(k)))) =>
       rtrans(
@@ -86,8 +87,8 @@ theorem add_hom(n: LN, m: LN) -> REq(to_rocq(ladd(n, m)), radd(to_rocq(n), to_ro
 // A Lean equation between Lean numbers is a Rocq equation between their images.
 theorem transport(n: LN, m: LN, h: LEq(n, m)) -> REq(to_rocq(n), to_rocq(m)) =
   Eq.rec@0@1(Nat, n,
-    (b: LN, e: LEq(n, b)) => Init.Logic.eq@2(rnat, to_rocq(n), to_rocq(b)),
-    Init.Logic.eq.eq_refl@2(rnat, to_rocq(n)),
+    (b: LN, e: LEq(n, b)) => Init.Logic.eq@1(rnat, to_rocq(n), to_rocq(b)),
+    Init.Logic.eq.eq_refl@1(rnat, to_rocq(n)),
     m, h)
 
 // The image of a Lean sum, seen from Rocq numbers a and b.

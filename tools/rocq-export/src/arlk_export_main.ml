@@ -79,6 +79,9 @@ let level_numbers : int Univ.Level.Map.t Lazy.t = lazy (
    levels (global levels such as option.u0) stand for these numbers. *)
 let template_override : (Univ.Level.t * int) list ref = ref []
 
+(* The template instances whose declarations are being emitted. *)
+let declaring : (Names.inductive * int array) list ref = ref []
+
 let level_of_level l =
   if Univ.Level.is_set l then 1
   else match List.find_opt (fun (l', _) -> Univ.Level.equal l l') !template_override with
@@ -109,10 +112,33 @@ let template_of ind =
     unsupported "template inductive without template data";
   t
 
+(* The global levels a monomorphic inductive's sort parameters are written
+   with (`PER (A : Type@{u})`): such an inductive is instantiated at the
+   levels of its arguments like a template one, so that it is the same
+   type wherever those arguments live. *)
+let sort_param_levels ind =
+  let env = Global.env () in
+  let mib = Environ.lookup_mind (fst ind) env in
+  match mib.Declarations.mind_universes with
+  | Declarations.Polymorphic _ -> [||]
+  | Declarations.Monomorphic ->
+    let ls = List.fold_left (fun acc d ->
+      match d with
+      | RelDecl.LocalAssum (_, t) ->
+        let (ctx, concl) = Term.decompose_prod_decls t in
+        (match kind (Reduction.whd_all (Environ.push_rel_context ctx env) concl) with
+         | Sort (Sorts.Type u) ->
+           (match Univ.Universe.repr u with
+            | [ (l, 0) ] when not (Univ.Level.is_set l) && not (List.exists (Univ.Level.equal l) acc) -> acc @ [ l ]
+            | _ -> acc)
+         | _ -> acc)
+      | _ -> acc) [] (List.rev mib.Declarations.mind_params_ctxt) in
+    Array.of_list ls
+
 let template_levels ind =
   match template_of ind with
   | Some tu -> snd (UVars.Instance.to_array tu.Declarations.template_defaults)
-  | None -> [||]
+  | None -> sort_param_levels ind
 
 let with_override ind nums f =
   let saved = !template_override in
@@ -121,6 +147,20 @@ let with_override ind nums f =
   match f () with
   | v -> template_override := saved; v
   | exception e -> template_override := saved; raise e
+
+let with_pairs pairs f =
+  let saved = !template_override in
+  template_override := pairs @ saved;
+  match f () with
+  | v -> template_override := saved; v
+  | exception e -> template_override := saved; raise e
+
+let with_only pairs f =
+  let saved = !template_override and saved_decl = !declaring in
+  template_override := pairs; declaring := [];
+  match f () with
+  | v -> template_override := saved; declaring := saved_decl; v
+  | exception e -> template_override := saved; declaring := saved_decl; raise e
 
 let inst_name base nums =
   base ^ String.concat "" (List.map (fun n -> "@" ^ string_of_int n) (Array.to_list nums))
@@ -137,6 +177,17 @@ let imax a b = if b = 0 then 0 else max a b
    a template inductive at the level of the instance it is used at. This
    can be lower than Rocq's answer; `lift` makes up the difference. *)
 let rec level_of_type env ty =
+  match kind (fst (decompose_app ty)) with
+  | Const (c, u) when UVars.Instance.is_empty u ->
+    (* a constant's application lives where the constant (at the instance
+       its arguments pick) says, as it is emitted unfolded no further *)
+    let pairs = mono_pairs env c (snd (decompose_app ty)) in
+    (match kind (Reduction.whd_all env (Typeops.infer env ty).Environ.uj_type) with
+     | Sort s -> with_pairs pairs (fun () -> level_of_sort s)
+     | _ -> level_of_unfolded env ty)
+  | _ -> level_of_unfolded env ty
+
+and level_of_unfolded env ty =
   let w = Reduction.whd_all env ty in
   match kind w with
   | Sort s -> level_of_sort s + 1
@@ -145,7 +196,7 @@ let rec level_of_type env ty =
   | _ ->
     let (h, args) = decompose_app w in
     match kind h with
-    | Ind ((ind, _)) when template_of ind <> None ->
+    | Ind ((ind, _)) when template_nums env ind args <> None ->
       let nums = Option.get (template_nums env ind args) in
       let spec = Inductive.lookup_mind_specif env ind in
       let arity = Inductive.type_of_inductive (spec, UVars.Instance.empty) in
@@ -164,13 +215,14 @@ let rec level_of_type env ty =
    and a use whose argument is concrete pick the same instance. *)
 and template_nums env ind args =
   match template_of ind with
-  | None -> None
+  | None -> sort_param_nums env ind args
   | Some tu ->
     let (_, defaults) = UVars.Instance.to_array tu.Declarations.template_defaults in
     (* Inside the declaration of one of ind's instances (its constructors'
        types), ind itself is that instance. *)
-    let own = Array.map (fun l -> List.find_opt (fun (l', _) -> Univ.Level.equal l l') !template_override) defaults in
-    if Array.length own > 0 && Array.for_all Option.has_some own then Some (Array.map (fun o -> snd (Option.get o)) own) else
+    match List.assoc_opt ind !declaring with
+    | Some nums -> Some nums
+    | None ->
     let saved = !template_override in
     template_override := [];
     let nums = Array.map level_of_level defaults in
@@ -193,14 +245,20 @@ and template_nums env ind args =
     if Sys.getenv_opt "ARLK_DEBUG" <> None then
       Feedback.msg_notice (Pp.str (Printf.sprintf "template %s %d: %d args, nparams %d, in_prop %b" (MutInd.to_string (fst ind)) (snd ind) (Array.length args) nparams in_prop));
     List.iteri (fun p so ->
-      match so with
-      | Some (Sorts.Type u) ->
+      let lv = match so with
+        | Some (Sorts.Type u) | Some (Sorts.QSort (_, u)) -> Some u
+        | _ -> None in
+      match lv with
+      | Some u ->
         (match Univ.Universe.repr u with
          | [ (l, 0) ] ->
-           (match Univ.Level.var_index l with
-            | Some i when p < Array.length args ->
-              let la = level_of_type env args.(p) in
-              nums.(i) <- if in_prop then la else max nums.(i) la
+           let index = match Univ.Level.var_index l with
+             | Some i -> Some i
+             | None -> Array.find_index (Univ.Level.equal l) defaults in
+           (match index with
+            | Some i when p < Array.length args && i < Array.length nums ->
+              let la = level_of_family env args.(p) in
+              nums.(i) <- if in_prop then la else max 1 la
             | _ -> ())
          | _ -> ())
       | _ -> ()) tu.Declarations.template_param_arguments;
@@ -209,15 +267,43 @@ and template_nums env ind args =
     if in_prop then Array.fill nums 0 (Array.length nums) 0;
     Some nums
 
+(* A monomorphic inductive with sort parameters: the instance its
+   arguments put lower, when they are all given and one of them is. *)
+and sort_param_nums env ind args =
+  match List.assoc_opt ind !declaring with
+  | Some nums -> Some nums
+  | None ->
+  let levels = sort_param_levels ind in
+  if Array.length levels = 0 then None else
+  let mib = Environ.lookup_mind (fst ind) env in
+  let params = List.rev mib.Declarations.mind_params_ctxt in
+  let saved = !template_override in
+  template_override := [];
+  let defaults = Array.map level_of_level levels in
+  template_override := saved;
+  let nums = Array.copy defaults in
+  let complete = ref true in
+  List.iteri (fun i d ->
+    match d with
+    | RelDecl.LocalAssum (_, t) ->
+      (match arity_level env t with
+       | Some l ->
+         if i >= Array.length args then complete := false
+         else Array.iteri (fun k l' -> if Univ.Level.equal l l' then nums.(k) <- min nums.(k) (max 1 (level_of_family env args.(i)))) levels
+       | None -> ())
+    | _ -> ()) params;
+  if !complete && nums <> defaults then Some nums else None
+
 and abstract_instance _ind = UVars.Instance.empty
 
 (* `a` is accepted where `expected` is wanted. When `expected` is a sort
    and `a` lives lower in the encoding, lift it; through function types
    (arities), η-expand and lift the result. *)
-and coerce env a expected : coercion option =
+and coerce ?la env a expected : coercion option =
   match kind (Reduction.whd_all env expected) with
   | Sort s ->
-    let la = level_of_type env a and lb = level_of_sort s in
+    let la = match la with Some n -> n | None -> level_of_type env a in
+    let lb = level_of_sort s in
     if la = lb then None else Some (Lift (la, lb))
   | Prod (na, d, b) ->
     let env' = Environ.push_rel (RelDecl.LocalAssum (na, d)) env in
@@ -228,6 +314,66 @@ and coerce env a expected : coercion option =
         | None -> None)
      | _ -> None)
   | _ -> None
+
+(* The global levels of c's sort parameters that its arguments put lower,
+   with those levels; empty when every argument fits at c's own levels. *)
+and mono_pairs env c args =
+  let cb = Environ.lookup_constant c env in
+  match cb.Declarations.const_universes with
+  | Declarations.Polymorphic _ -> []
+  | Declarations.Monomorphic ->
+    (* Only when every sort parameter is given: a partial application is
+       left at c's own levels, as its type is still to be completed. *)
+    let complete = ref true in
+    let rec go ty i acc =
+      match kind (Reduction.whd_all env ty) with
+      | Prod (_, d, _) when i >= Array.length args ->
+        (match arity_level env d with Some _ -> complete := false | None -> ()); acc
+      | _ when i >= Array.length args -> acc
+      | Prod (_, d, b) ->
+        let acc = match arity_level env d with
+          | Some l when not (List.exists (fun (l', _) -> Univ.Level.equal l l') acc) ->
+            (* never Prop: a Type parameter stays predicative *)
+            (l, max 1 (level_of_family env args.(i))) :: acc
+          | _ -> acc in
+        go (Vars.subst1 args.(i) b) (i + 1) acc
+      | _ -> acc in
+    let pairs = List.rev (go cb.Declarations.const_type 0 []) in
+    let pairs = if !complete then pairs else [] in
+    (* against c's own declaration, not the levels in force here *)
+    let global l = let saved = !template_override in
+      template_override := [];
+      let n = level_of_level l in template_override := saved; n in
+    if List.exists (fun (l, n) -> n < global l) pairs then pairs else []
+
+(* The global level of a parameter's sort, `A : Type@{l}` or a family's,
+   `P : A -> Type@{l}`. *)
+and arity_level env d =
+  let (ctx, concl) = Term.decompose_prod_decls (Reduction.whd_all env d) in
+  match kind (Reduction.whd_all (Environ.push_rel_context ctx env) concl) with
+  | Sort (Sorts.Type u) ->
+    (match Univ.Universe.repr u with
+     | [ (l, 0) ] when not (Univ.Level.is_set l) -> Some l
+     | _ -> None)
+  | _ -> None
+
+(* The level of a type, or of the types a family returns (`P : A -> Type`). *)
+and level_of_family env a =
+  let ty = Reduction.whd_all env (Typeops.infer env a).Environ.uj_type in
+  match kind ty with
+  | Sort _ -> level_of_type env a
+  | Prod _ ->
+    let (ctx, concl) = Term.decompose_prod_decls ty in
+    (match kind (Reduction.whd_all (Environ.push_rel_context ctx env) concl) with
+     | Sort s -> level_of_sort s
+     | _ -> unsupported "a family that does not return types")
+  | _ -> unsupported "not a type or family"
+
+(* Some global level other than Set, to stand for a given level number. *)
+and any_level () =
+  match Univ.Level.Map.choose_opt (Univ.Level.Map.filter (fun l _ -> not (Univ.Level.is_set l)) (Lazy.force level_numbers)) with
+  | Some (l, _) -> l
+  | None -> unsupported "no global level"
 
 (* ── Names ────────────────────────────────────────────────────────── *)
 
@@ -248,7 +394,7 @@ let binder_name na = match Context.binder_name na with
 type state = {
   mutable done_ : (string, unit) Hashtbl.t;
   mutable decls : json list;           (* newest first *)
-  mutable aux : (Constr.t, Id.t list) Hashtbl.t; (* closed match/fix → its symbols *)
+  mutable aux : (string * Constr.t, Id.t list) Hashtbl.t; (* closed match/fix, at the levels in force → its symbols *)
   mutable named : (Id.t * Constr.t * string) list; (* aux variable, closed type, symbol name *)
   mutable counter : int;
 }
@@ -333,19 +479,25 @@ let shape key =
   let (ctx, body) = Term.decompose_lambda_decls key in
   (List.length ctx, fst (decompose_app body))
 
-let find_aux key =
+(* The levels in force: the same match at another instance of a constant
+   (or template inductive) is a different symbol. *)
+let levels_in_force () =
+  String.concat "," (List.map (fun (l, n) -> Univ.Level.to_string l ^ "=" ^ string_of_int n) !template_override)
+
+let find_aux key0 =
+  let key = (levels_in_force (), key0) in
   match Hashtbl.find_opt st.aux key with
   | Some ids -> Some ids
   | None ->
-    let env = Global.env () in
-    let (n, h) = shape key in
-    Hashtbl.fold (fun k ids found ->
+    let env = with_aux (Global.env ()) in
+    let (n, h) = shape key0 in
+    Hashtbl.fold (fun (lv, k) ids found ->
       match found with
       | Some _ -> found
       | None ->
         let (n', h') = shape k in
-        if n <> n' || not (Constr.equal h h') then None
-        else match Conversion.default_conv Conversion.CONV env k key with
+        if lv <> fst key || n <> n' || not (Constr.equal h h') then None
+        else match Conversion.default_conv Conversion.CONV env k key0 with
           | Ok () -> Some ids
           | Error () -> None) st.aux None
 
@@ -373,9 +525,7 @@ let rec tr (parent : string) (env : Environ.env) (t : Constr.t) : json =
     let env' = Environ.push_rel (RelDecl.LocalAssum (na, d)) env in
     O [ "l", A [ S (binder_name na); jd; I ld; tr parent env' b ] ]
   | App (f, args) -> tr_app parent env f args
-  | Const (c, u) ->
-    if not (UVars.Instance.is_empty u) then unsupported "universe polymorphic constant %s" (Constant.to_string c);
-    O [ "c", S (ensure_const c) ]
+  | Const (c, u) -> O [ "c", S (ensure_const c u) ]
   | Ind ((ind, u)) ->
     if not (UVars.Instance.is_empty u) then unsupported "universe polymorphic inductive";
     let nums = template_nums env ind [||] in
@@ -412,8 +562,11 @@ and tr_app parent env f args =
     Array.iter (fun a ->
       match kind (Reduction.whd_all env !ft) with
       | Prod (_, dom, cod) ->
+        (* a's own level is what it is here: the instance's template
+           levels may be the very levels a's type is written with. *)
+        let la = match kind (Reduction.whd_all env dom) with Sort _ -> Some (level_of_type env a) | _ -> None in
         let ja = with_override ind nums (fun () ->
-          match coerce env a dom with
+          match coerce ?la env a dom with
           | None -> None
           | Some c -> Some c) in
         let ja = match ja with None -> tr parent env a | Some c -> tr_coerce parent env a c in
@@ -422,15 +575,31 @@ and tr_app parent env f args =
       | _ -> unsupported "application of a non-function") args;
     !jf
   | None ->
-  let jf = ref (tr parent env f) in
+  (* A monomorphic constant whose parameters are sorts at global levels
+     (`eq_trans (A : Type@{u})`), applied to types that live lower: the
+     constant at the levels of its arguments, as a template inductive is,
+     instead of lifting them (cumulativity has no counterpart in the
+     encoding). Arlk checks that instance like any other declaration. *)
+  let pairs = match kind f with
+    | Const (c, u) when UVars.Instance.is_empty u -> mono_pairs env c args
+    | _ -> [] in
+  let jf = ref (match kind f with
+    | Const (c, u) when pairs <> [] -> O [ "c", S (ensure_const ~pairs c u) ]
+    | _ -> tr parent env f) in
   let ft = ref (Typeops.infer env f).Environ.uj_type in
   Array.iter (fun a ->
     match kind (Reduction.whd_all env !ft) with
     | Prod (_, dom, cod) ->
-      jf := O [ "a", A [ !jf; tr_fit parent env a dom ] ];
+      (* c's levels set the expected type; a itself is translated here *)
+      let la = match kind (Reduction.whd_all env dom) with Sort _ -> Some (level_of_type env a) | _ -> None in
+      let co = with_pairs pairs (fun () -> coerce ?la env a dom) in
+      let ja = match co with None -> tr parent env a | Some c -> tr_coerce parent env a c in
+      jf := O [ "a", A [ !jf; ja ] ];
       ft := Vars.subst1 a cod
     | _ -> unsupported "application of a non-function") args;
   !jf
+
+
 
 (* `a`, made to fit `expected` *)
 and tr_fit parent env a expected =
@@ -465,9 +634,134 @@ and ctor_term ind j pms nfields =
   mkApp (UnsafeMonomorphic.mkConstruct (ind, j + 1),
     Array.append (Array.map (Vars.lift nfields) pms) (Array.init nfields (fun q -> mkRel (nfields - q))))
 
-(* match c as x in I pms idx return P with C_j fields => b_j end
-   becomes  M Γ idx c  with  M : Π Γ (idx) (x : I pms idx), P  and one rule per C_j. *)
+(* match c as x in I pms idx return P with C_j fields => b_j end becomes
+   I.case@s(pms, P, b_1, .., b_n, idx, c): one eliminator per inductive (at
+   each instance) and sort s of P, with one rule per constructor,
+   I.case@s(pms, P, bs, idx_j, C_j(pms, fs)) = b_j(fs). As in Rocq, two
+   matches with convertible branches are then convertible. Falls back to a
+   symbol for this one match when the eliminator cannot be written. *)
 and tr_case parent env case =
+  try tr_case_elim parent env case
+  with Unsupported _ | CErrors.UserError _ -> tr_case_aux parent env case
+
+and tr_case_elim parent env case =
+  let (ci, (p, _), _, c, brs) = Inductive.expand_case env case in
+  let (_, _, pms, _, _, _, _) = case in
+  let ind = ci.ci_ind in
+  let spec = Inductive.lookup_mind_specif env ind in
+  let (mib, mip) = spec in
+  (* the sort of the motive *)
+  let (pctx, pbody) = Term.decompose_lambda_decls p in
+  if List.length pctx < mip.Declarations.mind_nrealdecls + 1 then unsupported "case: a motive with fewer binders";
+  let (pctx, pbody) = Term.decompose_lambda_n_decls (mip.Declarations.mind_nrealdecls + 1) p in
+  if List.exists RelDecl.is_local_def pctx then unsupported "let in indices";
+  let penv = Environ.push_rel_context pctx env in
+  let s = match kind (Reduction.whd_all penv (Typeops.infer penv pbody).Environ.uj_type) with
+    | Sort s -> s
+    | _ -> unsupported "a motive that is not a type" in
+  (* the motive's level in the encoding, which can be above Rocq's sort
+     (a template instance never goes below its default) *)
+  let m = level_of_type penv pbody in
+  let (s, m) = if level_of_sort s = m then (s, m)
+    else if m = 1 then (Sorts.set, 1)
+    else (Sorts.sort_of_univ (Univ.Universe.make (any_level ())), m) in
+  let spair = match s with
+    | Sorts.Prop | Sorts.Set -> []
+    | Sorts.Type u ->
+      (match Univ.Universe.repr u with
+       | [ (l, k) ] when not (Univ.Level.is_set l) -> [ (l, m - k) ]
+       | [ (l, k) ] -> if k + 1 = m then [] else unsupported "motive level"
+       | _ -> unsupported "an algebraic motive sort")
+    | _ -> unsupported "motive sort" in
+  let nums = template_nums env ind pms in
+  let name = ensure_case ind nums s m spair in
+  let (_, args) = Inductive.find_rectype env (Typeops.infer env c).Environ.uj_type in
+  let idx = Array.of_list (List.filteri (fun k _ -> k >= mib.Declarations.mind_nparams) args) in
+  let all = Array.concat [ pms; [| p |]; brs; idx; [| c |] ] in
+  (* each argument fits the eliminator's type at this instance and sort *)
+  let fty = case_type ind s in
+  let tlev = template_levels ind in
+  let pairs = spair @ (match nums with Some n -> List.init (Array.length tlev) (fun i -> (tlev.(i), n.(i))) | None -> []) in
+  let jf = ref (O [ "c", S name ]) and ft = ref fty in
+  Array.iter (fun a ->
+    match kind (Reduction.whd_all env !ft) with
+    | Prod (_, dom, cod) ->
+      let la = match kind (Reduction.whd_all env dom) with Sort _ -> Some (level_of_type env a) | _ -> None in
+      let co = with_pairs pairs (fun () -> coerce ?la env a dom) in
+      let ja = match co with None -> tr parent env a | Some c -> tr_coerce parent env a c in
+      jf := O [ "a", A [ !jf; ja ] ];
+      ft := Vars.subst1 a cod
+    | _ -> unsupported "case: too many arguments") all;
+  !jf
+
+(* Π pms (P : Π idx (x : I pms idx), s) (b_j : Π fs_j, P idx_j (C_j pms fs_j))
+     idx (x : I pms idx), P idx x *)
+and case_type ind s =
+  let env = Global.env () in
+  let spec = Inductive.lookup_mind_specif env ind in
+  let (mib, mip) = spec in
+  let params = mib.Declarations.mind_params_ctxt in
+  if List.exists RelDecl.is_local_def params then unsupported "let in parameters";
+  let np = List.length params in
+  let u = UVars.Instance.empty in
+  let prels = Array.init np (fun i -> mkRel (np - i)) in
+  let k = mip.Declarations.mind_nrealdecls + 1 in
+  let names = Array.init k (fun i -> Context.annotR (Name (Id.of_string (if i = k - 1 then "x" else Printf.sprintf "i%d" i)))) in
+  let arity = Inductive.expand_arity spec (ind, u) prels names in
+  if List.exists RelDecl.is_local_def arity then unsupported "let in indices";
+  let motive = Term.it_mkProd_or_LetIn (mkSort s) arity in
+  (* P, η-expanded over its context: Rocq's branch types apply it *)
+  let p_lam = Term.it_mkLambda_or_LetIn (mkApp (mkRel (k + 1), Array.init k (fun i -> mkRel (k - i)))) (Vars.lift_rel_context 1 arity) in
+  let brtys = Inductive.build_branches_type (ind, u) spec (Array.to_list (Array.map (Vars.lift 1) prels)) p_lam in
+  let nb = Array.length brtys in
+  let brctx = List.rev (Array.to_list (Array.mapi (fun j t ->
+    RelDecl.LocalAssum (Context.annotR (Name (Id.of_string (Printf.sprintf "b%d" j))), Vars.lift j t)) brtys)) in
+  let arity' = Vars.lift_rel_context (1 + nb) arity in
+  let concl = mkApp (mkRel (k + nb + 1), Array.init k (fun i -> mkRel (k - i))) in
+  let t = Term.it_mkProd_or_LetIn concl arity' in
+  let t = Term.it_mkProd_or_LetIn t brctx in
+  let t = mkProd (Context.annotR (Name (Id.of_string "P")), motive, t) in
+  Term.it_mkProd_or_LetIn t params
+
+and ensure_case ind nums s m spair =
+  let base = match nums with Some n -> inst_name (ind_name ind) n | None -> ind_name ind in
+  let name = base ^ ".case@" ^ string_of_int m in
+  if not (Hashtbl.mem st.done_ name) then begin
+    let env = Global.env () in
+    let spec = Inductive.lookup_mind_specif env ind in
+    let (mib, mip) = spec in
+    let cty = case_type ind s in
+    (* Rocq checks the eliminator's type before it is emitted *)
+    (try ignore (Typeops.infer env cty) with e when CErrors.noncritical e -> unsupported "case type");
+    Hashtbl.replace st.done_ name ();
+    let tlev = template_levels ind in
+    let pairs = spair @ (match nums with Some n -> List.init (Array.length tlev) (fun i -> (tlev.(i), n.(i))) | None -> []) in
+    with_only pairs (fun () ->
+      let saved = !declaring in
+      (match nums with Some n -> declaring := (ind, n) :: saved | None -> ());
+      Fun.protect ~finally:(fun () -> declaring := saved) (fun () ->
+      emit (O [ "kind", S "symbol"; "name", S name; "type", tr name env cty; "level", I (level_of_type env cty) ]);
+      let np = List.length mib.Declarations.mind_params_ctxt in
+      let nb = Array.length mip.Declarations.mind_consnames in
+      (* Γ: the parameters, P and the branches *)
+      let (gctx, _) = Term.decompose_prod_n_decls (np + 1 + nb) cty in
+      let env_d = Environ.push_rel_context gctx env in
+      let pms = Array.init np (fun i -> mkRel (np - i + 1 + nb)) in
+      let rules = List.init nb (fun j ->
+        let (fctx, idx, nfields) = ctor_fields env_d spec ind j pms in
+        let env_f = Environ.push_rel_context fctx env_d in
+        let ind_pms = mkApp (UnsafeMonomorphic.mkInd ind, Array.map (Vars.lift nfields) pms) in
+        let idx_typed = with_domains env_f (Typeops.infer env_f ind_pms).Environ.uj_type (Array.to_list idx) in
+        let pats = List.map (fun v -> `Var v) (rel_args env_d nfields)
+                   @ List.map (fun (i, d) -> `Bracket (i, d)) idx_typed
+                   @ [ `Ctor (ctor_term ind j pms nfields, nfields) ] in
+        let rhs = mkApp (mkRel (nb - j + nfields), Array.init nfields (fun q -> mkRel (nfields - q))) in
+        rule name env_f name pats rhs) in
+      emit (O [ "kind", S "rules"; "name", S name; "rules", A rules ])))
+  end;
+  name
+
+and tr_case_aux parent env case =
   let (ci, (p, _), _, c, brs) = Inductive.expand_case env case in
   let (_, _, pms, _, _, _, _) = case in
   let ind = ci.ci_ind in
@@ -486,7 +780,7 @@ and tr_case parent env case =
       let (pctx, pbody) = Term.decompose_lambda_n_decls (nidx + 1) p in
       let mty = Term.it_mkProd_or_LetIn (Term.it_mkProd_or_LetIn pbody pctx) delta in
       let (id, name) = new_aux parent "match" mty in
-      Hashtbl.replace st.aux key [ id ];
+      Hashtbl.replace st.aux (levels_in_force (), key) [ id ];
       let genv = with_aux (Global.env ()) in
       emit (O [ "kind", S "symbol"; "name", S name; "type", tr parent genv mty; "level", I (level_of_type genv mty) ]);
       let env_d = with_aux (Environ.push_rel_context delta genv) in
@@ -523,7 +817,7 @@ and tr_fix parent env recs i names types bodies =
     | None ->
       let auxs = Array.to_list (Array.map (fun ty -> new_aux parent "fix" (Term.it_mkProd_or_LetIn ty delta)) types) in
       let ids = List.map fst auxs in
-      Hashtbl.replace st.aux key ids;
+      Hashtbl.replace st.aux (levels_in_force (), key) ids;
       let genv = with_aux (Global.env ()) in
       (* every symbol of the block before any rule *)
       List.iteri (fun m (_, name) ->
@@ -607,7 +901,8 @@ and rule parent env_f head pats rhs =
       let cty = Inductive.type_of_constructor ((ind, j), abstract_instance ind) spec in
       let typed = with_domains env_f cty (Array.to_list args) in
       let fit (a, d) = match nums with
-        | Some n -> O [ "pb", (match with_override ind n (fun () -> coerce env_f a d) with
+        | Some n -> O [ "pb", (match (let la = match kind (Reduction.whd_all env_f d) with Sort _ -> Some (level_of_type env_f a) | _ -> None in
+                                       with_override ind n (fun () -> coerce ?la env_f a d)) with
                                 | None -> tr parent env_f a
                                 | Some c -> tr_coerce parent env_f a c) ]
         | None -> pat (`Bracket (a, d)) in
@@ -618,30 +913,51 @@ and rule parent env_f head pats rhs =
 
 (* ── Declarations ─────────────────────────────────────────────────── *)
 
-and ensure_const c =
-  let name = Constant.to_string c in
-  if not (Hashtbl.mem st.done_ name) then begin
+(* A universe-polymorphic constant is declared once per instance it is used
+   at, named by the instance's levels as numbers (`c@1@2`), with its type
+   and body instantiated there, as for Lean. *)
+and ensure_const ?(pairs = []) c u =
+  let env = Global.env () in
+  let cb = Environ.lookup_constant c env in
+  let poly = match cb.Declarations.const_universes with
+    | Declarations.Monomorphic -> false
+    | Declarations.Polymorphic _ -> true in
+  let (qs, ls) = UVars.Instance.to_array u in
+  if Array.length qs > 0 then unsupported "sort polymorphic constant %s" (Constant.to_string c);
+  let name = if poly then inst_name (Constant.to_string c) (Array.map level_of_level ls)
+    else if pairs <> [] then inst_name (Constant.to_string c) (Array.of_list (List.map snd pairs))
+    else Constant.to_string c in
+  let inst t = if poly then Vars.subst_instance_constr u t else t in
+  (* A declaration is translated at its own levels only, whatever is in
+     force where it was first used. *)
+  if not (Hashtbl.mem st.done_ name) then with_only pairs (fun () -> begin
     Hashtbl.replace st.done_ name ();
-    let env = Global.env () in
-    let cb = Environ.lookup_constant c env in
-    (match cb.Declarations.const_universes with
-     | Declarations.Monomorphic -> ()
-     | Declarations.Polymorphic _ -> unsupported "universe polymorphic constant %s" name);
-    let ty = cb.Declarations.const_type in
+    let ty = inst cb.Declarations.const_type in
     let jty = tr name env ty in
     let lty = level_of_type env ty in
+    (* A body that is a partial application (`f_equal nat`) is η-expanded
+       along its type, so that the applications inside it are complete and
+       pick their instances from its parameters. *)
+    let rec eta env body ty = match kind (Reduction.whd_all env ty) with
+      | Prod (na, d, b) ->
+        let env' = Environ.push_rel (RelDecl.LocalAssum (na, d)) env in
+        (match kind body with
+         | Lambda (na', d', b') -> mkLambda (na', d', eta env' b' b)
+         | _ -> mkLambda (na, d, eta env' (mkApp (Vars.lift 1 body, [| mkRel 1 |])) b))
+      | _ -> body in
+    let inst b = eta env (inst b) ty in
     let body_decl kind body =
       O [ "kind", S kind; "name", S name; "type", jty; "level", I lty; "value", tr_fit name env body ty ] in
     let d = match cb.Declarations.const_body with
-      | Declarations.Def b -> body_decl "def" b
+      | Declarations.Def b -> body_decl "def" (inst b)
       | Declarations.OpaqueDef o ->
         let (b, _) = Global.force_proof !accessor o in
-        body_decl "theorem" b
+        body_decl "theorem" (inst b)
       | Declarations.Undef _ -> O [ "kind", S "symbol"; "name", S name; "type", jty; "level", I lty ]
       | Declarations.Primitive _ -> unsupported "primitive %s" name
       | Declarations.Symbol _ -> unsupported "rewrite-rule symbol %s" name in
     emit d
-  end;
+  end);
   name
 
 and ensure_ind ((mi, _) as ind) nums =
@@ -654,7 +970,14 @@ and ensure_ind ((mi, _) as ind) nums =
      | Declarations.Monomorphic -> ()
      | Declarations.Polymorphic _ -> unsupported "universe polymorphic inductive %s" name);
     let inst = abstract_instance ind in
-    let under f = match nums with Some a -> with_override ind a f | None -> f () in
+    let under f = with_only [] (fun () -> match nums with
+      | Some a ->
+        let saved = !declaring in
+        declaring := Array.to_list (Array.mapi (fun i _ -> ((mi, i), a)) mib.Declarations.mind_packets) @ saved;
+        (match with_override ind a f with
+         | v -> declaring := saved; v
+         | exception e -> declaring := saved; raise e)
+      | None -> f ()) in
     (* declare the whole mutual block: every type, then every constructor *)
     Array.iteri (fun i _ -> Hashtbl.replace st.done_ (suffix (ind_name (mi, i))) ()) mib.Declarations.mind_packets;
     Array.iteri (fun i _ ->
@@ -674,6 +997,14 @@ and ensure_ind ((mi, _) as ind) nums =
 
 (* ── Entry point ──────────────────────────────────────────────────── *)
 
+(* A universe-polymorphic target is exported at Set for every level. *)
+let top_instance = function
+  | Declarations.Monomorphic -> UVars.Instance.empty
+  | Declarations.Polymorphic ctx ->
+    let (nq, n) = UVars.AbstractContext.size ctx in
+    if nq > 0 then unsupported "sort polymorphic target";
+    UVars.Instance.of_array ([||], Array.make n Univ.Level.set)
+
 let run opaque_access file (refs : Libnames.qualid list) =
   PrintingFlags.print_universes := true;
   accessor := opaque_access;
@@ -685,7 +1016,7 @@ let run opaque_access file (refs : Libnames.qualid list) =
     let saved_done = Hashtbl.copy st.done_ and saved_decls = st.decls and saved_aux = Hashtbl.copy st.aux in
     try
       let n = match gr with
-        | GlobRef.ConstRef c -> ensure_const c
+        | GlobRef.ConstRef c -> ensure_const c (top_instance (Environ.lookup_constant c (Global.env ())).Declarations.const_universes)
         | GlobRef.IndRef i -> ensure_ind i (template_nums (Global.env ()) i [||])
         | GlobRef.ConstructRef (i, _) -> ensure_ind i (template_nums (Global.env ()) i [||])
         | GlobRef.VarRef _ -> unsupported "section variable" in

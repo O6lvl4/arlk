@@ -146,6 +146,20 @@ rests on the target room's assumptions (which `axioms` lists), not on the source
   `arlk absorb` declares it for Lean's `Nat.add`, `sub`, `mul`, `div`, `mod`, `gcd`, `pow`,
   `shiftLeft`, `shiftRight`, `land`, `lor`, `xor`, `log2`, `beq` and `ble` when they are absorbed
   (the operations Lean's kernel computes on literals).
+* **Universe levels and cumulativity in lib/core.arlk.** Besides `max`'s computation on
+  levels, `max` is associative (`max(max(n, m), k) = max(n, max(m, k))`), and lifting twice is
+  lifting once (`lift(max(a, b), c, lift(a, b, A)) = lift(a, max(b, c), A)`). Both hold in the
+  set-theoretic model (levels are numbers, `lift` is the identity on values), and the kernel checks
+  that the second preserves types modulo the first. Rocq's cumulativity needs them: a type lifted
+  through two declarations' universes must be the type lifted once. The Rocq exporter also
+  declares a monomorphic constant or inductive whose parameters are sorts (`eq_trans (A :
+  Type@{u})`, `PER (A : Type@{u})`) once per level its arguments put it at (`eq_trans@1`), as
+  for template inductives: an instance of a definition or theorem is checked like the original,
+  and an instance of an inductive type is assumed (symbols and match rules) like the original.
+  A Rocq `match` becomes the inductive's case eliminator at the motive's level (`I.case@m`, a
+  symbol with one rule per constructor), declared only at the levels Rocq's own matches use, so
+  an inductive proposition gets a large eliminator only where Rocq allowed one (singleton
+  elimination, as for `eq`, `and`, `Acc`).
 * **Quotients.** [lib/quot.arlk](../lib/quot.arlk) declares Lean 4's kernel quotients as symbols
   (`Quot`, `Quot.mk`, `Quot.lift`, `Quot.ind`, `Quot.sound`) and one rule (`Quot.lift` computes on
   `Quot.mk`); `funext` there is proved from them. A result that uses them lists them in `axioms`.
