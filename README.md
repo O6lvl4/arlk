@@ -557,7 +557,7 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
 | Metamath `set.mm`, the whole database (commit 584b685; absorbed, not committed) | 47 913 theorems, all of them, in 12 parts | absorb 17 min, check ~17 CPU-hours (parts: 24 min to 3.7 h) |
-| Metamath `iset.mm` (intuitionistic logic and set theory), the whole database, not committed | 18 661, all of them | absorb 89 s, check ~48 min |
+| Metamath `iset.mm` (intuitionistic logic and set theory), the whole database (commit 584b685; checked daily in CI) | 16 444 theorems, all of them, in 4 parts | absorb 87 s, parts 11 to 16 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
 
 The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where

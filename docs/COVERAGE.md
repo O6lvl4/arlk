@@ -99,7 +99,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 |---|---|
 | Syntax axioms as constructors, `$p` proofs as terms, `$d` conditions as `Apart` facts | absorbed (`arlk absorb-mm`) |
 | `set.mm` | the whole database (commit 584b685, 47 913 theorems): every theorem checks, none fail, in 12 parts (`arlk chunk`), about 17 CPU-hours; in CI the propositional part (1818) on every push, and the whole of it in 24 parallel parts daily (.github/workflows/setmm.yml) |
-| `iset.mm` (intuitionistic) | the whole database: 18 661 declarations check, none fail (absorb 89 s, check 48 min; not in CI) |
+| `iset.mm` (intuitionistic) | the whole database (commit 584b685, 16 444 theorems): every theorem checks, none fail; in CI daily in 4 parallel parts with the same coverage check as set.mm |
 
 ## Between systems
 

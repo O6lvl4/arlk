@@ -1,6 +1,6 @@
 name: setmm
 
-# The whole of Metamath's set.mm, absorbed and checked by Arlk's kernel, in
+# The whole of Metamath's set.mm (and iset.mm), absorbed and checked by Arlk's kernel, in
 # parallel parts (`arlk chunk`): part k proves its share of the theorems and
 # assumes the earlier ones by their exact statements, so when every part
 # passes, every theorem of set.mm has been checked once and nothing more is
@@ -25,6 +25,9 @@ env:
   SETMM_COMMIT: 584b6852f57f281e9be1793332f1e52e077693c8
   SETMM_SHA256: 90de6bac87d549023fc83fb698a1baacfed3f99b71438722171674f16777c881
   PARTS: "24"
+  # iset.mm (intuitionistic logic and set theory), from the same commit.
+  ISETMM_SHA256: 802b6387d8b6e228f54af441dd73dc2596edde486ed80ce9dff2b83e61e11687
+  ISET_PARTS: "4"
 
 jobs:
   part:
@@ -101,3 +104,77 @@ jobs:
           cat setmm-part-*/range.txt | sed -E 's/^part ([0-9]+)\/([0-9]+) of .*: theorems ([0-9]+) to ([0-9]+) of ([0-9]+)$/\1 \2 \3 \4 \5/' | sort -n > ranges.txt
           cat ranges.txt
           awk -v parts="$PARTS" 'BEGIN { next_first = 1 } { if ($2 != parts || $3 != next_first) { print "gap or overlap at part " $1; bad = 1 } next_first = $4 + 1; total = $5; n++ } END { if (n != parts || next_first != total + 1) { print "the parts do not cover all " total " theorems"; bad = 1 } else print "all " total " theorems proved, in " n " parts"; exit bad }' ranges.txt
+
+  iset-part:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache the Almide build
+        uses: actions/cache@v4
+        with:
+          path: ~/almide-src/target
+          key: almide-${{ env.ALMIDE_COMMIT }}-rust-${{ env.RUST_VERSION }}-${{ runner.os }}
+
+      - name: Build Almide at ${{ env.ALMIDE_COMMIT }}
+        run: |
+          mkdir -p ~/almide-src && cd ~/almide-src
+          git init -q . 2>/dev/null || true
+          git fetch -q --depth 1 "$ALMIDE_REPO" "$ALMIDE_COMMIT"
+          git checkout -q --force FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ALMIDE_COMMIT"
+          cargo build --release --locked
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/almide "$HOME/.local/bin/almide"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build arlk
+        run: almide build src/main.almd -o arlk
+
+      - name: Fetch iset.mm ${{ env.SETMM_COMMIT }} (checksum pinned)
+        run: |
+          curl -fsSL -o iset.mm "https://raw.githubusercontent.com/metamath/set.mm/${SETMM_COMMIT}/iset.mm"
+          echo "${ISETMM_SHA256}  iset.mm" | sha256sum -c -
+
+      - name: Absorb iset.mm
+        run: ./arlk absorb-mm iset.mm -o setmm.arlk
+
+      - name: Part ${{ matrix.part }} of ${{ env.ISET_PARTS }}
+        run: |
+          ./arlk chunk setmm.arlk --part "${{ matrix.part }}/${ISET_PARTS}" -o part.arlk | tee range.txt
+          ./arlk check part.arlk > part.log 2>&1; status=$?
+          tail -3 part.log
+          exit $status
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isetmm-part-${{ matrix.part }}
+          path: |
+            part.log
+            range.txt
+
+  # The same for iset.mm.
+  iset-coverage:
+    needs: iset-part
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: isetmm-part-*
+      - name: The parts cover every theorem once
+        run: |
+          cat isetmm-part-*/range.txt | sed -E 's/^part ([0-9]+)\/([0-9]+) of .*: theorems ([0-9]+) to ([0-9]+) of ([0-9]+)$/\1 \2 \3 \4 \5/' | sort -n > ranges.txt
+          cat ranges.txt
+          awk -v parts="$ISET_PARTS" 'BEGIN { next_first = 1 } { if ($2 != parts || $3 != next_first) { print "gap or overlap at part " $1; bad = 1 } next_first = $4 + 1; total = $5; n++ } END { if (n != parts || next_first != total + 1) { print "the parts do not cover all " total " theorems"; bad = 1 } else print "all " total " theorems proved, in " n " parts"; exit bad }' ranges.txt
