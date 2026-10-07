@@ -15,7 +15,7 @@ soundness proof, and a passing test suite is not one either.
 | Typing: sorts (`Sort(u) : Sort(u + 1)`), Π types at `imax`, constants at their universe instance | `kernel.almd`: `infer`, `check`, `expect_sort` |
 | Reduction: β, δ (defs, by height), rewrite rules | `kernel.almd`: `reduce`, `rewrite`, `try_rule`, `match_pat` |
 | Structure eta for declared structures (`structure S = S.mk(S.f1, ...)`): in conversion (before and after definitions are unfolded), and in matching a rule's constructor pattern against a value of S (not for the projections' own rules) | `kernel.almd`: `eta_pairs`, `struct_expand`, `struct_params` |
-| Conversion: lazy δ, η, η for non-recursive records (`p ≡ P.mk(p.x, p.y)`), proof irrelevance (Prop, and declared `irrelevant` types) | `kernel.almd`: `conv`, `record_eta`, `eta_pairs`, `irrelevant_eq`, `is_prop` |
+| Conversion: syntactic equality up to binder names (`term.alpha_eq`), lazy δ, η, η for non-recursive records (`p ≡ P.mk(p.x, p.y)`), proof irrelevance (Prop, and declared `irrelevant` types) | `kernel.almd`: `conv`, `record_eta`, `eta_pairs`, `irrelevant_eq`, `is_prop` |
 | Resource limits: one work budget per declaration, bounded nesting (including reductions inside rule matching), exhaustion reported as an error, never as a normal form | `kernel.almd`: `Budget`, `spend`, `enter`, `enter_by` |
 | Holes are never accepted: a term containing a metavariable or an unsolved level is rejected | `kernel.almd`: `infer` (`Meta`, `level_has_meta`) |
 | Name resolution and room visibility | `kernel.almd`: `resolve_const` |

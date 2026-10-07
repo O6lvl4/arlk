@@ -8,7 +8,7 @@
 // Rooms are sealed once left: no later room can add symbols or rules to
 // them, so a room's assumptions are fixed by its own text.
 
-import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat, level_has_meta}
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, occurs, consts, level_eq, levels_eq, level_leq, inst_levels, type0, level_of_nat, level_has_meta, alpha_eq}
 import self.pretty
 import self.syntax.{Raw}
 
@@ -787,7 +787,9 @@ fn step_head(env: Env, ctx: Ctx, t: Term, mut bu: Budget) -> Term = {
 // `ctx` types the free variables of a and b: proof irrelevance and rule
 // brackets consult it.
 fn conv(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) -> Bool =
-  if a == b then true
+  // Up to binder names: comparing two copies of a term whose binders were
+  // renamed must not unfold them (a Nat.rec on a fuel of a million).
+  if alpha_eq(a, b) then true
   else if both_numerals(env, a, b) then false
   else if not enter(bu) then false
   else {
@@ -825,7 +827,7 @@ local fn conv_whnf(env: Env, ctx: Ctx, wa0: Term, wb0: Term, mut bu: Budget) -> 
   var answer = false
   var going = true
   while going {
-    if wa == wb then {
+    if alpha_eq(wa, wb) then {
       answer = true
       going = false
     } else if bu.exhausted then {

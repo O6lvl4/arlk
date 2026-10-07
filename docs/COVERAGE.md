@@ -45,10 +45,10 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Nested and mutual inductives | native; absorbed as Lean's kernel declares them (symbols and rules) |
 | Well-founded recursion (`termination_by`) | native (`decreasing x by W`); absorbed as the kernel terms Lean compiles it to |
 | Universe polymorphism | native; absorbed constants are instantiated per use |
-| `Init.Data.Nat.Lemmas` | 1572 of 1573 declarations check; one theorem runs out of budget |
-| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); 2612 of 2617 declarations check, two roots run out of budget |
+| `Init.Data.Nat.Lemmas` | all 1573 declarations check |
+| `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); 2614 of 2617 declarations check, one root runs out of budget |
 | `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` | each module whole (2136 theorems): every declaration checks |
-| `Init.Data.Fin.Lemmas` (2283 of 2290), `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic` | mostly: their failures descend from roots that run out of budget, chiefly `Nat.mul_add_div`, whose `Nat.Linear` reflection proof recurses on a fuel of 1 000 000 |
+| `Init.Data.Fin.Lemmas` (2283 of 2290), `Init.Data.Nat.Bitwise.Lemmas`, `Init.Data.List.Nat.Basic` | mostly: their failures descend from a few roots that run out of budget (proofs that `omega` generated) |
 | `Init.Data.String.Lemmas` | not exported: its proofs project out of `Exists` (a non-structure), which the exporter does not translate yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 

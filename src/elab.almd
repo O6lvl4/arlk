@@ -13,7 +13,7 @@
 // Nothing here is trusted. The output has no holes left and goes to the
 // kernel like any hand-written term; a wrong solution is a type error.
 
-import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta, occurs}
+import self.term.{Term, Level, shift, instantiate, subst, spine, apply, inst_levels, type0, level_eq, level_has_meta, has_meta, occurs, alpha_eq}
 import self.syntax.{Raw}
 import self.kernel.{Env, Ctx, Budget, budget, whnf, whnf_core, nf, def_height, unfold_head, resolve_const, show, exhausted_error, index_in, level_of, eta_pairs}
 import self.kernel
@@ -350,7 +350,7 @@ let UNIFY_DEPTH = 4096
 fn unify(env: Env, mut st: ElabState, ctx: Ctx, a: Term, b: Term) -> Bool = {
   let x = zonk(st, a)
   let y = zonk(st, b)
-  if x == y then true
+  if alpha_eq(x, y) then true
   // Two different literals of the same numerals differ (kernel.numeral).
   else if kernel.both_numerals(env, x, y) then false
   else if try_solve(st, ctx, x, y) or try_solve(st, ctx, y, x) then true
@@ -398,7 +398,7 @@ local fn unify_whnf(env: Env, mut st: ElabState, ctx: Ctx, x0: Term, y0: Term) -
   var answer = false
   var going = true
   while going {
-    if x == y then {
+    if alpha_eq(x, y) then {
       answer = true
       going = false
     } else if st.bu.exhausted then {
