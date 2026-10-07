@@ -386,12 +386,86 @@ fn show(env: Env, ctx: Ctx, t: Term) -> String = pretty.show(env.room, names_of(
 // irrelevance). A remembered pair only skips that shortcut: both sides are
 // then unfolded and compared as if the shortcut had failed again, so a
 // fingerprint that collides can cost completeness, never soundness.
-type Budget = { left: Int, depth: Int, exhausted: Bool, failed: Map[(Int, Int, Int), Bool] }
+//
+// `memo` remembers weak-head normal forms of closed applications computed
+// in this declaration, by a bounded hash; an entry is used only for a term
+// exactly equal to the one it was computed for. Reduction substitutes
+// arguments unevaluated, so without it a computation that uses a value
+// twice computes it twice (Lean's omega proofs ran into the hundreds of
+// millions of steps). A closed term's normal form depends only on the
+// environment, which does not change within a declaration.
+type Budget = { left: Int, depth: Int, exhausted: Bool, failed: Map[(Int, Int, Int), Bool], memo: Map[Int, List[(Term, Term)]] }
 
 let STEPS = 50_000_000
 let MAX_DEPTH = 512
 
-fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:] }
+fn budget() -> Budget = Budget { left: STEPS, depth: 0, exhausted: false, failed: [:], memo: [:] }
+
+// Applications larger than this are not remembered (hashing and comparing
+// them would cost more than it saves).
+let MEMO_NODES = 4000
+
+type Mk = { h: Int, left: Int, closed: Bool }
+
+// A hash of t, and whether t is closed (no variable bound outside it, no
+// hole), reading at most MEMO_NODES nodes; `left` below zero means larger.
+local fn memo_hash(t: Term, depth: Int, mut k: Mk) -> Unit =
+  if k.left < 0 or not k.closed then () else {
+    k.left = k.left - 1
+    match t {
+      Var(i) => {
+        if i >= depth then {
+          k.closed = false
+        } else {
+          k.h = (k.h * 31 + i + 7) % 1000000007
+        }
+      },
+      Sort(_) => {
+        k.h = (k.h * 31 + 3) % 1000000007
+      },
+      Const(c, ls) => {
+        var h = (k.h * 31 + list.len(ls) + 11) % 1000000007
+        for byte in string.to_bytes(c) {
+          h = (h * 131 + byte) % 1000000007
+        }
+        k.h = h
+      },
+      App(f, a) => {
+        k.h = (k.h * 31 + 13) % 1000000007
+        memo_hash(f, depth, k)
+        memo_hash(a, depth, k)
+      },
+      Lam(_, ty, body) => {
+        k.h = (k.h * 31 + 17) % 1000000007
+        memo_hash(ty, depth, k)
+        memo_hash(body, depth + 1, k)
+      },
+      Pi(_, ty, body) => {
+        k.h = (k.h * 31 + 19) % 1000000007
+        memo_hash(ty, depth, k)
+        memo_hash(body, depth + 1, k)
+      },
+      Meta(_) => {
+        k.closed = false
+      },
+    }
+  }
+
+// The key t is remembered under, when t is a closed application of
+// bounded size; delta and non-delta reductions are kept apart.
+local fn memo_key(t: Term, delta: Bool) -> Int? = match t {
+  App(_, _) => {
+    var k = Mk { h: 1, left: MEMO_NODES, closed: true }
+    memo_hash(t, 0, k)
+    if k.closed and k.left >= 0 then some(k.h * 2 + (if delta then 1 else 0)) else none
+  },
+  _ => none,
+}
+
+local fn memo_find(entries: List[(Term, Term)], t: Term) -> Term? = match list.find(entries, ((i, _)) => i == t) {
+  some((_, o)) => some(o),
+  none => none,
+}
 
 // Pay for one step; false once the budget is gone.
 fn spend_step(mut b: Budget) -> Bool = spend(b)
@@ -499,7 +573,32 @@ local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term
   // counts as REDUCE_WEIGHT levels.
   if not enter_by(b, REDUCE_WEIGHT) then t
   else {
-    let r = reduce_loop(env, ctx, t, delta, b)
+    let key = memo_key(t, delta)
+    let known = match key {
+      some(k) => match map.get(b.memo, k) {
+        some(entries) => memo_find(entries, t),
+        none => none,
+      },
+      none => none,
+    }
+    let r = match known {
+      some(o) => o,
+      none => {
+        let o = reduce_loop(env, ctx, t, delta, b)
+        // A reduction cut short by the budget is not a normal form.
+        match key {
+          some(k) => if b.exhausted then () else {
+            // Read first: an insert whose value reads the same map does not
+            // compile with Almide v0.64.0 (the class of almide/almide#3050, fixed
+            // in the pinned build; kept while v0.64.0 builds Arlk too).
+            let earlier = map.get(b.memo, k) ?? []
+            map.insert(b.memo, k, [(t, o)] + earlier)
+          },
+          none => (),
+        }
+        o
+      },
+    }
     leave_by(b, REDUCE_WEIGHT)
     r
   }

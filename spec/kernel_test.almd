@@ -1900,3 +1900,26 @@ theorem wrong(n: Nat) -> Eq(B, not(even(n)), even(n)) = match even(n) {
     none => false,
   })
 }
+
+// ── Normal forms of closed terms are remembered ─────────────────────
+
+test "memo: a value used twice is computed once (2^40 unfoldings otherwise)" {
+  let src = NUMS + """
+type B: Type = | yes | no
+def both(a: B, b: B) -> B = match a {
+  yes => b,
+  no => b,
+}
+def dup(n: Nat) -> B = match n {
+  zero => B.yes,
+  succ(k) => both(dup(k), dup(k)),
+}
+theorem t: Eq(B, dup(40), B.yes) = Eq.refl
+"""
+  assert_eq(run_wf(src)!, none)
+  // Remembering does not make a false equation true.
+  assert(match run_wf(src + "\ntheorem f: Eq(B, dup(40), B.no) = Eq.refl\n")! {
+    some(e) => string.contains(e, "mismatch"),
+    none => false,
+  })
+}

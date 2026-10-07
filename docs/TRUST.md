@@ -32,6 +32,12 @@ literal `n` is the constant `zero#n`, an abbreviation that weak-head reduction u
 `succ(zero#(n-1))` (`kernel.numeral_step`). Conversion decides two different literals of the same
 `zero` unequal without unfolding (`both_numerals`); answering "not convertible" can only make
 conversion incomplete (if `succ` were not injective), never unsound.
+Reduction remembers, per declaration, the weak-head normal form of each closed application it has
+computed (`Budget.memo`, under a bounded hash; with and without unfolding definitions kept apart).
+An entry is used only for a term exactly equal to the one it was computed for; a closed term has no
+variables for the context to give meaning to, and the environment does not change within a
+declaration, so the remembered form is the form reduction would compute again. A reduction cut short
+by the budget is not remembered.
 Regression tests: [spec/kernel_test.almd](../spec/kernel_test.almd), issues #1, #3, #7.
 
 ## 2. Declarations — trusted
