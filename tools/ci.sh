@@ -108,16 +108,14 @@ must_pass "Agda absorption and transport" 600 tools/agda-export/check.sh ./arlk
 must_pass "Isabelle absorption (proofs replayed by simp)" 600 tools/isabelle-export/check.sh ./arlk
 must_pass "language server" 300 python3 tools/lsp/smoke.py ./arlk
 
-# Rocq's Corelib.Init is not fully supported: exactly the four known
-# declarations fail (sig/sigT at Prop, see the README). Anything else is a
-# regression, including a declaration that starts to pass unannounced.
+# Rocq's Corelib.Init (Logic, Datatypes, Peano, Nat, Specif, Wf): all 981
+# declarations check, sig/sigT lowered into Prop included.
 log="$LOGS/rocq-init.log"
 limit 1800 ./arlk check lib/core.arlk absorbed/rocq/init.arlk --keep-going >"$log" 2>&1
-grep '^✗' "$log" | sed -E 's/^✗ ([^:]+:[0-9]+): ([^(]*).*/\1: \2/' | sed -E 's/ +$//' >"$LOGS/rocq-init.failures"
-if diff -u absorbed/rocq/init.expected-failures "$LOGS/rocq-init.failures" >"$LOGS/rocq-init.diff" && grep -q '^4 failed, 969 declarations checked' "$log"; then
-  record "Rocq Corelib.Init (known baseline)" pass "4 known failures, 969 checked"
+if grep -q '^ok: lib/core.arlk absorbed/rocq/init.arlk (981 declarations)' "$log" && ! grep -q '^✗' "$log"; then
+  record "Rocq Corelib.Init (all checked)" pass "981 declarations, none failing"
 else
-  record "Rocq Corelib.Init (known baseline)" FAIL "differs from the baseline, see $LOGS/rocq-init.diff"
+  record "Rocq Corelib.Init (all checked)" FAIL "see $log"
 fi
 
 # Lean's Init.Data.Nat.Lemmas: all 1573 declarations check (881 theorems),

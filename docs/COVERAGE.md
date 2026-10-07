@@ -26,6 +26,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Dependent pattern matching on indexed families: constructor patterns in indices (unification by cases), impossible arms left out, `match h { }` | native, compiled to recursors (adds no trust) | `patterns.invert` |
 | Well-founded recursion (`decreasing x by W`), `fix` and its unfolding law; course-of-values recursion (calls on deeper subterms) through it | native, from `Acc` (adds no trust) | `checker.add_wf_def`, `lib/std/wf.arlk` |
 | Rewriting tactic (`by simp`, `by induction x simp`) | native, produces checked terms | `simp.almd` |
+| Equational chains (`calc`; Lean's `calc`, Agda's `≡⟨⟩` reasoning, Isar's `also`/`finally`) | native, a chain of `trans` (adds no trust) | `syntax.calc` |
 | Proof search (`search`) | native, produces checked terms | `search.almd` |
 | Views and translations between theories | native | `checker.add_view`, `translate` |
 | Quotient types (Lean's `Quot`, `Quot.lift` computing), function extensionality | native, declared assumptions (`funext` proved from `Quot.sound`) | `lib/quot.arlk` |
@@ -58,7 +59,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 |---|---|
 | Inductive types, `match`, `fix` (also over indexed families) | absorbed (lambda-lifted symbols with rules) |
 | Universe constraints, template polymorphism, cumulativity | absorbed (levels numbered, instances per level, explicit `lift`) |
-| `Corelib.Init` | 969 of 973 declarations check (`sig`/`sigT` at `Prop` missing) |
+| `Corelib.Init` | all 981 declarations check (`sig`/`sigT` lowered into `Prop` included) |
 | `SProp`, primitive projections, cofixpoints, primitive integers | missing |
 
 ## Agda

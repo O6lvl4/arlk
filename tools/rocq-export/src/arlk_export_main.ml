@@ -167,6 +167,10 @@ and template_nums env ind args =
   | None -> None
   | Some tu ->
     let (_, defaults) = UVars.Instance.to_array tu.Declarations.template_defaults in
+    (* Inside the declaration of one of ind's instances (its constructors'
+       types), ind itself is that instance. *)
+    let own = Array.map (fun l -> List.find_opt (fun (l', _) -> Univ.Level.equal l l') !template_override) defaults in
+    if Array.length own > 0 && Array.for_all Option.has_some own then Some (Array.map (fun o -> snd (Option.get o)) own) else
     let saved = !template_override in
     template_override := [];
     let nums = Array.map level_of_level defaults in
@@ -187,7 +191,7 @@ and template_nums env ind args =
        | Sort Sorts.Prop -> true
        | _ -> false) in
     if Sys.getenv_opt "ARLK_DEBUG" <> None then
-      Feedback.msg_notice (Pp.str (Printf.sprintf "template %d: %d args, nparams %d, in_prop %b" (snd ind) (Array.length args) nparams in_prop));
+      Feedback.msg_notice (Pp.str (Printf.sprintf "template %s %d: %d args, nparams %d, in_prop %b" (MutInd.to_string (fst ind)) (snd ind) (Array.length args) nparams in_prop));
     List.iteri (fun p so ->
       match so with
       | Some (Sorts.Type u) ->
@@ -200,6 +204,9 @@ and template_nums env ind args =
             | _ -> ())
          | _ -> ())
       | _ -> ()) tu.Declarations.template_param_arguments;
+    (* Rocq lowers a template inductive into Prop only when every template
+       universe is instantiated by Prop: the instance at level 0. *)
+    if in_prop then Array.fill nums 0 (Array.length nums) 0;
     Some nums
 
 and abstract_instance _ind = UVars.Instance.empty

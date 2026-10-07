@@ -15,7 +15,7 @@ was found.
 
 - Lean's whole `Init.Data.Nat.Basic` module (all 310 theorems, the two universe-polymorphic ones
   at their lowest universes; 823 declarations with their dependencies) is translated into Arlk source and checked by Arlk's kernel alone.
-- Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: 969 of 973 declarations) is
+- Rocq's `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf: all 981 declarations) is
   checked the same way.
 - Metamath's `set.mm`, the whole database (47 913 theorems: logic, ZFC, the number systems,
   analysis, ...), is read straight from the database, proofs included, and every theorem is checked
@@ -110,9 +110,13 @@ A -> B    (A, B) -> C                  non-dependent function types
 f(a, b)   f(a)(b)                      call (the same thing)
 match x { c(a) => t, _ => u }        pattern matching (structural recursion), see below
 { let h: A = e  let k = e'  t }      a block: named steps of a proof (like Isar's `have`)
+calc a { = b by h, = c }               a chain of equations, joined by `trans` (Lean's `calc`,
+                                       Agda's `≡⟨ h ⟩`, Isar's `also`/`finally`); a step with no
+                                       `by` holds by computation (`Eq.refl`)
 _                                      a hole the elaborator fills
-?                                      an open goal: checking stops and shows its type, its context,
-                                       and a visible theorem that closes it if a quick search finds one
+?                                      an open goal: checking stops and shows its type, its context
+                                       (β-reduced, in the names the room uses), and a visible theorem
+                                       that closes it if a quick search finds one
 logic.Prf                              a qualified name (another room's symbol)
 Nat.add   Eq@1                         names may contain dots and @ (absorbed names use both)
 // comment
@@ -554,7 +558,7 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Lean `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` (each module whole: 2136 theorems) | all of them | ~16 min together |
 | Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
 | Rocq `Corelib.Init.Peano` | 118, all of them | < 0.5 s |
-| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | 969 of 973 | ~30 s |
+| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 981 | ~40 s |
 | Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤` with absurd patterns, records, `with`, coinduction by copatterns) | all of them | < 0.5 s |
 | Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
 | Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
@@ -562,8 +566,9 @@ ok: lib/std/eq.arlk lib/isabelle_main.arlk absorbed/isabelle/lists.arlk (47 decl
 | Metamath `iset.mm` (intuitionistic logic and set theory), the whole database (commit 584b685; checked daily in CI) | 16 444 theorems, all of them, in 4 parts | absorb 87 s, parts 11 to 16 min |
 | OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
 
-The 4 Rocq declarations that fail are the projections of `sig`/`sigT` used at `Prop`, where
-template polymorphism drops a type to `Prop` in a way the exporter does not yet reproduce.
+Rocq's template inductives become one instance per universe they are used at (`sigT@2@2`). When
+Rocq lowers one into `Prop` (`sig`/`sigT` of propositions, as in `eq_sigT_uncurried_iff`), the
+exporter uses the instance at level 0 (`sigT@0@0`).
 
 **What a successful check means.** Arlk checks the emitted proof terms without running Lean, Rocq
 or a Metamath verifier, and the exporters and `arlk absorb` are not part of that check: they only
@@ -890,8 +895,8 @@ What each system's features are in Arlk, and what is missing, is tabulated in
    subject reduction instead of trusting a rule's declared variable types.
 2. **The rest of each library.** Lean: `Init` as a whole (some modules, such as `String.Lemmas`,
    the exporter cannot translate yet), universe polymorphism kept rather than
-   instantiated. Rocq: `sig`/`sigT` at `Prop`
-   (template polymorphism in the exporter), `SProp`, primitive projections, cofixpoints. Agda:
+   instantiated. Rocq: the rest of the standard library, `SProp`, primitive projections,
+   cofixpoints. Agda:
    `with … | inspect`, instance arguments. Isabelle: Isar steps inside induction cases,
    premises other than equations, type classes, more of Main. Metamath: set.mm's heaviest theorems (hours each part).
 3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
