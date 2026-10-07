@@ -254,7 +254,11 @@ and template_nums env ind args =
          | [ (l, 0) ] ->
            let index = match Univ.Level.var_index l with
              | Some i -> Some i
-             | None -> Array.find_index (Univ.Level.equal l) defaults in
+             | None ->
+               (* Array.find_index is OCaml 5.1; Rocq's image has an older one. *)
+               let rec find i = if i >= Array.length defaults then None
+                 else if Univ.Level.equal l defaults.(i) then Some i else find (i + 1) in
+               find 0 in
            (match index with
             | Some i when p < Array.length args && i < Array.length nums ->
               let la = level_of_family env args.(p) in
