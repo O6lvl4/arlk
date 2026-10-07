@@ -421,6 +421,9 @@ local fn atom(ts: List[Token], p: Int) -> (Raw, Int)! = {
   // `by simp(l1, l2)`: rewriting, by elab (see simp.almd); `by induction x
   // simp(...)`: a match on x whose every case is that. The words are not
   // reserved.
+  // `calc a { = b by h, = c, ... }`: a chain of equations (Lean's `calc`,
+  // Agda's `≡⟨ h ⟩`, Isar's `also ... finally`). The word is not reserved.
+  guard not (t.kind == "ident" and t.text == "calc" and starts_calc(ts, p + 1)) else calc(ts, p + 1)
   if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "simp" then ok((RName("%simp"), p + 2))
   else if t.kind == "ident" and t.text == "by" and tok(ts, p + 1).text == "induction" then {
     let (x, p1) = ident(ts, p + 2)!
@@ -585,6 +588,36 @@ local fn search_spec(ts: List[Token], p: Int) -> (List[String], Int, Int)! = {
 // `{ let h: A = e  ...  result }`: Almide's block, for the steps of a
 // proof. Each `let` names a fact for what follows, opaquely, like Isar's
 // `have`: the block is `((h: A) => result)(e)`. The type may be left out.
+// Each step `= t by h` proves Eq(_, previous, t) by h, and `= t` by
+// Eq.refl (the two sides are equal by computation); the steps are joined
+// with `trans`. `Eq`, `Eq.refl` and `trans` are the ones in scope (the
+// room's `uses eq`), and every step is checked against its stated sides.
+local fn starts_calc(ts: List[Token], p: Int) -> Bool = match term(ts, p) {
+  ok((_, q)) => is_sym(ts, q, "{") and is_sym(ts, q + 1, "="),
+  err(_) => false,
+}
+
+local fn calc(ts: List[Token], p: Int) -> (Raw, Int)! = {
+  let (first, p1) = term(ts, p)!
+  var q = expect(ts, p1, "{")!
+  var prev = first
+  var steps: List[(String, Raw, Raw)] = []
+  while is_sym(ts, q, "=") {
+    let (next, q1) = term(ts, q + 1)!
+    let (proof, q2) = (if tok(ts, q1).kind == "ident" and tok(ts, q1).text == "by" then term(ts, q1 + 1) else ok((RName("Eq.refl"), q1)))!
+    let name = "%calc${int.to_string(list.len(steps))}"
+    list.push(steps, (name, RApp(RApp(RApp(RName("Eq"), RName("_")), prev), next), proof))
+    prev = next
+    q = if is_sym(ts, q2, ",") then q2 + 1 else q2
+  }
+  guard not list.is_empty(steps) else err(fail_at(ts, q, "calc: expected a step `= term by proof`"))
+  let q3 = expect(ts, q, "}")!
+  let names = steps |> list.map((st) => { let (x, _, _) = st
+    RName(x) })
+  let chain = list.fold(list.drop(names, 1), list.first(names) ?? RName("?"), (acc, x) => RApp(RApp(RName("trans"), acc), x))
+  ok((list.fold(list.reverse(steps), chain, (acc, (x, ty, e)) => RApp(RLam(x, ty, acc), e)), q3))
+}
+
 local fn block(ts: List[Token], p: Int) -> (Raw, Int)! = {
   var binds: List[(String, Raw, Raw)] = []
   var q = p

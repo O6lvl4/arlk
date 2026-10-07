@@ -881,7 +881,7 @@ local fn run_simp(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expe
 }
 
 local fn mismatch(env: Env, st: ElabState, ctx: Ctx, t: Term, expected: Term, ty: Term) -> String =
-  "type mismatch for ${show(env, ctx, zonk(st, t))}\n    expected: ${show(env, ctx, zonk(st, expected))}\n    found:    ${show(env, ctx, zonk(st, ty))}"
+  "type mismatch for ${clip(kernel.show_short(env, ctx, zonk(st, t)))}\n    expected: ${kernel.show_short(env, ctx, beta_nf(zonk(st, expected)))}\n    found:    ${kernel.show_short(env, ctx, beta_nf(zonk(st, ty)))}"
 
 local fn infer_then_unify(env: Env, sc: Scope, mut st: ElabState, ctx: Ctx, r: Raw, expected: Term) -> Term! = {
   let (t, ty) = infer(env, sc, st, ctx, r)!
@@ -961,6 +961,10 @@ local fn complete(env: Env, sc: Scope, mut st: ElabState, t: Term, what: String)
   guard not has_meta(z) else err("cannot infer every part of ${what}: ${show(env, [], z)} (write the missing arguments, or the universe levels in [...])")
   ok(z)
 }
+
+// A term named in a message, cut short when long (the expected and found
+// types after it are what matter).
+local fn clip(s: String) -> String = if string.len(s) > 160 then string.take(s, 150) + " …" else s
 
 // Each open goal: what it must prove, what is at hand, and what
 // unification already knows it to be.

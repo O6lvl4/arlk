@@ -1,0 +1,30 @@
+// Chains of equations: `calc a { = b by h, = c }`, Lean's `calc`, Agda's
+// `≡⟨ h ⟩` reasoning and Isar's `also ... finally`, in one form. Each step
+// states where it lands and gives its proof; a step without `by` holds by
+// computation. The chain is joined with `trans` and checked step by step.
+//
+//   arlk check lib/std/eq.arlk lib/std/logic.arlk lib/std/nat.arlk examples/calc.arlk
+room calcdemo uses eq, logic, nat
+
+theorem rotate(a: Nat, b: Nat, c: Nat) -> Eq(Nat, add(add(a, b), c), add(add(b, c), a)) = calc add(add(a, b), c) {
+  = add(a, add(b, c)) by add_assoc(a, b, c),
+  = add(add(b, c), a) by add_comm(a, add(b, c)),
+}
+
+// Steps by computation: add recurses on its first argument.
+theorem two_plus(n: Nat) -> Eq(Nat, add(Nat.succ(Nat.succ(Nat.zero)), n), Nat.succ(Nat.succ(n))) = calc add(Nat.succ(Nat.succ(Nat.zero)), n) {
+  = Nat.succ(add(Nat.succ(Nat.zero), n))
+  = Nat.succ(Nat.succ(add(Nat.zero, n)))
+  = Nat.succ(Nat.succ(n))
+}
+
+// Inside an induction: the hypothesis is one step of the chain.
+theorem add_zero_right(n: Nat) -> Eq(Nat, add(n, Nat.zero), n) = match n {
+  zero => Eq.refl,
+  succ(k) => calc add(Nat.succ(k), Nat.zero) {
+    = Nat.succ(add(k, Nat.zero))
+    = Nat.succ(k) by cong((x: Nat) => Nat.succ(x), add_zero_right(k)),
+  },
+}
+
+axioms rotate

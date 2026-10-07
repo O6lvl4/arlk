@@ -83,6 +83,17 @@ contains wf-no-proof-why "a proof that the decreasing one is smaller" "$work/wf-
 mutate wf-not-smaller $WFX 's/msort(alt(List.cons(a, List.cons(b, t)), Bool.tt), alt_shorter/msort(List.cons(a, List.cons(b, t)), alt_shorter/'
 expect wf-not-smaller 1 "$arlk" check $EQ $LOGIC $NAT $WF $AL $LIST "$work/wf-not-smaller.arlk"
 contains wf-not-smaller-why "mismatch" "$work/wf-not-smaller.log"
+# Equational chains (examples/calc.arlk): a step whose proof proves
+# another equation, and a step claimed by computation that does not hold,
+# are rejected.
+CALC=examples/calc.arlk
+expect calc 0 "$arlk" check $EQ $LOGIC $NAT $CALC
+mutate calc-wrong-proof $CALC 's/= add(a, add(b, c)) by add_assoc(a, b, c),/= add(a, add(b, c)) by add_comm(a, add(b, c)),/'
+expect calc-wrong-proof 1 "$arlk" check $EQ $LOGIC $NAT "$work/calc-wrong-proof.arlk"
+contains calc-wrong-proof-why "type mismatch for add_comm(a, add(b, c))" "$work/calc-wrong-proof.log"
+mutate calc-wrong-step $CALC 's/^  = Nat.succ(Nat.succ(add(Nat.zero, n)))$/  = Nat.succ(add(Nat.zero, n))/'
+expect calc-wrong-step 1 "$arlk" check $EQ $LOGIC $NAT "$work/calc-wrong-step.arlk"
+contains calc-wrong-step-why "mismatch" "$work/calc-wrong-step.log"
 # Quotients (lib/quot.arlk assumes Lean's primitives): the integers as
 # pairs; negation that does not respect the relation, and a false
 # equation between classes, are rejected.
