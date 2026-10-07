@@ -48,7 +48,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | `Init.Data.Nat.Lemmas` | all 1573 declarations check |
 | `Init.Data.List.Lemmas` (universe-polymorphic theorems exported at their lowest universes) | all 688 theorems exported, string literals included (`String.mk` of `Char.ofNat`s); all 2617 declarations check |
 | `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` | each module whole (2136 theorems): every declaration checks |
-| `Init.Data.Fin.Lemmas` (298 theorems), `Init.Data.Nat.Bitwise.Lemmas` (120), `Init.Data.List.Nat.Basic` (30) | every declaration checks (14 to 20 minutes each); not committed (69 MB of Arlk), reproduced by `tools/lean-export --module` and `arlk absorb` |
+| `Init.Data.Fin.Lemmas` (298 theorems), `Init.Data.Nat.Bitwise.Lemmas` (120), `Init.Data.List.Nat.Basic` (30) | every declaration checks (14 to 20 minutes each); not committed (69 MB of Arlk): exported from Lean, absorbed and checked daily in CI ([lean.yml](../.github/workflows/lean.yml)) |
 | `Init.Data.String.Lemmas` | not exported: its proofs project out of `Exists` (a non-structure), which the exporter does not translate yet |
 | Tactics, elaboration | not absorbed (Lean's kernel terms are); Arlk has `by simp` and `search` of its own |
 

@@ -1,0 +1,85 @@
+name: lean
+
+# Lean modules too large to commit (tens of MB of Arlk each), exported from
+# Lean's own library and absorbed in CI, then checked by Arlk's kernel. Lean
+# only exports; nothing it says is trusted, and the check must accept every
+# declaration with no failure.
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/lean-export/**
+      - .github/workflows/lean.yml
+
+env:
+  ALMIDE_REPO: https://github.com/almide/almide
+  ALMIDE_COMMIT: 963df767bc9c1ef7f4e7cc3d6f0662073e66baec
+  RUST_VERSION: 1.96.1
+  LEAN_TOOLCHAIN: leanprover/lean4:v4.29.1
+
+jobs:
+  module:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [Init.Data.Fin.Lemmas, Init.Data.Nat.Bitwise.Lemmas, Init.Data.List.Nat.Basic]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_VERSION }}
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal
+          rustup default "$RUST_VERSION"
+
+      - name: Cache the Almide build
+        uses: actions/cache@v4
+        with:
+          path: ~/almide-src/target
+          key: almide-${{ env.ALMIDE_COMMIT }}-rust-${{ env.RUST_VERSION }}-${{ runner.os }}
+
+      - name: Build Almide at ${{ env.ALMIDE_COMMIT }}
+        run: |
+          mkdir -p ~/almide-src && cd ~/almide-src
+          git init -q . 2>/dev/null || true
+          git fetch -q --depth 1 "$ALMIDE_REPO" "$ALMIDE_COMMIT"
+          git checkout -q --force FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$ALMIDE_COMMIT"
+          cargo build --release --locked
+          mkdir -p "$HOME/.local/bin"
+          cp target/release/almide "$HOME/.local/bin/almide"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build arlk
+        run: almide build src/main.almd -o arlk
+
+      - name: Install Lean (${{ env.LEAN_TOOLCHAIN }})
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain "$LEAN_TOOLCHAIN"
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+
+      - name: Export ${{ matrix.module }}
+        run: |
+          lean --version
+          (cd tools/lean-export && lean --run Export.lean --module "${{ matrix.module }}") > module.json
+          ./arlk absorb module.json -o module.arlk
+          head -1 module.arlk
+          du -h module.arlk
+
+      - name: Check ${{ matrix.module }}
+        run: |
+          status=0; ./arlk check lib/core.arlk module.arlk > check.log 2>&1 || status=$?
+          tail -1 check.log | cut -c1-300
+          if grep -q '^✗' check.log; then grep '^✗' check.log | cut -c1-300 | head; exit 1; fi
+          grep -q '^ok: ' check.log && exit $status
+          exit 1
+
+      - name: Keep the log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lean-${{ matrix.module }}
+          path: check.log
