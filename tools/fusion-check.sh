@@ -143,7 +143,7 @@ expect edited-dependency 4 "$arlk" replay "$work/dependency"
 # compilation. CI has almide; an offline proof-only run can omit it.
 if command -v almide >/dev/null 2>&1; then
   expect compiled-example 0 almide run "$P/batch.almd"
-  contains compiled-example-order 'Green Red Blue' "$work/compiled-example.log"
+  expect compiled-example-order 0 grep -qxF 'Green Red Blue' "$work/compiled-example.log"
 else
   echo "skip  compiled example (almide not on PATH); proof and replay still checked"
 fi

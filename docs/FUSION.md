@@ -86,6 +86,11 @@ does not rerun the Agda/Isabelle source translators or carry the original
 foreign-source files. Their source-to-translation checks happen in the script
 before bundling.
 
+The existing translator still labels generated models `almide 0.64.0`, while
+the subset page names 0.67.0. This version-label inconsistency is not resolved
+here; the model is verified against the emitter's exact output, and that label
+must not be read as the compiler version used to build or run Arlk.
+
 As with every [Almide subset proof](ALMIDE_SUBSET.md), the program claim is
 about the source model's meaning. It does not prove correctness of the
 compiled executable. Source hashes and bundle replay establish identity, not
