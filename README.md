@@ -34,6 +34,12 @@ was found.
 
 See [Absorbing provers](#absorbing-provers) and [The bridge](#the-bridge).
 
+**Two systems can now contribute to one program proof.** The
+[batch-flush example](docs/FUSION.md) combines Isabelle's reverse laws and
+Agda's append-length theorem through checked bridges to prove a property of
+an Almide list program. Its replayable bundle records both systems' lemma
+dependencies, and CI rejects broken bridges and tampered combinations.
+
 ```
 room logic
 

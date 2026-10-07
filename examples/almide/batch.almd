@@ -1,0 +1,20 @@
+// Flush a batch accumulated in reverse order in front of a ready batch.
+// The cross-system proof in batch_proof.arlk uses Isabelle's reverse laws
+// and Agda's append-length law. It concerns the modeled pure subset,
+// not the executable produced by the compiler.
+
+fn flush[A](pending: List[A], ready: List[A]) -> List[A] = match pending {
+  [] => ready,
+  [h, ..t] => flush(t, [h] + ready),
+}
+
+type Item = | Red | Green | Blue
+
+effect fn main() -> Unit = {
+  let shown = flush([Red, Green], [Blue]) |> list.map((c) => match c {
+    Red => "Red",
+    Green => "Green",
+    Blue => "Blue",
+  })
+  println(list.join(shown, " "))
+}
