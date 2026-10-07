@@ -10,5 +10,3 @@ Stdlib.Arith.PeanoNat.Nat.iter_invariant
 Stdlib.Arith.PeanoNat.Nat.iter_rect
 Stdlib.Arith.PeanoNat.Nat.le_partialorder
 Stdlib.Arith.PeanoNat.Nat.lt_wf_0
-Stdlib.Arith.PeanoNat.Nat.recursion_succ
-Stdlib.Arith.PeanoNat.Nat.recursion_wd

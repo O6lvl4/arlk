@@ -61,7 +61,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Inductive types, `match`, `fix` (also over indexed families) | absorbed (lambda-lifted symbols with rules) |
 | Universe constraints, template polymorphism, cumulativity | absorbed (levels numbered, instances per level, explicit `lift`) |
 | `Corelib.Init` | all 753 declarations (436 targets) check (`sig`/`sigT` lowered into `Prop` included) |
-| `Stdlib.Arith.PeanoNat` | 1194 of 1207 targets check (6 of the others use `SProp`); daily in CI against a fixed baseline ([rocq.yml](../.github/workflows/rocq.yml)) |
+| `Stdlib.Arith.PeanoNat` | 1196 of 1207 targets check (6 of the others use `SProp`); daily in CI against a fixed baseline ([rocq.yml](../.github/workflows/rocq.yml)) |
 | `Stdlib.Lists.List` | 456 of 470 targets check (6 of the others use `SProp`); daily in CI the same way |
 | `SProp`, primitive projections, cofixpoints, primitive integers | missing |
 
