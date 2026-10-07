@@ -7,8 +7,8 @@ libraries, and what is missing. "Native" means usable in Arlk's own syntax (`typ
 `theorem`, `match`); "absorbed" means checked when it arrives from the other system. Everything here
 is implemented in Almide, in this repository; no prover runs behind Arlk.
 
-The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the README's
-"Results" table.
+The trusted base is listed in [TRUST.md](TRUST.md). [Recorded results](#recorded-results) below collect library coverage and timings;
+[ABSORBING.md](ABSORBING.md) explains the encodings and how to run the importers.
 
 ## The kernel's own logic
 
@@ -97,7 +97,7 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Isar `proof - have ... show ?thesis ... qed`, labelled steps, `have ... for x`, calculational chains (`also have "... = c"`, `finally`) | absorbed: each step a theorem of its own replayed by simp, the statement by simp with the steps |
 | Isar steps inside induction cases, other premises, type classes, locales, the rest of Main | missing |
 | `absorbed/isabelle/Arith.thy`, `absorbed/isabelle/Lists.thy` | all declarations check; Isabelle2025-2 accepts the sources |
-| HOL's inference rules (HOL Light, HOL4, ...) | absorbed from OpenTheory articles into `lib/hol.arlk`'s encoding: the base library, 91 193 declarations |
+| HOL's inference rules (HOL Light, HOL4, ...) | absorbed from OpenTheory articles into `lib/hol.arlk`'s encoding: the base library (see [recorded results](#recorded-results)) |
 
 ## Metamath
 
@@ -117,3 +117,52 @@ The trusted base is listed in [TRUST.md](TRUST.md). Measured results are in the 
 | Isabelle's `add_comm` to Arlk's `nat.add_comm` | [examples/isabelle_transport.arlk](../examples/isabelle_transport.arlk) |
 | Metamath's propositional calculus in Arlk's logic (Peirce's law from set.mm, resting on excluded middle alone) | [examples/metamath_logic.arlk](../examples/metamath_logic.arlk) |
 | Metamath's arithmetic to the others | missing |
+
+## Recorded results
+
+These are the repository's recorded library checks and illustrative timings, not a fresh
+benchmark for every checkout or machine. The push and daily workflows identify which checks
+run on a particular commit. Source-system support is limited to the features listed above.
+
+
+| Library | Declarations checked | Time |
+|---|---|---|
+| Lean `Nat.add_zero` | 53 (with dependencies) | < 0.1 s |
+| Lean `Init.Data.Nat.Basic` (310 theorems, universe-polymorphic ones at their lowest universes) | all 823 | ~30 s |
+| Lean `Init.Data.Nat.Lemmas` (881 theorems: arithmetic, order, division, `Nat.Linear`) | all 1573 | ~5 min |
+| Lean `Init.SimpLemmas`, `Init.PropLemmas`, `Init.Data.Bool`, `Init.Data.Sum.Lemmas`, `Init.Data.Option.Lemmas`, `Init.Data.Int.Lemmas`, `Init.Data.Int.Order`, `Init.Data.Nat.Dvd`, `Init.Data.Nat.Gcd`, `Init.Data.Prod`, `Init.Data.Char.Lemmas`, `Init.Core` (each module whole: 2136 theorems) | all of them | ~16 min together |
+| Lean `Init.Data.List.Lemmas` (688 theorems at their lowest universes, string literals included; `ARLK_FULL=1` in CI) | all 2617 | ~13 min |
+| Rocq `Corelib.Init.Peano` | 99, all of them | < 0.5 s |
+| Rocq `Corelib.Init` (Logic, Datatypes, Peano, Nat, Specif, Wf) | all 753 (436 targets) | ~20 s |
+| Rocq `Stdlib.Arith.PeanoNat` (1207 targets; exported from Rocq 9.2 in CI, not committed) | 1196 targets check (6 of the rest use `SProp`); the rest are a fixed baseline | ~2 min |
+| Rocq `Stdlib.Lists.List` (470 targets; the same) | 456 targets check (6 of the rest use `SProp`) | ~1 min |
+| Agda `Arith`, `Order`, `Records`, `Streams` (from source: laws, `≤`, records, `with`, coinduction) | all of them | < 0.5 s |
+| Isabelle `Arith`, `Lists` (own and Main's naturals and lists, Isar; proofs replayed by `simp`) | all of them | < 1 s |
+| Metamath `set.mm`, propositional calculus | 1818: 1776 theorems and their axioms | 0.6 s |
+| Metamath `set.mm`, the whole database (commit 584b685; absorbed, not committed) | 47 913 theorems, all of them, in 12 parts | absorb 17 min, check ~17 CPU-hours (parts: 24 min to 3.7 h) |
+| Metamath `iset.mm` (intuitionistic logic and set theory), the whole database (commit 584b685; checked daily in CI) | 16 444 theorems, all of them, in 4 parts | absorb 87 s, parts 11 to 16 min |
+| OpenTheory `base-1.221` (HOL: bool, pairs, lists, natural numbers, words, reals ...), fetched in CI | 91 319: 1340 theorems, 14 009 lemmas, 75 651 term abbreviations, 223 definitions | absorb ~3.5 min, check ~3.5 min |
+
+
+`Rewriting.agda` is also checked by the Agda check script; no timing is recorded here.
+
+## Roadmap
+
+The missing rows above define the coverage roadmap. Broader priorities:
+
+1. **Kernel hardening.** Confluence and termination checks for user rewrite rules, and checking
+   subject reduction instead of trusting a rule's declared variable types.
+2. **The rest of each library.** Lean: `Init` as a whole (some modules, such as `String.Lemmas`,
+   the exporter cannot translate yet), universe polymorphism kept rather than
+   instantiated. Rocq: the rest of the standard library, `SProp`, primitive projections,
+   cofixpoints. Agda:
+   `with … | inspect`, instance arguments. Isabelle: Isar steps inside induction cases,
+   premises other than equations, type classes, more of Main. Metamath: reduce the cost of its heaviest checks; the pinned databases already have full recorded coverage.
+3. **Coinduction beyond records.** Coinductive types with several constructors (colists) and
+   guarded corecursion that is not a state machine.
+4. **Speed.** Checking is dominated by copying terms (Almide copies a recursive value that is used
+   again, almide/almide#3434). The kernel avoids it where it can: it describes a term for an error
+   only when a failed declaration is checked again for its message. Recorded library timings are
+   above; compiler issues and retained workarounds are in [docs/TOOLCHAIN.md](TOOLCHAIN.md).
+5. **Natural language layer.** Pair each theorem with a statement in natural language, and
+   track where the formal statement and the intended meaning may differ.
