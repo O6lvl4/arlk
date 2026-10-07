@@ -110,7 +110,7 @@ jobs:
           ./arlk absorb ${{ matrix.key }}.json -o ${{ matrix.key }}.arlk
           status=0; ./arlk qed lib/core.arlk ${{ matrix.key }}.arlk --keep-going > check.log 2>&1 || status=$?
           tail -1 check.log | cut -c1-200
-          tools/rocq-baseline.py ${{ matrix.key }}.json ${{ matrix.key }}.arlk qed.log absorbed/rocq/${{ matrix.key }}.expected-failures
+          tools/rocq-baseline.py ${{ matrix.key }}.json ${{ matrix.key }}.arlk check.log absorbed/rocq/${{ matrix.key }}.expected-failures
 
       - name: Keep the log
         if: always()
