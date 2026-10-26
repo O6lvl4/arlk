@@ -83,7 +83,7 @@ local fn is_ident_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_
 local fn idents_of(text: String) -> List[String] = {
   var out: List[String] = []
   var cur = ""
-  for c in string.chars(text + " ") {
+  for c in string.to_list(text + " ") {
     if is_ident_char(c) then {
       cur = cur + c
     } else {
@@ -132,7 +132,7 @@ effect fn units_of(files: List[String]) -> List[Unit_] = {
         },
         _ => (),
       }
-      list.push(out, Unit_ { key: hash.sha256_hex(header + "\n\u{0}\n" + text), file: file, line: d.line, decl: d, idents: idents_of(text), always: always_checked(d.decl) })
+      list.push(out, Unit_ { key: hash.sha256_hex(bytes.from_string(header + "\n\u{0}\n" + text)), file: file, line: d.line, decl: d, idents: idents_of(text), always: always_checked(d.decl) })
       i = i + 1
     }
   }
@@ -190,17 +190,17 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
   } else ()
   var structs: List[(String, StructEta)] = []
   if map.len(after.structs) != list.len(before.structs) then {
-    for (k, si) in map.entries(after.structs) {
+    for (k, si) in map.to_list(after.structs) {
       if not list.contains(before.structs, k) then list.push(structs, (k, si)) else ()
     }
   } else ()
   var numerals: List[(String, (String, Term))] = []
-  for (k, v) in map.entries(after.numerals) {
+  for (k, v) in map.to_list(after.numerals) {
     if not list.contains(before.numerals, k) then list.push(numerals, (k, v)) else ()
   }
   var computes: List[(String, Compute)] = []
   if map.len(after.computes) != list.len(before.computes) then {
-    for (k, v) in map.entries(after.computes) {
+    for (k, v) in map.to_list(after.computes) {
       if not list.contains(before.computes, k) then list.push(computes, (k, v)) else ()
     }
   } else ()
@@ -213,7 +213,7 @@ local fn delta_of(before: Mark, mut after: Env, d: Decl) -> Delta = {
   }
   // Views are added by view, composition and translation declarations.
   if map.len(after.views) != list.len(before.views) then {
-    for (k, v) in map.entries(after.views) {
+    for (k, v) in map.to_list(after.views) {
       if not list.contains(before.views, k) then list.push(views, (k, v)) else ()
     }
   } else ()
@@ -226,24 +226,24 @@ local fn replay(mut env: Env, from: Env, dl: Delta) -> Unit = {
   for q in dl.names {
     let h = list.len(env.order)
     match map.get(from.entries, q) {
-      some(e) => map.insert(env.entries, q, { ...e, height: h }),
+      some(e) => { env.entries = map.set(env.entries, q, { ...e, height: h }) },
       none => (),
     }
     match map.get(from.types, q) {
-      some(t) => map.insert(env.types, q, t),
+      some(t) => { env.types = map.set(env.types, q, t) },
       none => (),
     }
     match map.get(from.bodies, q) {
-      some(b) => map.insert(env.bodies, q, b),
+      some(b) => { env.bodies = map.set(env.bodies, q, b) },
       none => (),
     }
-    if map.contains(from.defs, q) then map.insert(env.defs, q, h) else ()
+    if map.contains(from.defs, q) then { env.defs = map.set(env.defs, q, h) } else ()
     match map.get(from.lparams, q) {
-      some(ls) => map.insert(env.lparams, q, ls),
+      some(ls) => { env.lparams = map.set(env.lparams, q, ls) },
       none => (),
     }
     match map.get(from.implicits, q) {
-      some(n) => map.insert(env.implicits, q, n),
+      some(n) => { env.implicits = map.set(env.implicits, q, n) },
       none => (),
     }
     list.push(env.order, q)
@@ -251,29 +251,29 @@ local fn replay(mut env: Env, from: Env, dl: Delta) -> Unit = {
   for r in dl.rules {
     let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs, lparams: r.lparams }
     let existing = map.get(env.rws, r.head) ?? []
-    map.insert(env.rws, r.head, existing + [rw])
+    env.rws = map.set(env.rws, r.head, existing + [rw])
     list.push(env.rules, r)
   }
   for r in dl.irrelevants {
     list.push(env.irrelevants, r)
   }
   for (k, v) in dl.views {
-    map.insert(env.views, k, v)
+    env.views = map.set(env.views, k, v)
   }
   for (k, info) in dl.inductives {
-    map.insert(env.inductives, k, info)
+    env.inductives = map.set(env.inductives, k, info)
   }
   for (k, si) in dl.structs {
-    map.insert(env.structs, k, si)
+    env.structs = map.set(env.structs, k, si)
   }
   for (k, v) in dl.numerals {
-    map.insert(env.numerals, k, v)
+    env.numerals = map.set(env.numerals, k, v)
   }
   for (k, v) in dl.computes {
-    map.insert(env.computes, k, v)
+    env.computes = map.set(env.computes, k, v)
   }
   for (k, seen) in dl.rooms {
-    map.insert(env.rooms, k, seen)
+    env.rooms = map.set(env.rooms, k, seen)
   }
   env.room = dl.room
 }
@@ -300,7 +300,7 @@ fn fingerprint(env: Env, q: String) -> String = {
   let imps = int.to_string(map.get(env.implicits, q) ?? 0)
   let rules = (map.get(env.rws, q) ?? []) |> list.map((rw) => exact(rw.rhs) + " " + int.to_string(rw.arity))
   let irr = if list.any(env.irrelevants, (r) => r.head == q) then "irrelevant" else ""
-  hash.sha256_hex(list.join([kind, ty, body, ls, imps, irr] + rules, "\n"))
+  hash.sha256_hex(bytes.from_string(list.join([kind, ty, body, ls, imps, irr] + rules, "\n")))
 }
 
 // The names a name's meaning rests on: its statement, a definition's body,
@@ -350,7 +350,7 @@ type Changes = { direct: Map[String, Bool], memo: Map[String, Bool] }
 
 local fn mark(mut ch: Changes, q: String) -> Unit = {
   if map.contains(ch.direct, q) then () else {
-    map.insert(ch.direct, q, true)
+    ch.direct = map.set(ch.direct, q, true)
     let fresh_memo: Map[String, Bool] = [:]
     ch.memo = fresh_memo
   }
@@ -360,7 +360,7 @@ local fn mark(mut ch: Changes, q: String) -> Unit = {
 // same (a proof edited, its statement kept) is not a change after all.
 local fn unmark(mut ch: Changes, q: String) -> Unit = {
   if map.contains(ch.direct, q) then {
-    map.delete(ch.direct, q)
+    ch.direct = map.remove(ch.direct, q)
     let fresh_memo: Map[String, Bool] = [:]
     ch.memo = fresh_memo
   } else ()
@@ -378,7 +378,7 @@ local fn changed(env: Env, mut ch: Changes, q: String) -> Bool = {
     while not found and not list.is_empty(stack) {
       match list.pop(stack) {
         some(n) => if not map.contains(seen, n) then {
-          map.insert(seen, n, true)
+          seen = map.set(seen, n, true)
           if map.contains(ch.direct, n) or (map.get(ch.memo, n) ?? false) then {
             found = true
           } else if map.contains(ch.memo, n) then ()
@@ -390,9 +390,9 @@ local fn changed(env: Env, mut ch: Changes, q: String) -> Bool = {
       }
     }
     // Only a negative answer holds for everything visited.
-    if not found then for (n, _) in map.entries(seen) {
-      map.insert(ch.memo, n, false)
-    } else map.insert(ch.memo, q, true)
+    if not found then for (n, _) in map.to_list(seen) {
+      ch.memo = map.set(ch.memo, n, false)
+    } else { ch.memo = map.set(ch.memo, q, true) }
     found
   }
 }
@@ -458,17 +458,17 @@ effect fn step(prev: Option[Step], files: List[String]) -> Step = {
   // Names declared in the previous step, and rule texts by head.
   var old_names: Map[String, Bool] = [:]
   for q in old_env.order {
-    map.insert(old_names, q, true)
+    old_names = map.set(old_names, q, true)
   }
   var old_rules: Map[String, List[String]] = [:]
   for r in old_env.rules + old_env.irrelevants {
-    map.insert(old_rules, r.head, (map.get(old_rules, r.head) ?? []) + [r.text])
+    old_rules = map.set(old_rules, r.head, (map.get(old_rules, r.head) ?? []) + [r.text])
   }
   // Units of the previous step that are gone: what they declared, and the
   // heads of their rules, changed (conservatively, from the start).
   var new_keys: Map[String, Bool] = [:]
   for u in units {
-    map.insert(new_keys, u.key, true)
+    new_keys = map.set(new_keys, u.key, true)
   }
   var vanished: List[String] = []
   for r in old_records {
@@ -485,7 +485,7 @@ effect fn step(prev: Option[Step], files: List[String]) -> Step = {
   var index: Map[String, List[Int]] = [:]
   var pos = 0
   for r in old_records {
-    map.insert(index, r.key, (map.get(index, r.key) ?? []) + [pos])
+    index = map.set(index, r.key, (map.get(index, r.key) ?? []) + [pos])
     pos = pos + 1
   }
   var added: List[String] = []
@@ -511,7 +511,7 @@ effect fn step(prev: Option[Step], files: List[String]) -> Step = {
     if why == "" then {
       match candidate {
         some((i, r)) => {
-          map.insert(used, i, true)
+          used = map.set(used, i, true)
           replay(env, old_env, r.delta)
           list.push(records, { ...r, file: u.file, line: u.line })
           reused = reused + 1
@@ -532,7 +532,7 @@ effect fn step(prev: Option[Step], files: List[String]) -> Step = {
       // declares less) is gone: a change, and a name that no longer resolves.
       match candidate {
         some((i, r)) => {
-          map.insert(used, i, true)
+          used = map.set(used, i, true)
           for q in r.delta.names {
             if not list.contains(dl.names, q) then {
               mark(ch, q)
@@ -582,14 +582,14 @@ fn digest_text(env: Env, records: List[Record]) -> String = {
       }
       for q in r.delta.names {
         let body = match map.get(env.bodies, q) {
-          some(b) => hash.sha256_hex(exact(b)),
+          some(b) => hash.sha256_hex(bytes.from_string(exact(b))),
           none => "-",
         }
         let ty = match map.get(env.types, q) {
           some(t) => exact(t),
           none => "",
         }
-        list.push(out, "  ${q}: ${ty} [body ${body}] [assumptions ${hash.sha256_hex(list.join(checker.axioms_report(env, q), "\n"))}]")
+        list.push(out, "  ${q}: ${ty} [body ${body}] [assumptions ${hash.sha256_hex(bytes.from_string(list.join(checker.axioms_report(env, q), "\n")))}]")
       }
     } else list.push(out, "failed ${r.file}:${int.to_string(r.line)}: ${r.message}")
   }

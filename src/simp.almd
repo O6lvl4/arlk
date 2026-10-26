@@ -546,7 +546,7 @@ fn permutative(r: SRule) -> Bool = {
   let none_yet: Map[Int, Term] = [:]
   let no_levels: Map[String, Level] = [:]
   let renames = (a: Term, b: Term) => match matches(a, b, r.n, [], SBind { terms: none_yet, levels: no_levels }) {
-    some(bd) => list.all(map.entries(bd.terms), ((_, v)) => match v {
+    some(bd) => list.all(map.to_list(bd.terms), ((_, v)) => match v {
       Var(j) => j < r.n,
       _ => false,
     }) and list.len(list.unique(map.values(bd.terms))) == map.len(bd.terms),

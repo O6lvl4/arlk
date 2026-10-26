@@ -162,7 +162,7 @@ fn numeral(env: Env, c: String) -> (String, Int)? = match string.last_index_of(c
   some(i) => {
     let zero = string.take(c, i)
     let digits = string.drop(c, i + 1)
-    if map.contains(env.numerals, zero) and digits != "" and list.all(string.chars(digits), (d) => string.is_digit(d)) then match int.parse(digits) {
+    if map.contains(env.numerals, zero) and digits != "" and list.all(string.to_list(digits), (d) => string.is_digit(d)) then match int.parse(digits) {
       ok(n) => some((zero, n)),
       err(_) => none,
     } else none
@@ -378,7 +378,7 @@ fn show_short(env: Env, ctx: Ctx, t: Term) -> String = {
   for c in list.unique(consts(t)) {
     let r = room_of(env, c)
     match string.strip_prefix(c, r + ".") {
-      some(x) => if r != env.room and not list.contains(names, x) and resolves_to(env, x, c) then map.insert(short, c, env.room + "." + x) else (),
+      some(x) => if r != env.room and not list.contains(names, x) and resolves_to(env, x, c) then { short = map.set(short, c, env.room + "." + x) } else (),
       none => (),
     }
   }
@@ -473,7 +473,7 @@ local fn memo_hash(t: Term, depth: Int, mut k: Mk) -> Unit =
       },
       Const(c, ls) => {
         var h = (k.h * 31 + list.len(ls) + 11) % 1000000007
-        for byte in string.to_bytes(c) {
+        for byte in bytes.to_list(bytes.from_string(c)) {
           h = (h * 131 + byte) % 1000000007
         }
         k.h = h
@@ -640,7 +640,7 @@ local fn reduce(env: Env, ctx: Ctx, t: Term, delta: Bool, mut b: Budget) -> Term
             // compile with Almide v0.64.0 (the class of almide/almide#3050, fixed
             // in the pinned build; kept while v0.64.0 builds Arlk too).
             let earlier = map.get(b.memo, k) ?? []
-            map.insert(b.memo, k, [(t, o)] + earlier)
+            b.memo = map.set(b.memo, k, [(t, o)] + earlier)
           },
           none => (),
         }
@@ -1056,7 +1056,7 @@ local fn same_head_args(env: Env, ctx: Ctx, a: Term, b: Term, mut bu: Budget) ->
     if map.contains(bu.failed, key) then false
     else if all_conv(env, ctx, xs, ys, bu) then true
     else {
-      if not bu.exhausted then map.insert(bu.failed, key, true) else ()
+      if not bu.exhausted then { bu.failed = map.set(bu.failed, key, true) } else ()
       false
     }
   }
@@ -1071,7 +1071,7 @@ type Fp = { h: Int, left: Int, vars: List[Int] }
 
 local fn mix(h: Int, x: Int) -> Int = (h * 31 + x % FP_MOD + FP_MOD) % FP_MOD
 
-local fn name_code(s: String) -> Int = list.fold(string.to_bytes(s), 7, (h, b) => (h * 131 + b) % FP_MOD)
+local fn name_code(s: String) -> Int = list.fold(bytes.to_list(bytes.from_string(s)), 7, (h, b) => (h * 131 + b) % FP_MOD)
 
 local fn level_code(l: Level) -> Int = match l {
   LZero => 1,
@@ -1455,7 +1455,7 @@ local fn visible(env: Env) -> List[String] = [env.room] + (map.get(env.rooms, en
 // A name resolves, in order, to: this room's declaration, a declaration
 // written with its room in front (`logic.Prf`), or a unique declaration of
 // a visible room.
-fn resolve_const(env: Env, x: String) -> String! = if x != "" and list.all(string.chars(x), (d) => string.is_digit(d)) then {
+fn resolve_const(env: Env, x: String) -> String! = if x != "" and list.all(string.to_list(x), (d) => string.is_digit(d)) then {
   // A number: the literal of the numeral type in scope.
   let rooms = visible(env)
   let zeros = map.keys(env.numerals) |> list.filter((z) => list.contains(rooms, room_of(env, z)))
@@ -1509,19 +1509,19 @@ fn edit_distance(a: List[String], b: List[String]) -> Int = {
 // name, or visible names spelled almost the same.
 fn name_hint(env: Env, x: String) -> String = {
   let rooms = visible(env)
-  let xs = string.chars(x)
+  let xs = string.to_list(x)
   let limit = if list.len(xs) <= 3 then 1 else 2
   let dotted = string.contains(x, ".")
   var elsewhere: List[String] = []
   var close: List[(Int, String)] = []
-  for (q, e) in map.entries(env.entries) {
+  for (q, e) in map.to_list(env.entries) {
     let short = if e.room == "" then q else string.drop(q, string.len(e.room) + 1)
     if short == x then list.push(elsewhere, e.room)
     else if list.contains(rooms, e.room) and int.abs(string.len(short) - list.len(xs)) <= limit then {
-      let d = edit_distance(xs, string.chars(short))
+      let d = edit_distance(xs, string.to_list(short))
       if d <= limit then list.push(close, (d, short)) else ()
     } else if dotted and int.abs(string.len(q) - list.len(xs)) <= limit then {
-      let d = edit_distance(xs, string.chars(q))
+      let d = edit_distance(xs, string.to_list(q))
       if d <= limit then list.push(close, (d, q)) else ()
     } else ()
   }
@@ -1547,7 +1547,7 @@ fn index_in(scope: List[String], x: String, i: Int) -> Int? = match scope {
   [y, ..rest] => if y == x and x != "_" then some(i) else index_in(rest, x, i + 1),
 }
 
-local fn is_numeral(x: String) -> Bool = x != "" and list.all(string.chars(x), (c) => string.is_digit(c))
+local fn is_numeral(x: String) -> Bool = x != "" and list.all(string.to_list(x), (c) => string.is_digit(c))
 
 // A level written as a term: `2`, `u`, `u + 1`, `max(u, v)`, `imax(u, v)`.
 fn level_of(lv: List[String], r: Raw) -> Level! = match r {

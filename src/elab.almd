@@ -108,12 +108,12 @@ local fn solved_head(st: ElabState, t: Term) -> Bool = match t {
 }
 
 local fn solve(mut st: ElabState, n: Int, v: Term) -> Unit = {
-  map.insert(st.metas, n, v)
+  st.metas = map.set(st.metas, n, v)
   list.push(st.trail, n)
 }
 
 local fn solve_level(mut st: ElabState, n: Int, l: Level) -> Unit = {
-  map.insert(st.lmetas, n, l)
+  st.lmetas = map.set(st.lmetas, n, l)
   list.push(st.ltrail, n)
 }
 
@@ -122,13 +122,13 @@ local fn undo(mut st: ElabState, mark: (Int, Int)) -> Unit = {
   let (m, l) = mark
   while list.len(st.trail) > m {
     match list.pop(st.trail) {
-      some(n) => map.delete(st.metas, n),
+      some(n) => { st.metas = map.remove(st.metas, n) },
       none => (),
     }
   }
   while list.len(st.ltrail) > l {
     match list.pop(st.ltrail) {
-      some(n) => map.delete(st.lmetas, n),
+      some(n) => { st.lmetas = map.remove(st.lmetas, n) },
       none => (),
     }
   }

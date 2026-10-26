@@ -69,10 +69,10 @@ fn facts(env: Env, q: String) -> Facts = {
   // Rules by their text: the rules a type declaration generates share
   // one id (its line).
   for r in d.rules {
-    list.push(deps, ("rule " + r.id + " " + r.text, hash.sha256_hex(r.text)))
+    list.push(deps, ("rule " + r.id + " " + r.text, hash.sha256_hex(bytes.from_string(r.text))))
   }
   let assumptions = checker.axioms_report(env, q)
-  let id = hash.sha256_hex(list.join([q, statement] + (deps |> list.map(((n, h)) => n + " " + h)) + assumptions, "\n"))
+  let id = hash.sha256_hex(bytes.from_string(list.join([q, statement] + (deps |> list.map(((n, h)) => n + " " + h)) + assumptions, "\n")))
   Facts { statement: statement, deps: deps, assumptions: assumptions, claim_id: id }
 }
 
@@ -89,13 +89,13 @@ local fn decl_hash(env: Env, n: String) -> String = {
     some(b) => exact(b),
     none => "",
   }
-  hash.sha256_hex(kind + "\n" + room_of(env, n) + "\n" + ty + "\n" + body)
+  hash.sha256_hex(bytes.from_string(kind + "\n" + room_of(env, n) + "\n" + ty + "\n" + body))
 }
 
 // What identifies a project's result: the claim's identity, the packages
 // (by manifest hash) and the project manifest it was checked with.
 fn provenance_id(m: Manifest) -> String =
-  hash.sha256_hex(list.join([m.claim_id] + (m.packages |> list.map(((n, v, h)) => n + " " + v + " " + h)) + [m.project], "\n"))
+  hash.sha256_hex(bytes.from_string(list.join([m.claim_id] + (m.packages |> list.map(((n, v, h)) => n + " " + v + " " + h)) + [m.project], "\n")))
 
 fn render(m: Manifest) -> String = {
   var out: List[String] = [

@@ -144,7 +144,7 @@ local fn try_apply(env: Env, ctx: Ctx, head: Term, lholes: List[Level], ty: Term
               ok_so_far = false
             } else match prove(env, ctx, need, using, depth - 1, s) {
               some(p) => {
-                map.insert(sol.terms, m, p)
+                sol.terms = map.set(sol.terms, m, p)
                 list.push(args, p)
               },
               none => {
@@ -205,7 +205,7 @@ local fn zonk_level(sol: Sol, l: Level) -> Level = match l {
 
 local fn unify_level(a: Level, b: Level, mut sol: Sol) -> Bool = match zonk_level(sol, a) {
   LMeta(m) => {
-    map.insert(sol.levels, m, b)
+    sol.levels = map.set(sol.levels, m, b)
     true
   },
   za => if level_has_meta(za) then match za {
@@ -232,7 +232,7 @@ local fn unify(env: Env, ctx: Ctx, a: Term, b: Term, depth: Int, mut sol: Sol, f
         k = k + 1
       }
       if free then {
-        map.insert(sol.terms, m, shift(b, 0 - depth, 0))
+        sol.terms = map.set(sol.terms, m, shift(b, 0 - depth, 0))
         true
       } else false
     },
@@ -321,7 +321,7 @@ local fn same_shape(env: Env, ctx: Ctx, a: Term, b: Term, depth: Int, mut sol: S
 fn suggest(env: Env, ctx: Ctx, goal: Term) -> Term? = {
   let rooms = [env.room] + (map.get(env.rooms, env.room) ?? [])
   var using: List[(String, List[String], Term)] = []
-  for (q, e) in map.entries(env.entries) {
+  for (q, e) in map.to_list(env.entries) {
     if e.kind == "theorem" and list.contains(rooms, e.room) then match map.get(env.types, q) {
       some(ty) => list.push(using, (q, map.get(env.lparams, q) ?? [], ty)),
       none => (),

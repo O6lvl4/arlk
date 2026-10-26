@@ -27,7 +27,7 @@ type LDoc = { text: String, env: Env }
 
 fn escape(s: String) -> String = {
   var out = ""
-  for c in string.chars(s) {
+  for c in string.to_list(s) {
     out = out + (if c == "\\" then "\\\\"
       else if c == "\"" then "\\\""
       else if c == "\n" then "\\n"
@@ -41,7 +41,7 @@ fn escape(s: String) -> String = {
 local fn quote(s: String) -> String = "\"" + escape(s) + "\""
 
 local effect fn send(body: String) -> Unit = {
-  let n = list.len(string.to_bytes(body))
+  let n = list.len(bytes.to_list(bytes.from_string(body)))
   io.print("Content-Length: ${int.to_string(n)}\r\n\r\n${body}")!
 }
 
@@ -55,7 +55,7 @@ local effect fn receive() -> String? = {
   var going = true
   var ended = false
   while going {
-    let line = string.trim(io.read_line()!)
+    let line = string.trim(io.read_line() ?? "")
     if line == "" then {
       going = false
       if length < 0 then {
@@ -68,16 +68,16 @@ local effect fn receive() -> String? = {
       }
     } else ()
   }
-  if ended or length < 0 then ok(none) else ok(some(string.from_bytes(io.read_n_bytes(length))))
+  if ended or length < 0 then ok(none) else ok(some(bytes.to_string_lossy(bytes.from_list(bytes.to_list(io.read(io.stdin()!, length)!)))))
 }
 
 local fn field(v: Value, path: List[String]) -> Value? = {
   var cur: Value? = some(v)
   for k in path {
     cur = match cur {
-      some(c) => match value.field(c, k) {
-        ok(x) => some(x),
-        err(_) => none,
+      some(c) => match value.get(c, k) {
+        some(x) => some(x),
+        none => none,
       },
       none => none,
     }
@@ -171,7 +171,7 @@ local fn diagnostics(uri: String, problems: List[(Int, String)]) -> String = {
 // The identifier at a position (line and character from zero).
 fn word_at(text: String, line: Int, ch: Int) -> String = {
   let l = list.get(string.split(text, "\n"), line) ?? ""
-  let cs = string.chars(l)
+  let cs = string.to_list(l)
   let ident = (c: String) => string.is_alphanumeric(c) or c == "_" or c == "'" or c == "." or c == "@"
   var start = ch
   while start > 0 and ident(list.get(cs, start - 1) ?? "") {
@@ -212,7 +212,7 @@ effect fn serve() -> Unit = {
         ok(msg) => {
           let method = text_at(msg, ["method"])
           let id = match field(msg, ["id"]) {
-            some(v) => value.stringify(v),
+            some(v) => json.stringify(v),
             none => "",
           }
           if method == "initialize" then {
@@ -240,7 +240,7 @@ effect fn serve() -> Unit = {
                 none => "",
               }
             let (problems, kenv) = check_text(root, text)!
-            map.insert(docs, uri, LDoc { text: text, env: kenv })
+            docs = map.set(docs, uri, LDoc { text: text, env: kenv })
             send(diagnostics(uri, problems))!
           } else if method == "textDocument/hover" then {
             let uri = text_at(msg, ["params", "textDocument", "uri"])

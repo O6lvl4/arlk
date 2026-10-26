@@ -74,7 +74,7 @@ fn lex(src: String) -> List[ATok] = {
   var out: List[ATok] = []
   var in_block = 0
   for (li, line) in list.enumerate(lines) {
-    let cs = string.chars(line)
+    let cs = string.to_list(line)
     let n = list.len(cs)
     var i = 0
     var cur = ""
@@ -251,7 +251,7 @@ local fn char_name(c: String) -> String = match c {
 // An Agda name as an Arlk identifier: `_+_` → `plus`, `+-comm` → `plus_comm`.
 fn mangle(name: String) -> String = if name == "0" then "zero" else {
   let core = if string.len(name) > 2 and string.starts_with(name, "_") and string.ends_with(name, "_") then string.slice(name, 1, string.len(name) - 1) else name
-  let s = list.join(string.chars(core) |> list.map((c) => char_name(c)), "")
+  let s = list.join(string.to_list(core) |> list.map((c) => char_name(c)), "")
   let s2 = if s == "" or s == "_" then "x" else if string.is_digit(string.take(s, 1)) or string.starts_with(s, "_") then "a" + s else s
   if list.contains(ARLK_KEYWORDS, s2) then s2 + "'" else s2
 }
@@ -1187,7 +1187,7 @@ fn absorb(src: String, file: String) -> String! = {
 // matches on the `with` expression.
 local fn flush_with(mut clauses: Map[String, List[(List[APat], AExpr)]], w: (String, List[APat], AExpr, List[(APat, AExpr)])?) -> Unit = match w {
   some((f, ps, e, arms)) => {
-    map.insert(clauses, f, (map.get(clauses, f) ?? []) + [(ps, EWith(e, arms))])
+    clauses = map.set(clauses, f, (map.get(clauses, f) ?? []) + [(ps, EWith(e, arms))])
   },
   none => (),
 }
