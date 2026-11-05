@@ -49,8 +49,8 @@ fn clashes(lib: String, raws: List[String]) -> Map[String, String] = {
       m = m + "'"
       moved = true
     }
-    map.insert(owner, m, raw)
-    if moved then map.insert(out, raw, m) else ()
+    owner = map.set(owner, m, raw)
+    if moved then { out = map.set(out, raw, m) } else ()
   }
   out
 }
@@ -64,7 +64,7 @@ local fn plain_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" o
 // A Lean constant name as an Arlk identifier: dots and `@levels` stay,
 // anything else becomes `_`.
 fn mangle(name: String) -> String = {
-  let cs = string.chars(name) |> list.map((c) => if plain_char(c) or c == "." or c == "@" then c else "_")
+  let cs = string.to_list(name) |> list.map((c) => if plain_char(c) or c == "." or c == "@" then c else "_")
   let s = list.join(cs, "")
   if list.contains(KEYWORDS, s) then s + "'" else s
 }
@@ -77,7 +77,7 @@ local fn binder(raw: String, outer: List[String], reserved: Set[String]) -> Stri
     some(i) => string.slice(raw, 0, i),
     none => raw,
   }
-  let kept = list.join(string.chars(base) |> list.filter((c) => plain_char(c)), "")
+  let kept = list.join(string.to_list(base) |> list.filter((c) => plain_char(c)), "")
   let named = if kept == "" then "x" else if string.is_digit(string.take(kept, 1)) then "x" + kept else kept
   let safe = if list.contains(KEYWORDS, named) then named + "'" else named
   prime_until_free(safe, outer, reserved)
@@ -88,12 +88,12 @@ local fn prime_until_free(x: String, outer: List[String], reserved: Set[String])
 
 // ── Expressions ─────────────────────────────────────────────────────
 
-local fn get(v: Value, k: String) -> Value! = value.field(v, k)
+local fn get(v: Value, k: String) -> Value! = value.as_object(v) |> result.flat_map((_) => option.to_result(value.get(v, k), "missing field '${k}'"))
 local fn int_of(v: Value) -> Int! = value.as_int(v)
 local fn str_of(v: Value) -> String! = value.as_string(v)
 local fn arr_of(v: Value) -> List[Value]! = value.as_array(v)
 
-local fn kind_of(v: Value) -> String = list.first(value.keys(v)) ?? ""
+local fn kind_of(v: Value) -> String = list.first(list.map(value.as_object(v) ?? [], (kv) => kv.0)) ?? ""
 
 // Only a function needs parentheses, and only when it is called.
 local fn callee(s: String, v: Value) -> String = if kind_of(v) == "l" then "(" + s + ")" else s
@@ -221,9 +221,9 @@ local fn rule(o: Out, r: Value) -> String! = {
 
 local fn decl(o: Out, d: Value) -> String! = {
   let kind = str_of(get(d, "kind")!)!
-  let rules = match value.field(d, "rules") {
-    ok(rs) => arr_of(rs)! |> list.map((r) => rule(o, r)!)!,
-    err(_) => [],
+  let rules = match value.get(d, "rules") {
+    some(rs) => arr_of(rs)! |> list.map((r) => rule(o, r)!)!,
+    none => [],
   }
   // Rocq's auxiliary symbols get their rules after the rest of their block.
   guard kind != "rules" else ok(list.join(rules, "\n"))
@@ -241,47 +241,47 @@ local fn decl(o: Out, d: Value) -> String! = {
 // A projection as Lean exports it: one rule `f(params, C({params}, fields))
 // = field_i`. The constructor, its number of fields, i and f.
 local fn projection(d: Value) -> (String, Int, Int, String)? = {
-  let rules = match value.field(d, "rules") {
-    ok(rs) => arr_of(rs) ?? [],
-    err(_) => [],
+  let rules = match value.get(d, "rules") {
+    some(rs) => arr_of(rs) ?? [],
+    none => [],
   }
   match rules {
     [r] => {
-      let args = match value.field(r, "args") {
-        ok(a) => arr_of(a) ?? [],
-        err(_) => [],
+      let args = match value.get(r, "args") {
+        some(a) => arr_of(a) ?? [],
+        none => [],
       }
-      let head = match value.field(r, "head") {
-        ok(h) => str_of(h) ?? "",
-        err(_) => "",
+      let head = match value.get(r, "head") {
+        some(h) => str_of(h) ?? "",
+        none => "",
       }
-      let rhs_var = match value.field(r, "rhs") {
-        ok(x) => match value.field(x, "v") {
-          ok(v) => int_of(v) ?? -1,
-          err(_) => -1,
+      let rhs_var = match value.get(r, "rhs") {
+        some(x) => match value.get(x, "v") {
+          some(v) => int_of(v) ?? -1,
+          none => -1,
         },
-        err(_) => -1,
+        none => -1,
       }
       match list.last(args) {
-        some(last) => match value.field(last, "pc") {
-          ok(cv) => {
+        some(last) => match value.get(last, "pc") {
+          some(cv) => {
             let c = str_of(cv) ?? ""
-            let cargs = match value.field(last, "args") {
-              ok(a) => arr_of(a) ?? [],
-              err(_) => [],
+            let cargs = match value.get(last, "args") {
+              some(a) => arr_of(a) ?? [],
+              none => [],
             }
             let np = list.len(args) - 1
-            let fields = list.drop(cargs, np) |> list.map((a) => match value.field(a, "pv") {
-              ok(v) => int_of(v) ?? -1,
-              err(_) => -1,
+            let fields = list.drop(cargs, np) |> list.map((a) => match value.get(a, "pv") {
+              some(v) => int_of(v) ?? -1,
+              none => -1,
             })
-            let brackets = list.take(cargs, np) |> list.all((a) => value.field(a, "pb") != err(""))
+            let brackets = list.take(cargs, np) |> list.all((a) => (value.as_object(a) |> result.flat_map((_) => option.to_result(value.get(a, "pb"), "missing field 'pb'"))) != err(""))
             match list.index_of(fields, rhs_var) {
               some(i) => if rhs_var >= 0 and brackets and list.len(cargs) >= np and list.all(fields, (f) => f >= 0) and head != "" then some((c, list.len(fields), i, head)) else none,
               none => none,
             }
           },
-          err(_) => none,
+          none => none,
         },
         none => none,
       }
@@ -305,9 +305,9 @@ let LEAN_COMPUTES = [("Nat.add", "add"), ("Nat.sub", "sub"), ("Nat.mul", "mul"),
 
 fn absorb(src: String) -> String! = {
   let root = json.parse(src)!
-  let th = match value.field(root, "theory") {
-    ok(t) => str_of(t)!,
-    err(_) => "lean",
+  let th = match value.get(root, "theory") {
+    some(t) => str_of(t)!,
+    none => "lean",
   }
   let prover = if th == "rocq" then "Rocq" else "Lean 4"
   let lib = library_room(th)
@@ -320,9 +320,9 @@ fn absorb(src: String) -> String! = {
   let bare = Out { lib: lib, reserved: set.new(), renamed: clashes(lib, raws) }
   let names = raws |> list.map((r) => cname(bare, r))
   let o = Out { lib: lib, reserved: set.from_list(names), renamed: bare.renamed }
-  let targets = match value.field(root, "targets") {
-    ok(ts) => arr_of(ts)! |> list.map((t) => cname(o, str_of(t)!))!,
-    err(_) => [cname(o, str_of(get(root, "target")!)!)],
+  let targets = match value.get(root, "targets") {
+    some(ts) => arr_of(ts)! |> list.map((t) => cname(o, str_of(t)!))!,
+    none => [cname(o, str_of(get(root, "target")!)!)],
   }
   // Lean structures: once every projection of a constructor is in, declare
   // the structure, so the kernel has Lean's structure eta for it.

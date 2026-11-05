@@ -52,7 +52,7 @@ local fn plain(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c =
 // stays only where a name may have one, before a name character
 // (`0.999...` is `0.999___`).
 fn label_name(label: String) -> String = {
-  let chars = string.chars(label)
+  let chars = string.to_list(label)
   var cs: List[String] = []
   var i = 0
   for c in chars {
@@ -66,7 +66,7 @@ fn label_name(label: String) -> String = {
 
 // A hypothesis label or typecode as an Arlk binder: `a1i.1` is `a1i_1`.
 fn binder_name(x: String) -> String = {
-  let s = list.join(string.chars(x) |> list.map((c) => if plain(c) then c else "_"), "")
+  let s = list.join(string.to_list(x) |> list.map((c) => if plain(c) then c else "_"), "")
   if list.contains(KEYWORDS, s) then s + "'" else s
 }
 
@@ -74,16 +74,16 @@ local fn char_name(c: String) -> String = match c {
   "." => "dot", "+" => "plus", "-" => "minus", "*" => "star", "/" => "slash", "\\" => "bslash",
   "^" => "hat", "~" => "tilde", "|" => "bar", "<" => "lt", ">" => "gt", "=" => "eq",
   "(" => "lp", ")" => "rp", "\"" => "dq", "," => "comma", "_" => "us", "0" => "0", "1" => "1",
-  _ => "u" + int.to_string(string.codepoint(c) ?? 0),
+  _ => "u" + int.to_string(string.to_codepoint(c) ?? 0),
 }
 
 // A variable token as an Arlk binder. set.mm's class variables include
 // `.+`, `.x.` and `~`, so symbols are spelled out (`.+` is `op_dot_plus`)
 // rather than flattened to `_`, which made different variables collide.
 fn var_name(x: String) -> String =
-  if list.all(string.chars(x), (c) => plain(c)) then binder_name(x)
+  if list.all(string.to_list(x), (c) => plain(c)) then binder_name(x)
   else {
-    let parts = string.chars(x) |> list.map((c) => if plain(c) and c != "_" then c else "_" + char_name(c))
+    let parts = string.to_list(x) |> list.map((c) => if plain(c) and c != "_" then c else "_" + char_name(c))
     let s = list.join(parts, "")
     if string.starts_with(s, "_") then "op" + s else s
   }
@@ -154,7 +154,7 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
   match map.get(memo, key) {
     some(r) => r,
     none => {
-      map.insert(memo, key, [])
+      memo = map.set(memo, key, [])
       var found: List[(String, Int)] = []
       let t = at(toks, pos)
       if map.get(vars, t) == some(tc) then list.push(found, (match map.get(names, t) {
@@ -167,7 +167,7 @@ local fn parse_tc(g: Map[String, List[Syn]], toks: List[String], vars: Map[Strin
           list.push(found, (call(rule.name, args), end))
         }
       }
-      map.insert(memo, key, found)
+      memo = map.set(memo, key, found)
       found
     },
   }
@@ -427,8 +427,8 @@ fn proof_term(c: Proving, mut asserts: Map[String, Assertion], proof: List[Strin
     let l = list.len(labels)
     var saved: List[MExpr] = []
     var acc = 0
-    for ch in string.chars(code) {
-      let cp = string.codepoint(ch) ?? 0
+    for ch in string.to_list(code) {
+      let cp = string.to_codepoint(ch) ?? 0
       if cp >= 65 and cp <= 84 then {
         let num = acc * 20 + (cp - 65) + 1
         acc = 0
@@ -481,7 +481,7 @@ local fn with_steps(p: String, named: List[(String, String, String)]) -> String 
 // A conclusion's parse (call syntax: `wi(ph, wn(ps))`) read back as a
 // tree over the assertion's parameters.
 fn read_call(text: String, params: List[String]) -> MExpr = {
-  let cs = string.chars(text)
+  let cs = string.to_list(text)
   let (e, _) = read_at(cs, 0, params)
   e
 }
@@ -614,10 +614,10 @@ fn absorb_mm(src: String, upto: String) -> String! = {
       } else ()
       if kw == "$f" then {
         let v = at(body, 1)
-        map.insert(hyps, label, Hyp { name: unique_name(hyps, active, var_name(v)), essential: false, tc: tc, toks: [v] })
+        hyps = map.set(hyps, label, Hyp { name: unique_name(hyps, active, var_name(v)), essential: false, tc: tc, toks: [v] })
         list.push(active, label)
       } else if kw == "$e" then {
-        map.insert(hyps, label, Hyp { name: unique_name(hyps, active, binder_name(label)), essential: true, tc: tc, toks: list.drop(body, 1) })
+        hyps = map.set(hyps, label, Hyp { name: unique_name(hyps, active, binder_name(label)), essential: true, tc: tc, toks: list.drop(body, 1) })
         list.push(active, label)
       } else if kw == "$a" or kw == "$p" then {
         let eq = find(body, 0, "$=")
@@ -629,20 +629,20 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         for h in active {
           let hy = map.get(hyps, h) ?? empty_hyp()
           if hy.essential then () else {
-            map.insert(vars, at(hy.toks, 0), hy.tc)
-            map.insert(names, at(hy.toks, 0), hy.name)
-            map.insert(floating, at(hy.toks, 0), h)
+            vars = map.set(vars, at(hy.toks, 0), hy.tc)
+            names = map.set(names, at(hy.toks, 0), hy.name)
+            floating = map.set(floating, at(hy.toks, 0), h)
           }
         }
         var mentioned: Map[String, Bool] = [:]
         for x in stmt {
-          map.insert(mentioned, x, true)
+          mentioned = map.set(mentioned, x, true)
         }
         for h in active {
           let hy = map.get(hyps, h) ?? empty_hyp()
           if hy.essential then {
             for x in hy.toks {
-              map.insert(mentioned, x, true)
+              mentioned = map.set(mentioned, x, true)
             }
           } else ()
         }
@@ -675,7 +675,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
                 let tp = binder_name(map.get(vars, at(mvars, p)) ?? "")
                 let tq = binder_name(map.get(vars, at(mvars, q)) ?? "")
                 list.push(params, "dv_${bp}_${bq}: Apart_${tp}_${tq}(${bp}, ${bq})")
-                map.insert(facts, pair_key(bp, bq), "dv_${bp}_${bq}")
+                facts = map.set(facts, pair_key(bp, bq), "dv_${bp}_${bq}")
               } else ()
             },
             _ => (),
@@ -685,7 +685,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         while map.contains(taken, name) {
           name = name + "'"
         }
-        map.insert(taken, name, true)
+        taken = map.set(taken, name, true)
         let result = if tc == PROVABLE then type_of(grammar, vars, names, tc, stmt)! else binder_name(tc)
         let sig = if list.is_empty(params) then "${name}: ${result}" else "${name}(${list.join(params, ", ")}) -> ${result}"
         let pnames = mandatory |> list.map((h) => {
@@ -702,17 +702,17 @@ fn absorb_mm(src: String, upto: String) -> String! = {
             var cslots: List[(String, String)] = []
             for h in mandatory {
               let hy = map.get(hyps, h) ?? empty_hyp()
-              map.insert(slots, at(hy.toks, 0), hy.tc)
+              slots = map.set(slots, at(hy.toks, 0), hy.tc)
               list.push(order, at(hy.toks, 0))
               list.push(cslots, (hy.name, binder_name(hy.tc)))
             }
             let rule = Syn { name: name, toks: stmt, slots: slots, order: order, idx: list.len(ctors) }
-            map.insert(grammar, tc, (map.get(grammar, tc) ?? []) + [rule])
+            grammar = map.set(grammar, tc, (map.get(grammar, tc) ?? []) + [rule])
             // Indexed by the first token: a rule starting with a constant
             // is tried only where that constant is.
             let first = at(stmt, 0)
             let key = if map.contains(slots, first) then tc + "\u{1}" else tc + "\u{1}" + first
-            map.insert(grammar, key, (map.get(grammar, key) ?? []) + [rule])
+            grammar = map.set(grammar, key, (map.get(grammar, key) ?? []) + [rule])
             let k = Ctor { name: name, tc: binder_name(tc), slots: cslots }
             list.push(ctors, k)
             if dv_on then {
@@ -727,7 +727,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
           // the statement does not have.
           var used: Map[String, Bool] = [:]
           for l in proof_labels(proof_toks) {
-            map.insert(used, l, true)
+            used = map.set(used, l, true)
           }
           let dummy_hyps = active |> list.filter((h) => map.contains(used, h) and not list.contains(mandatory, h)
             and not (map.get(hyps, h) ?? empty_hyp()).essential)
@@ -740,14 +740,14 @@ fn absorb_mm(src: String, upto: String) -> String! = {
           // variable of its typecode (or the typecode's witness).
           for h in dummy_hyps {
             let hy = map.get(hyps, h) ?? empty_hyp()
-            if constrained(at(hy.toks, 0)) then map.insert(dummies, h, hy.name) else {
+            if constrained(at(hy.toks, 0)) then { dummies = map.set(dummies, h, hy.name) } else {
               let same = mandatory |> list.filter((m) => {
                 let mh = map.get(hyps, m) ?? empty_hyp()
                 not mh.essential and mh.tc == hy.tc
               })
               match list.first(same) {
-                some(m) => map.insert(dummies, h, (map.get(hyps, m) ?? empty_hyp()).name),
-                none => map.insert(dummies, h, "some_" + binder_name(hy.tc)),
+                some(m) => { dummies = map.set(dummies, h, (map.get(hyps, m) ?? empty_hyp()).name) },
+                none => { dummies = map.set(dummies, h, "some_" + binder_name(hy.tc)) },
               }
             }
           }
@@ -776,7 +776,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
               for (bw, tw) in elems {
                 k = k + 1
                 let rest = at(tails, k)
-                map.insert(facts, pair_key(bd, bw), "apart_head_${td}_${tw}(${bd}, ${bw}, ${rest}, ${cur})")
+                facts = map.set(facts, pair_key(bd, bw), "apart_head_${td}_${tw}(${bd}, ${bw}, ${rest}, ${cur})")
                 cur = "apart_tail_${td}_${tw}(${bd}, ${bw}, ${rest}, ${cur})"
               }
               list.push(opens, "fresh_${td}(${at(tails, 0)}, ${string.drop(string.drop_end(result, 1), 4)}, (${bd}: ${td}, h_${bd}: ApartAll_${td}(${bd}, ${at(tails, 0)})) =>")
@@ -798,7 +798,7 @@ fn absorb_mm(src: String, upto: String) -> String! = {
         }
         // The conclusion's tree: `result` is `Prf(<tree>)`.
         let concl = if tc == PROVABLE then some(read_call(string.drop(string.drop_end(result, 1), 4), pnames)) else none
-        map.insert(asserts, label, Assertion { name: name, tc: tc, params: pnames, dv: dv, body: abbreviates, concl: concl })
+        asserts = map.set(asserts, label, Assertion { name: name, tc: tc, params: pnames, dv: dv, body: abbreviates, concl: concl })
         if label == upto then {
           i = n
         } else ()

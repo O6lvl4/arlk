@@ -102,33 +102,33 @@ local fn enter_room(env: Env, name: String, uses: List[String]) -> Change! = {
 
 local fn commit(mut env: Env, c: Change) -> Unit = match c {
   Declare(q, lv, imps, entry, ty, body) => {
-    map.insert(env.entries, q, entry)
-    if list.is_empty(lv) then () else map.insert(env.lparams, q, lv)
-    if imps == 0 then () else map.insert(env.implicits, q, imps)
-    map.insert(env.types, q, ty)
+    env.entries = map.set(env.entries, q, entry)
+    if list.is_empty(lv) then () else { env.lparams = map.set(env.lparams, q, lv) }
+    if imps == 0 then () else { env.implicits = map.set(env.implicits, q, imps) }
+    env.types = map.set(env.types, q, ty)
     match body {
-      some(b) => map.insert(env.bodies, q, b),
+      some(b) => { env.bodies = map.set(env.bodies, q, b) },
       none => (),
     }
-    if entry.kind == "def" then map.insert(env.defs, q, entry.height) else ()
+    if entry.kind == "def" then { env.defs = map.set(env.defs, q, entry.height) } else ()
     list.push(env.order, q)
   },
   EnterRoom(name, seen) => {
-    map.insert(env.rooms, name, seen)
+    env.rooms = map.set(env.rooms, name, seen)
     env.room = name
   },
   AddRule(r) => {
     let rw = Rw { arity: r.arity, nvars: r.nvars, lhs_args: r.lhs_args, rhs: r.rhs, lparams: r.lparams }
     let existing = map.get(env.rws, r.head) ?? []
-    map.insert(env.rws, r.head, existing + [rw])
+    env.rws = map.set(env.rws, r.head, existing + [rw])
     list.push(env.rules, r)
   },
   AddIrrelevant(r) => list.push(env.irrelevants, r),
-  AddStruct(c, si) => map.insert(env.structs, c, si),
-  AddNumerals(z, sc, ty) => map.insert(env.numerals, z, (sc, ty)),
+  AddStruct(c, si) => { env.structs = map.set(env.structs, c, si) },
+  AddNumerals(z, sc, ty) => { env.numerals = map.set(env.numerals, z, (sc, ty)) },
   AddComputes(cs) => {
     for (c, cp) in cs {
-      map.insert(env.computes, c, cp)
+      env.computes = map.set(env.computes, c, cp)
     }
   },
   NoChange => (),
@@ -1188,13 +1188,13 @@ local fn step(mut env: Env, line: Int, d: Decl) -> Unit! = {
 // Undo the declarations after position `start` and the rules after `nrules`.
 local fn rollback(mut env: Env, start: Int, nrules: Int) -> Unit = {
   for q in list.drop(env.order, start) {
-    map.delete(env.entries, q)
-    map.delete(env.types, q)
-    map.delete(env.bodies, q)
-    map.delete(env.defs, q)
-    map.delete(env.lparams, q)
-    map.delete(env.implicits, q)
-    map.delete(env.rws, q)
+    env.entries = map.remove(env.entries, q)
+    env.types = map.remove(env.types, q)
+    env.bodies = map.remove(env.bodies, q)
+    env.defs = map.remove(env.defs, q)
+    env.lparams = map.remove(env.lparams, q)
+    env.implicits = map.remove(env.implicits, q)
+    env.rws = map.remove(env.rws, q)
   }
   env.order = list.take(env.order, start)
   env.rules = list.take(env.rules, nrules)
@@ -1217,7 +1217,7 @@ local fn add_inductive(mut env: Env, line: Int, ind: Inductive) -> List[String]!
   for d in elim_decls {
     step(env, line, d)! 
   }
-  map.insert(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name), fields: ind.fields, nested: auxes })
+  env.inductives = map.set(env.inductives, q, IndInfo { params: list.len(ind.params), indices: list.len(inductive.indices(ind.arity)), ctors: ind.ctors |> list.map((c) => q + "." + c.name), fields: ind.fields, nested: auxes })
   guard not list.contains(ind.fields, "mk") and not list.contains(ind.fields, "rec") else err("a field cannot be called mk or rec")
   for d in inductive.projections(ind) {
     step(env, line, d)!
@@ -1272,7 +1272,7 @@ local fn add_view(mut env: Env, name: String, src: String, entries: List[(String
     let home = room_of(env, q)
     guard sees(env, home, src) else err("view ${name}: ${x} is in room ${home}, which does not use ${src}")
     guard not map.contains(given, q) and not map.contains(pending, q) else err("view ${name}: ${x} is mapped twice")
-    if home == src then map.insert(given, q, r) else map.insert(pending, q, r)
+    if home == src then { given = map.set(given, q, r) } else { pending = map.set(pending, q, r) }
   }
   let none_yet: Map[String, Term] = [:]
   install_view(env, name, src, given, none_yet, pending, [])
@@ -1315,12 +1315,12 @@ local fn install_view(mut env: Env, name: String, src: String, given: Map[String
   for r in env.irrelevants {
     guard r.room != src else err("view ${name}: ${src} declares irrelevant types, which views do not carry yet")
   }
-  for (_, si) in map.entries(env.structs) {
+  for (_, si) in map.to_list(env.structs) {
     guard si.decl.room != src else err("view ${name}: ${src} declares structures, which views do not carry yet")
   }
   v.mapped = list.sort(map.keys(v.images))
   v.carried = carried
-  map.insert(env.views, vq, v)
+  env.views = map.set(env.views, vq, v)
   let note = if list.is_empty(carried) then "" else "; carried as assumptions: ${list.join(carried, ", ")}"
   let route = if list.is_empty(via) then "" else " (composed: ${list.join(via, " then ")})"
   ok(["✓ view ${vq}: ${src} in ${env.room}${route}, ${int.to_string(mapped)} symbols mapped${note}"])
@@ -1334,7 +1334,7 @@ local fn image(mut env: Env, mut v: View, q: String, r: Raw) -> Unit! = {
   expect_sort(env, [], ty, bu)!
   let t = surface_term(env, [], no_brackets_ok(r)!, ty)!
   check(env, [], t, ty, bu)!
-  map.insert(v.images, q, t)
+  v.images = map.set(v.images, q, t)
   ok(())
 }
 
@@ -1345,7 +1345,7 @@ local fn image_term(mut env: Env, mut v: View, q: String, t: Term) -> Unit! = {
   var bu = budget_in(env)
   expect_sort(env, [], ty, bu)!
   check(env, [], t, ty, bu)!
-  map.insert(v.images, q, t)
+  v.images = map.set(v.images, q, t)
   ok(())
 }
 
@@ -1355,7 +1355,7 @@ local fn image_term(mut env: Env, mut v: View, q: String, t: Term) -> Unit! = {
 // views whose source is `src`; two candidates are an error that lists them.
 local fn view_named(env: Env, n: String, src: String) -> View! = {
   var found: List[View] = []
-  for (k, v) in map.entries(env.views) {
+  for (k, v) in map.to_list(env.views) {
     if (k == n or string.ends_with(k, "." + n)) and v.source == src then list.push(found, v) else ()
   }
   match found {
@@ -1378,15 +1378,15 @@ local fn compose_view(mut env: Env, name: String, src: String, via: List[String]
   guard second.target == env.room else err("view ${name}: ${second.name} reads ${first.target} in ${second.target}, not here (${env.room})")
   guard map.is_empty(first.pending) else err("view ${name}: ${first.name} maps symbols of rooms built on ${src}; composing those is not supported yet")
   var terms: Map[String, Term] = [:]
-  for (q, t) in map.entries(first.images) {
+  for (q, t) in map.to_list(first.images) {
     carry_closure(env, second, t)!
-    map.insert(terms, q, carry(second, t))
+    terms = map.set(terms, q, carry(second, t))
   }
   let none_raw: Map[String, Raw] = [:]
   let lines = install_view(env, name, src, none_raw, terms, none_raw, [first.name, second.name])!
   // Only now: if anything failed, the declarations are rolled back and the
   // second view must not remember them.
-  map.insert(env.views, second.name, second)
+  env.views = map.set(env.views, second.name, second)
   ok(lines)
 }
 
@@ -1405,7 +1405,7 @@ local fn carry_closure(mut env: Env, mut v: View, t: Term) -> Unit! = {
         let skip = map.contains(seen, c) or map.contains(v.images, c) or map.contains(v.renamed, c) or not sees(env, room_of(env, c), v.source)
         if skip then ()
         else {
-          map.insert(seen, c, true)
+          seen = map.set(seen, c, true)
           let h = match map.get(env.entries, c) {
             some(e) => e.height,
             none => 0,
@@ -1437,7 +1437,7 @@ local fn carry_closure(mut env: Env, mut v: View, t: Term) -> Unit! = {
 // The symbols a view's images rest on (what using it assumes).
 local fn footprint(env: Env, v: View) -> List[String] = {
   var out: List[String] = []
-  for (_, t) in map.entries(v.images) {
+  for (_, t) in map.to_list(v.images) {
     for c in consts(t) {
       for s in deps(env, c).symbols {
         if list.contains(out, s) then () else list.push(out, s)
@@ -1519,7 +1519,7 @@ local fn carry_decl(mut env: Env, mut v: View, prefix: String, q: String) -> Str
     none => (),
   }
   commit(env, Declare(n, lv, imps, Entry { room: env.room, kind: e.kind, height: list.len(env.order) }, ty, body))
-  map.insert(v.renamed, q, n)
+  v.renamed = map.set(v.renamed, q, n)
   ok(n)
 }
 
@@ -1571,7 +1571,7 @@ local fn translate(mut env: Env, vname: String, name: String) -> List[String]! =
         let skip = map.contains(seen, c) or map.contains(v.images, c) or map.contains(v.renamed, c) or not sees(env, room_of(env, c), src)
         if skip then ()
         else {
-          map.insert(seen, c, true)
+          seen = map.set(seen, c, true)
           let h = match map.get(env.entries, c) {
             some(e) => e.height,
             none => 0,
@@ -1599,7 +1599,7 @@ local fn translate(mut env: Env, vname: String, name: String) -> List[String]! =
       },
     }
   }
-  map.insert(env.views, vq, v)
+  env.views = map.set(env.views, vq, v)
   match map.get(v.renamed, q) {
     some(n) => ok(["✓ translated ${n}: ${show(env, [], map.get(env.types, n) ?? type0())} (${int.to_string(list.len(ordered))} declarations carried)"]),
     none => ok(["✓ translated ${q}: given by the view"]),
@@ -2326,7 +2326,7 @@ fn deps(env: Env, name: String) -> Deps = {
   while not list.is_empty(pending) {
     let c = list.pop(pending) ?? ""
     if map.contains(seen, c) then () else {
-      map.insert(seen, c, true)
+      seen = map.set(seen, c, true)
       match map.get(env.entries, c) {
         none => (),
         some(e) => {
@@ -2400,7 +2400,7 @@ local fn report_axioms(env: Env, q: String) -> List[String] = {
 // Was c generated by a `type` declaration (its type former, a
 // constructor or its recursor)?
 local fn generated(env: Env, c: String) -> Bool =
-  map.contains(env.inductives, c) or list.any(map.entries(env.inductives), ((q, info)) => c == q + ".rec" or list.contains(info.ctors, c))
+  map.contains(env.inductives, c) or list.any(map.to_list(env.inductives), ((q, info)) => c == q + ".rec" or list.contains(info.ctors, c))
 
 // ── Whole files ─────────────────────────────────────────────────────
 

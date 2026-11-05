@@ -21,7 +21,7 @@ local fn short(room: String, c: String) -> String = match literal_digits(c) {
 local fn literal_digits(c: String) -> String? = {
   let parts = string.split(c, "#")
   let last = list.last(parts) ?? ""
-  if list.len(parts) >= 2 and last != "" and list.all(string.chars(last), (d) => string.is_digit(d)) then some(last) else none
+  if list.len(parts) >= 2 and last != "" and list.all(string.to_list(last), (d) => string.is_digit(d)) then some(last) else none
 }
 
 // prec 0: anywhere; 1: a callee or the left of an arrow, where a function

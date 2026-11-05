@@ -116,7 +116,7 @@ local fn var_of(mut st: St, name: String, ty: HTy) -> Int = {
     none => {
       let i = list.len(st.vars)
       list.push(st.vars, (name, ty))
-      map.insert(st.var_ids, k, i)
+      st.var_ids = map.set(st.var_ids, k, i)
       i
     },
   }
@@ -140,7 +140,7 @@ local fn hyp_of(mut st: St, t: HTm) -> Int = {
     none => {
       let i = list.len(st.hyps)
       list.push(st.hyps, t)
-      map.insert(st.hyp_ids, k, i)
+      st.hyp_ids = map.set(st.hyp_ids, k, i)
       i
     },
   }
@@ -256,7 +256,7 @@ local fn ty_match(p: HTy, t: HTy, mut th: Map[String, HTy]) -> Bool = match p {
   TV(n) => match map.get(th, n) {
     some(u) => ty_key(u) == ty_key(t),
     none => {
-      map.insert(th, n, t)
+      th = map.set(th, n, t)
       true
     },
   },
@@ -336,7 +336,7 @@ fn inst(mut st: St, t: HTm, th: Map[String, HTy], sg: Map[Int, HTm], ren: Map[In
 
 // ── Arlk text ───────────────────────────────────────────────────────
 
-local fn alnum(s: String) -> String = list.join(string.chars(s) |> list.filter((c) => string.is_alphanumeric(c) and string.codepoint(c) ?? 128 < 128), "")
+local fn alnum(s: String) -> String = list.join(string.to_list(s) |> list.filter((c) => string.is_alphanumeric(c) and string.to_codepoint(c) ?? 128 < 128), "")
 
 local fn vname(st: St, i: Int) -> String = {
   let base = alnum(var_raw(st, i))
@@ -349,7 +349,7 @@ local fn hname(i: Int) -> String = "h" + int.to_string(i)
 local fn tvname(n: String) -> String = {
   let a = alnum(n)
   if a == n and a != "" and not string.is_digit(string.take(a, 1)) then a + "'"
-  else "T'" + list.join(string.chars(n) |> list.map((c) => int.to_string(string.codepoint(c) ?? 0)), "'")
+  else "T'" + list.join(string.to_list(n) |> list.map((c) => int.to_string(string.to_codepoint(c) ?? 0)), "'")
 }
 
 fn ty_text(st: St, ty: HTy) -> String = match ty {
@@ -405,7 +405,7 @@ fn tm_text(mut st: St, t: HTm) -> String = match t {
       none => {
         let s = structural(st, t)
         let c = if string.len(s) > ABBREVIATE then abbreviate(st, t, s) else s
-        map.insert(st.texts, k, c)
+        st.texts = map.set(st.texts, k, c)
         c
       },
     }
@@ -532,7 +532,7 @@ local fn char_name(c: String) -> String = match c {
   "(" => "lp", ")" => "rp", "\"" => "dq", "," => "comma", "!" => "bang", "?" => "q",
   "@" => "at", "&" => "amp", "#" => "hash", "%" => "pct", ":" => "colon", "'" => "prime",
   "$" => "dollar", "[" => "lb", "]" => "rb", "{" => "lc", "}" => "rc", " " => "sp",
-  _ => "u" + int.to_string(string.codepoint(c) ?? 0),
+  _ => "u" + int.to_string(string.to_codepoint(c) ?? 0),
 }
 
 // The components of an OpenTheory name: `\c` is c, an unescaped `.` separates.
@@ -540,7 +540,7 @@ fn components(raw: String) -> List[String] = {
   var parts: List[String] = []
   var cur = ""
   var escaped = false
-  for c in string.chars(raw) {
+  for c in string.to_list(raw) {
     if escaped then {
       cur = cur + c
       escaped = false
@@ -569,7 +569,7 @@ local fn component(c: String) -> String = match operator_word(c) {
 }
 
 local fn spelled(c: String) -> String = {
-  let s = list.join(string.chars(c) |> list.map((ch) => if (string.is_alphanumeric(ch) and (string.codepoint(ch) ?? 128) < 128) or ch == "_" then ch else "_" + char_name(ch)), "")
+  let s = list.join(string.to_list(c) |> list.map((ch) => if (string.is_alphanumeric(ch) and (string.to_codepoint(ch) ?? 128) < 128) or ch == "_" then ch else "_" + char_name(ch)), "")
   if s == "" then "op" else if string.starts_with(s, "_") or string.is_digit(string.take(s, 1)) then "op" + s else s
 }
 
@@ -593,7 +593,7 @@ local fn fresh_name(mut st: St, kind: String) -> String = {
     some(n) => n,
     none => 0,
   }) + 1
-  map.insert(st.counts, kind, k)
+  st.counts = map.set(st.counts, kind, k)
   global_name(st, st.article + "." + kind + int.to_string(k))
 }
 
@@ -644,7 +644,7 @@ local fn export_key(st: St, hyps: Set[Int], concl: HTm) -> String =
 local fn remember(mut st: St, name: String, hyps: Set[Int], concl: HTm) -> Unit = {
   let (sv, stv) = statement_vars(st, hyps, concl)
   let k = export_key(st, hyps, concl)
-  map.insert(st.exports, k, Export { name: name, tvs: sorted_strs(stv), vars: sorted_ints(sv), hyps: sorted_ints(hyps) })
+  st.exports = map.set(st.exports, k, Export { name: name, tvs: sorted_strs(stv), vars: sorted_ints(sv), hyps: sorted_ints(hyps) })
 }
 
 // Instantiate a theorem: type variables by th, then variables by sg. The
@@ -808,12 +808,12 @@ local fn substitution(s: List[Obj]) -> (Map[String, HTy], Map[Int, HTm])! = {
   var th: Map[String, HTy] = [:]
   for p in tys {
     let (a, b) = pair(p)!
-    map.insert(th, as_name(a)!, as_ty(b)!)
+    th = map.set(th, as_name(a)!, as_ty(b)!)
   }
   var sg: Map[Int, HTm] = [:]
   for p in tms {
     let (a, b) = pair(p)!
-    map.insert(sg, as_var(a)!, as_tm(b)!)
+    sg = map.set(sg, as_var(a)!, as_tm(b)!)
   }
   ok((th, sg))
 }
@@ -843,7 +843,7 @@ local fn ident(st: St, n: String) -> String =
 
 local fn fresh_ident(mut st: St, n: String) -> String = {
   let g = generation(st, n) + 1
-  map.insert(st.gens, n, g)
+  st.gens = map.set(st.gens, n, g)
   n + "#" + int.to_string(g)
 }
 
@@ -864,7 +864,7 @@ local fn ensure_tyop(mut st: St, n: String, arity: Int) -> Unit =
       i = i + 1
     }
     emit(st, "symbol " + a + (if arity == 0 then ": Ty" else "(" + list.join(ps, ", ") + ") -> Ty"))
-    map.insert(st.tyops, n, a)
+    st.tyops = map.set(st.tyops, n, a)
     list.push(st.assumed, a)
   }
 
@@ -877,7 +877,7 @@ local fn ensure_const(mut st: St, n: String, ty: HTy) -> Unit =
     let ts = sorted_strs(ty_tvs(ty))
     let ps = binders(st, ts, [], [])
     emit(st, "symbol " + a + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Tm(" + ty_text(st, ty) + ")")
-    map.insert(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
+    st.consts = map.set(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
     list.push(st.assumed, a)
   }
 
@@ -890,7 +890,7 @@ local fn define_const(mut st: St, raw: String, t: HTm) -> (String, Thm)! = {
   let ps = binders(st, ts, [], [])
   let body = tm_text(st, t)
   emit(st, "def " + a + (if list.is_empty(ps) then ": " else "(" + list.join(ps, ", ") + ") -> ") + "Tm(" + ty_text(st, ty) + ") =\n  " + body)
-  map.insert(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
+  st.consts = map.set(st.consts, n, HolConst { arlk: a, tvs: ts, ty: ty })
   let c = HC(n, ty)
   ok((n, Thm { hyps: set.new(), concl: mk_eq(ty, c, t), proof: "refl(" + ty_text(st, ty) + ", " + const_text(st, n, ty) + ")", pvars: set.new(), ptvs: set.from_list(ts) }))
 }
@@ -941,7 +941,7 @@ local fn define_type(mut st: St, rawn: String, rawabs: String, rawrep: String, n
   let arrow = if list.is_empty(ps) then ": " else params + " -> "
   emit(st, "symbol " + a + arrow + "Ty")
   let tid = fresh_ident(st, rawn)
-  map.insert(st.tyops, tid, a)
+  st.tyops = map.set(st.tyops, tid, a)
   let newty = TOp(tid, names |> list.map((x) => TV(x)))
   let absa = global_name(st, rawabs)
   let repa = global_name(st, rawrep)
@@ -949,8 +949,8 @@ local fn define_type(mut st: St, rawn: String, rawabs: String, rawrep: String, n
   let repn = fresh_ident(st, rawrep)
   emit(st, "symbol " + absa + arrow + "Tm(" + ty_text(st, fun_ty(tau, newty)) + ")")
   emit(st, "symbol " + repa + arrow + "Tm(" + ty_text(st, fun_ty(newty, tau)) + ")")
-  map.insert(st.consts, absn, HolConst { arlk: absa, tvs: names, ty: fun_ty(tau, newty) })
-  map.insert(st.consts, repn, HolConst { arlk: repa, tvs: names, ty: fun_ty(newty, tau) })
+  st.consts = map.set(st.consts, absn, HolConst { arlk: absa, tvs: names, ty: fun_ty(tau, newty) })
+  st.consts = map.set(st.consts, repn, HolConst { arlk: repa, tvs: names, ty: fun_ty(newty, tau) })
   let absc = HC(absn, fun_ty(tau, newty))
   let repc = HC(repn, fun_ty(newty, tau))
   let av = var_of(st, "a", newty)
@@ -996,9 +996,9 @@ local fn define_const_list(mut st: St, pairs: List[Obj], th: Thm) -> (List[Obj],
       none => err("defineConstList: no name for a defined variable"),
     }!
     let (id, _) = define_const(st, n, r)!
-    map.insert(ids, n, id)
-    map.insert(sg, v, HC(id, ty))
-    map.insert(given, h, "refl(" + ty_text(st, ty) + ", " + const_text(st, id, ty) + ")")
+    ids = map.set(ids, n, id)
+    sg = map.set(sg, v, HC(id, ty))
+    given = map.set(given, h, "refl(" + ty_text(st, ty) + ", " + const_text(st, id, ty) + ")")
   }
   for (v, n) in defined {
     let id = match map.get(ids, n) {
@@ -1016,7 +1016,7 @@ local fn parse_int(s: String) -> Int? =
   if s == "0" then some(0)
   else {
     let digits = if string.starts_with(s, "-") then string.drop(s, 1) else s
-    if digits == "" or string.starts_with(digits, "0") or not list.all(string.chars(digits), (c) => string.is_digit(c)) then none
+    if digits == "" or string.starts_with(digits, "0") or not list.all(string.to_list(digits), (c) => string.is_digit(c)) then none
     else match int.parse(s) {
       ok(n) => some(n),
       err(_) => none,
@@ -1089,7 +1089,7 @@ local fn command(mut st: St, mut stack: List[Obj], mut dict: Map[Int, Obj], cmd:
       _ => x,
     }
     list.push(stack, y)
-    map.insert(dict, k, y)
+    dict = map.set(dict, k, y)
     ok(())
   },
   "ref" => {
@@ -1109,7 +1109,7 @@ local fn command(mut st: St, mut stack: List[Obj], mut dict: Map[Int, Obj], cmd:
       some(OGone) => err("remove " + int.to_string(k) + ": removed"),
       some(o) => {
         list.push(stack, o)
-        map.insert(dict, k, OGone)
+        dict = map.set(dict, k, OGone)
         ok(())
       },
       none => err("remove " + int.to_string(k) + ": not in the dictionary"),

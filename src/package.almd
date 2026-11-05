@@ -124,7 +124,7 @@ local fn require_of(value: String) -> Require! = {
 }
 
 fn parse_package(text: String, file: String) -> Package! = {
-  var p = Package { name: "", version: "", semantics: "", root: ".", requires: [], sources: [], rooms: [], claims: [], views: [], assumes: [], file: file, sha: hash.sha256_hex(text) }
+  var p = Package { name: "", version: "", semantics: "", root: ".", requires: [], sources: [], rooms: [], claims: [], views: [], assumes: [], file: file, sha: hash.sha256_hex(bytes.from_string(text)) }
   var format = 0
   for (k, v) in key_values(text)! {
     if k == "arlk-package" then {
@@ -231,7 +231,7 @@ effect fn visit(mut r: Resolution, req: Require, from: String, chain: List[Strin
     match fs.read_text(file) {
       err(_) => fail(r, 6, "${list.join(chain, " -> ")} requires ${req.name} ${req.version}, but there is no manifest at ${file}"),
       ok(text) => {
-        let sha = hash.sha256_hex(text)
+        let sha = hash.sha256_hex(bytes.from_string(text))
         if sha != req.sha then fail(r, 3, "the manifest of ${req.name} at ${file} has SHA-256 ${sha}, but ${if list.is_empty(chain) then "the project" else list.last(chain) ?? ""} pins ${req.sha}")
         else match parse_package(text, file) {
           err(e) => fail(r, 5, "${file}: ${e}"),
@@ -281,7 +281,7 @@ effect fn source_file(name: String, root: String, h: String, rel: String) -> Res
   guard inside(rel) else err(Failure { code: 3, why: "${name}: the source ${rel} is not inside the package root ${root}" })
   let full = join(root, rel)
   let text = fs.read_text(full) |> result.map_err((_) => Failure { code: 6, why: "${name}: the source ${full} is missing" })!
-  guard h == "" or hash.sha256_hex(text) == h else err(Failure { code: 3, why: "${name}: ${rel} does not match its pinned SHA-256" })
+  guard h == "" or hash.sha256_hex(bytes.from_string(text)) == h else err(Failure { code: 3, why: "${name}: ${rel} does not match its pinned SHA-256" })
   ok(full)
 }
 
@@ -366,7 +366,7 @@ effect fn check_into(mut env: Env, files: List[String]) -> Result[Unit, Failure]
   ok(())
 }
 
-fn inventory_sha(env: Env, q: String) -> String = hash.sha256_hex(list.join(checker.axioms_report(env, q), "\n"))
+fn inventory_sha(env: Env, q: String) -> String = hash.sha256_hex(bytes.from_string(list.join(checker.axioms_report(env, q), "\n")))
 
 fn rooms_text(rooms: List[String]) -> String = if list.is_empty(rooms) then "(none)" else list.join(rooms, ",")
 
@@ -397,7 +397,7 @@ local fn verify_claim(env: Env, p: Package, c: String, id: String) -> Result[Uni
 local fn verify_view(env: Env, p: Package, v: String, id: String) -> Result[Unit, Failure] = {
   let text = checker.view_text(env, v) ?? ""
   guard text != "" else err(identity_error("${p.name} exports the view ${v}, which its sources do not declare"))
-  guard hash.sha256_hex(text) == id else err(identity_error("${p.name}: the view ${v} has identity ${hash.sha256_hex(text)}, the manifest pins ${id}"))
+  guard hash.sha256_hex(bytes.from_string(text)) == id else err(identity_error("${p.name}: the view ${v} has identity ${hash.sha256_hex(bytes.from_string(text))}, the manifest pins ${id}"))
   ok(())
 }
 
@@ -443,7 +443,7 @@ effect fn pin(file: String) -> Result[String, Failure] = {
   for (_, rel) in p0.sources {
     let full = source_file(p0.name, root, "", rel)!
     let t = fs.read_text(full) |> result.map_err((e) => Failure { code: 6, why: "reading ${full}: ${e}" })!
-    list.push(sources, (hash.sha256_hex(t), rel))
+    list.push(sources, (hash.sha256_hex(bytes.from_string(t)), rel))
     list.push(files, full)
   }
   check_into(env, files)!
@@ -458,7 +458,7 @@ effect fn pin(file: String) -> Result[String, Failure] = {
   for (v, _) in p0.views {
     let t = checker.view_text(env, v) ?? ""
     declared_view(t, v)!
-    list.push(views, (v, hash.sha256_hex(t)))
+    list.push(views, (v, hash.sha256_hex(bytes.from_string(t))))
   }
   let p = { ...p0, semantics: bundle.SEMANTICS, sources: sources, claims: claims, views: views, assumes: assumes }
   ok(render_package(p))

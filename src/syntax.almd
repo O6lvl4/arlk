@@ -182,7 +182,7 @@ local fn text_between(cs: List[String], i: Int, j: Int) -> String = {
 }
 
 fn lex(src: String) -> List[Token]! = {
-  let cs = string.chars(src)
+  let cs = string.to_list(src)
   let n = list.len(cs)
   var toks: List[Token] = []
   var i = 0
@@ -998,7 +998,7 @@ fn group_mutual_defs(ds: List[Located]) -> List[Located] = {
       some((name, rs)) => {
         list.push(names, name)
         list.push(refs, list.unique(rs))
-        map.insert(at, name, (map.get(at, name) ?? []) + [i])
+        at = map.set(at, name, (map.get(at, name) ?? []) + [i])
       },
       none => {
         list.push(names, "")

@@ -42,7 +42,7 @@ type ITok = { text: String, quoted: Bool, line: Int }
 local fn ident_char(c: String) -> Bool = string.is_alphanumeric(c) or c == "_" or c == "'" or c == "." or c == "?"
 
 fn lex(src: String) -> List[ITok] = {
-  let cs = string.chars(src)
+  let cs = string.to_list(src)
   let n = list.len(cs)
   var out: List[ITok] = []
   var i = 0
@@ -127,7 +127,7 @@ let COMMANDS = ["theory", "imports", "begin", "end", "datatype", "fun", "primrec
 
 // Tokens of a quoted term or type.
 local fn inner(s: String) -> List[String] = {
-  let cs = string.chars(s)
+  let cs = string.to_list(s)
   var out: List[String] = []
   var cur = ""
   for c in cs {
@@ -254,7 +254,7 @@ local fn p_atom(ts: List[String], i: Int) -> (AExpr, Int)! = {
       }
       ok((list.fold(list.reverse(items), EVar("[]"), (acc, x) => EApp(EVar("#"), [x, acc])), k))
     }
-  } else if t != "" and list.all(string.chars(t), (c) => string.is_digit(c)) then {
+  } else if t != "" and list.all(string.to_list(t), (c) => string.is_digit(c)) then {
     // A numeral of type nat: Suc applied n times to 0.
     let n = int.parse(t) ?? 0
     var e = EVar("0")
@@ -632,7 +632,7 @@ let ISAR_STOPS = ["have", "also", "moreover", "finally", "ultimately", "show", "
 // The right-hand side of `a = b`, as written: after its first `=` outside
 // brackets.
 local fn rhs_text(text: String) -> String = {
-  let cs = string.chars(text)
+  let cs = string.to_list(text)
   var depth = 0
   var at_eq = -1
   for (k, c) in list.enumerate(cs) {
